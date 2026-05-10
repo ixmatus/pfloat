@@ -54,6 +54,14 @@
 //! §9.2.1 special-case table for `(y, x)` zero, infinity, and
 //! quadrant pairs before delegating to `atan(y/x)` with a `±π`
 //! shift for negative `x`.
+//!
+//! Slice 4a opens Phase 4 (tier-1 special functions) with `erf`
+//! and `erfc`. For `|x|` inside a cancellation-aware threshold
+//! the kernel evaluates the Maclaurin series of `erf` at boosted
+//! working precision; for larger `|x|` it uses the asymptotic
+//! expansion of `erfc` and complements when erf is requested. A
+//! hardcoded 1024-bit `2/sqrt(π)` constant supplies the leading
+//! coefficient.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -107,6 +115,11 @@ pub(crate) mod sin;
 pub(crate) mod tan;
 #[cfg(feature = "trig")]
 pub(crate) mod trig_reduce;
+
+#[cfg(feature = "specials")]
+pub(crate) mod erf;
+#[cfg(feature = "specials")]
+pub(crate) mod erfc;
 
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
@@ -341,6 +354,55 @@ pub(crate) fn two_over_pi_at(prec: u32) -> BigFloat {
             mantissa: TWO_OVER_PI_LIMBS_4096.to_vec(),
         },
         precision: 4096,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
+/// Hardcoded `2/sqrt(π)` mantissa at 1024-bit precision.
+///
+/// `floor((2/sqrt(π)) · 2^1023)` as 16 little-endian u64 limbs.
+/// Combined with `precision = 1024` and `exponent = 0`, this
+/// represents `2/sqrt(π) ≈ 1.1283791670955125…`, the leading
+/// coefficient of the Maclaurin series for `erf`.
+///
+/// Source: `mpmath` (Python) at 5000-bit working precision,
+/// generated at slice-4a authoring time.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) const TWO_OVER_SQRT_PI_LIMBS_1024: [u64; 16] = [
+    0x18D3E91ADCFF6C03,
+    0x50754B409E94D32D,
+    0xAC2C88BBBA81B1C7,
+    0xEB9FEB2436F2F272,
+    0xD27A3282DADA7316,
+    0x9522F2F93E16B2A3,
+    0x9C22F47F7B7FB57C,
+    0x52561DCC244DC65E,
+    0x74F76F877FFEC251,
+    0xBD1F4EEE48E1CA78,
+    0x40C036096CC79AEB,
+    0xC0759CF859270F11,
+    0x39A15830CCE620B0,
+    0x1409A0EBAC3E7517,
+    0x71D48A7F6BFEC344,
+    0x906EBA8214DB688D,
+];
+
+/// Returns `2/sqrt(π)` rounded to the requested precision (up to
+/// 1024 bits faithfully).
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn two_over_sqrt_pi_at(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
     };
     stored
         .round_to_precision(prec, RoundingMode::NearestEven)
