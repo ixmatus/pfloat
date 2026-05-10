@@ -187,6 +187,89 @@ pub(crate) fn top_set_bit(buffer: &[u64]) -> Option<usize> {
     None
 }
 
+/// Read the bit at absolute storage position `pos` from `buf`.
+pub(crate) fn bit_at(buf: &[u64], pos: usize) -> bool {
+    let limb_idx = pos / 64;
+    let bit_in_limb = pos % 64;
+    if limb_idx >= buf.len() {
+        return false;
+    }
+    (buf[limb_idx] >> bit_in_limb) & 1 == 1
+}
+
+/// Shift `buf` left by one bit in place. Bits shifted off the top
+/// are lost (caller is responsible for sizing `buf` to fit any
+/// expected growth).
+pub(crate) fn shift_left_one_bit(buf: &mut [u64]) {
+    let mut carry: u64 = 0;
+    for limb in buf.iter_mut() {
+        let new_carry = *limb >> 63;
+        *limb = (*limb << 1) | carry;
+        carry = new_carry;
+    }
+}
+
+/// Compare two little-endian limb arrays as unsigned integers. The
+/// arrays may differ in length; the shorter one is treated as
+/// zero-extended at the top.
+pub(crate) fn cmp_limbs(a: &[u64], b: &[u64]) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let len = a.len().max(b.len());
+    for i in (0..len).rev() {
+        let av = a.get(i).copied().unwrap_or(0);
+        let bv = b.get(i).copied().unwrap_or(0);
+        let ord = av.cmp(&bv);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
+}
+
+/// Bit-by-bit long division: returns `(quotient, remainder)` such
+/// that `dividend = quotient × divisor + remainder` and
+/// `0 <= remainder < divisor`.
+///
+/// `divisor` must be non-zero. `quotient` is returned with the same
+/// limb count as `dividend`; `remainder` with the same limb count
+/// as `divisor`.
+///
+/// Complexity: O(`dividend_bits` × `divisor.len()`). This is the
+/// "schoolbook" path per the slice 1e plan. Phase 7 may replace
+/// with Knuth Algorithm D (O(n²/64) limb ops) or Newton iteration
+/// (O(M(n))).
+pub(crate) fn divmod_limbs(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    debug_assert!(top_set_bit(divisor).is_some(), "divisor must be non-zero");
+
+    let mut quotient = vec![0u64; dividend.len()];
+    // `remainder` needs `divisor.len() + 1` limbs to absorb the
+    // transient overflow during the shift-left-one-bit step before
+    // we subtract divisor back out.
+    let mut remainder = vec![0u64; divisor.len() + 1];
+
+    let dividend_top = match top_set_bit(dividend) {
+        Some(t) => t,
+        None => return (quotient, vec![0u64; divisor.len()]),
+    };
+
+    for bit_idx in (0..=dividend_top).rev() {
+        shift_left_one_bit(&mut remainder);
+        if bit_at(dividend, bit_idx) {
+            remainder[0] |= 1;
+        }
+        if cmp_limbs(&remainder, divisor) != core::cmp::Ordering::Less {
+            limbs_sub_assign(&mut remainder, divisor);
+            let q_idx = bit_idx / 64;
+            if q_idx < quotient.len() {
+                quotient[q_idx] |= 1u64 << (bit_idx % 64);
+            }
+        }
+    }
+
+    remainder.truncate(divisor.len());
+    (quotient, remainder)
+}
+
 /// Schoolbook multiplication of two little-endian limb arrays.
 ///
 /// Returns the product as a `Vec<u64>` of length `a.len() + b.len()`.
@@ -380,5 +463,114 @@ mod tests {
         let p_k = multiply_limbs_karatsuba(&a, &b);
         let p_s = multiply_limbs_schoolbook(&a, &b);
         assert_eq!(p_k, p_s, "Karatsuba must agree with schoolbook bit-for-bit");
+    }
+
+    #[test]
+    fn bit_at_works() {
+        let buf = [0b1010u64, 1u64 << 63];
+        assert!(!bit_at(&buf, 0));
+        assert!(bit_at(&buf, 1));
+        assert!(!bit_at(&buf, 2));
+        assert!(bit_at(&buf, 3));
+        assert!(!bit_at(&buf, 64)); // bit 0 of limb 1
+        assert!(bit_at(&buf, 127)); // top bit of limb 1
+        assert!(!bit_at(&buf, 200)); // out of range
+    }
+
+    #[test]
+    fn shift_left_one_bit_works() {
+        let mut buf = [0b1010u64, 0u64];
+        shift_left_one_bit(&mut buf);
+        assert_eq!(buf, [0b10100u64, 0u64]);
+
+        let mut buf = [1u64 << 63, 0u64];
+        shift_left_one_bit(&mut buf);
+        // Bit 63 of limb 0 carries into bit 0 of limb 1.
+        assert_eq!(buf, [0u64, 1u64]);
+    }
+
+    #[test]
+    fn cmp_limbs_works() {
+        use core::cmp::Ordering;
+        assert_eq!(cmp_limbs(&[0u64], &[0u64]), Ordering::Equal);
+        assert_eq!(cmp_limbs(&[1u64], &[0u64]), Ordering::Greater);
+        assert_eq!(cmp_limbs(&[0u64], &[1u64]), Ordering::Less);
+        // High limb dominates.
+        assert_eq!(
+            cmp_limbs(&[0u64, 1u64], &[u64::MAX, 0u64]),
+            Ordering::Greater
+        );
+        // Different lengths.
+        assert_eq!(cmp_limbs(&[5u64], &[5u64, 0u64]), Ordering::Equal);
+        assert_eq!(cmp_limbs(&[5u64], &[5u64, 1u64]), Ordering::Less);
+    }
+
+    #[test]
+    fn divmod_small_exact() {
+        // 35 / 5 = 7 remainder 0.
+        let (q, r) = divmod_limbs(&[35u64], &[5u64]);
+        assert_eq!(q[0], 7);
+        assert_eq!(r[0], 0);
+    }
+
+    #[test]
+    fn divmod_small_with_remainder() {
+        // 23 / 5 = 4 remainder 3.
+        let (q, r) = divmod_limbs(&[23u64], &[5u64]);
+        assert_eq!(q[0], 4);
+        assert_eq!(r[0], 3);
+    }
+
+    #[test]
+    fn divmod_dividend_smaller_than_divisor() {
+        // 3 / 5 = 0 remainder 3.
+        let (q, r) = divmod_limbs(&[3u64], &[5u64]);
+        assert_eq!(q[0], 0);
+        assert_eq!(r[0], 3);
+    }
+
+    #[test]
+    fn divmod_multi_limb_dividend() {
+        // 2^64 / 3 = 6148914691236517205 (= 0x5555_5555_5555_5555) remainder 1.
+        let (q, r) = divmod_limbs(&[0u64, 1u64], &[3u64]);
+        assert_eq!(q, vec![0x5555_5555_5555_5555u64, 0u64]);
+        assert_eq!(r[0], 1);
+    }
+
+    #[test]
+    fn divmod_zero_dividend() {
+        // 0 / anything = 0 r 0.
+        let (q, r) = divmod_limbs(&[0u64, 0u64], &[5u64]);
+        assert_eq!(q, vec![0u64, 0u64]);
+        assert_eq!(r, vec![0u64]);
+    }
+
+    #[test]
+    fn divmod_random_round_trip() {
+        // For random a and non-zero b, verify a == q*b + r, r < b.
+        use core::cmp::Ordering;
+        let a: Vec<u64> = vec![0xDEAD_BEEF_CAFE_BABE, 0x1234_5678_9ABC_DEF0];
+        let b: Vec<u64> = vec![0x0000_0000_0001_2345];
+        let (q, r) = divmod_limbs(&a, &b);
+        // Verify q × b + r == a.
+        let qb = multiply_limbs_schoolbook(&q, &b);
+        let mut reconstructed = qb;
+        // Pad r to match.
+        while reconstructed.len() < r.len() {
+            reconstructed.push(0);
+        }
+        let mut r_padded = r.clone();
+        while r_padded.len() < reconstructed.len() {
+            r_padded.push(0);
+        }
+        let _ = limbs_add_assign(&mut reconstructed, &r_padded);
+        // Trim leading zeros to match a.
+        while reconstructed.len() > a.len() {
+            assert_eq!(*reconstructed.last().unwrap(), 0);
+            reconstructed.pop();
+        }
+        assert_eq!(reconstructed, a);
+        // Verify r < b.
+        assert_eq!(cmp_limbs(&r, &b), Ordering::Less);
     }
 }

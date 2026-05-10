@@ -49,7 +49,15 @@
 //! Schoolbook + Karatsuba multiplication via the shared
 //! `ops::limbs` module; FFT (Schönhage-Strassen) deferred to 1.x
 //! per ADR-0010. Handles `0 × ∞ → qNaN + INVALID` per IEEE 754
-//! §7.2. Slices 1e–1f add div, sqrt, fma.
+//! §7.2.
+//!
+//! 1e: [`div`](BigFloat::div) (plus
+//! [`div_round`](BigFloat::div_round) and `_with_flags` siblings).
+//! Bit-by-bit long division of the mantissas with sticky-bit
+//! tracking from the remainder; routes through the rounding
+//! pipeline. Raises `DIV_BY_ZERO` per IEEE 754 §7.3 for
+//! `finite_nonzero / 0` and `INVALID` for `0 / 0` and `∞ / ∞`.
+//! Slice 1f adds sqrt and fma.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
