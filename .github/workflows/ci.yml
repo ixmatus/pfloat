@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------- Test matrix on Linux + macOS, default + feature combos ----------
+  test:
+    name: test (${{ matrix.os }} / ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        features:
+          - ""                                # default features (std, fmt, big)
+          - "--no-default-features"           # bare lib
+          - "--no-default-features --features=fixed"
+          - "--no-default-features --features=alloc,big"
+          - "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build ${{ matrix.features }} --verbose
+      - run: cargo test ${{ matrix.features }} --verbose
+
+  # ---------- MSRV check (1.84) ----------
+  msrv:
+    name: MSRV (1.84)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.84"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features --verbose
+
+  # ---------- Cross-compile to thumbv6m (Cortex-M0+ floor) ----------
+  thumbv6m:
+    name: cross-compile (thumbv6m-none-eabi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target thumbv6m-none-eabi --no-default-features --verbose
+      - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=fixed --verbose
+      - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=alloc,big --verbose
+
+  # ---------- Format / lint ----------
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+
+  # ---------- Kani proof harnesses ----------
+  # Activated once Phase 6 lands the harness layout. The job exists in
+  # the pipeline so it surfaces missing harnesses rather than silently
+  # passing.
+  kani:
+    name: kani harnesses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: model-checking/kani-github-action@v1.1
+      - run: cargo kani --features=kani || echo "no harnesses yet (pre-Phase-6)"
