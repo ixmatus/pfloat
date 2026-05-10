@@ -161,6 +161,17 @@
 //! then composes `1 − erfc(x)` for `erf`. A hardcoded 1024-bit
 //! `2/sqrt(π)` constant supplies the leading coefficient.
 //!
+//! 4b: gamma family — adds [`gamma`](BigFloat::gamma) and
+//! [`lgamma`](BigFloat::lgamma). `lgamma` uses Stirling's
+//! asymptotic series at a target-dependent shift `z_min`, with
+//! 17 hardcoded Bernoulli-derived coefficients (the largest pair
+//! that fits in `i64`), and reflects negative `x` through
+//! `ln Γ(x) = ln π − ln|sin πx| − lgamma(1 − x)`. `gamma`
+//! composes `sign · exp(lgamma)`, with the sign for negative
+//! non-integer `x` taken from `sin(πx)`. Pulls in `trig` because
+//! the reflection routes through `sin`. Hardcoded `ln(2π)` at
+//! 1024 bits supplies the Stirling constant.
+//!
 //! 3g: inverse trig family.
 //! [`atan`](BigFloat::atan) uses the identity
 //! `atan(x) = π/2 − atan(1/x)` for `|x| > 1` to bring the argument

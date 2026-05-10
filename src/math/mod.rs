@@ -120,6 +120,12 @@ pub(crate) mod trig_reduce;
 pub(crate) mod erf;
 #[cfg(feature = "specials")]
 pub(crate) mod erfc;
+#[cfg(feature = "specials")]
+pub(crate) mod gamma;
+#[cfg(feature = "specials")]
+pub(crate) mod gamma_stirling;
+#[cfg(feature = "specials")]
+pub(crate) mod lgamma;
 
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
@@ -401,6 +407,55 @@ pub(crate) fn two_over_sqrt_pi_at(prec: u32) -> BigFloat {
             sign: Sign::Positive,
             exponent: 0,
             mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
+/// Hardcoded `ln(2π)` mantissa at 1024-bit precision.
+///
+/// `floor(ln(2π) · 2^1023)` as 16 little-endian u64 limbs. Combined
+/// with `precision = 1024` and `exponent = 0`, this represents
+/// `ln(2π) ≈ 1.8378770664093454836…`, the constant term in
+/// Stirling's asymptotic series for `ln Γ(z)`.
+///
+/// Source: `mpmath` (Python) at 5000-bit working precision,
+/// generated at slice-4b authoring time.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) const LN_2PI_LIMBS_1024: [u64; 16] = [
+    0x3BD6E6FBA48AA194,
+    0x54B6D36BEE63E04A,
+    0xC525605F70BB125E,
+    0xDED77FBEC954A0AF,
+    0x27086C366978E17E,
+    0x9254D1304A59FB7E,
+    0x307D867635C11696,
+    0x926770ECA54487A7,
+    0xCF66ECE1772BADF2,
+    0xB05CAB571B4CDA5B,
+    0x93EABF905C5569BB,
+    0x212F9D7FE00E86BF,
+    0xDEC6A3133DAA155D,
+    0xCFB08F8D13458B4D,
+    0x94BC900144192023,
+    0xEB3F8E4325F5A534,
+];
+
+/// Returns `ln(2π)` rounded to the requested precision (up to 1024
+/// bits faithfully).
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn ln_2pi_at(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: LN_2PI_LIMBS_1024.to_vec(),
         },
         precision: 1024,
     };
