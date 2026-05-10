@@ -63,13 +63,19 @@
 //! Phase 1 (plus `_round` and `_with_flags` siblings each). `sqrt`
 //! uses bit-by-bit integer square root with parity-adjusted shift
 //! so the result exponent splits cleanly; `fma` builds an exact
-//! product BigFloat then re-rounds via `add_round` for the IEEE
+//! product `BigFloat` then re-rounds via `add_round` for the IEEE
 //! 754 §9.4 single-rounding guarantee. The slice also fixes a
 //! latent `addsub` bug exposed by FMA (the result-exponent formula
 //! used `e_s - p_s + 1` instead of the genuine
 //! `min(scale_l, scale_s)`; both happened to coincide whenever
 //! `scale_s` was the minimum, which all of slice 1c's tests
 //! exercised, but cross-precision FMA does not).
+//!
+//! 1g: [`FixedFloat<PREC>`](FixedFloat) (const-generic counterpart
+//! to [`BigFloat`] with stack-allocated mantissa) plus `core::ops`
+//! operator overloads (`Add`, `Sub`, `Mul`, `Div`, `Neg`, and the
+//! `*Assign` siblings) for both types behind the `ops` feature.
+//! Phase 1 arithmetic surface complete on both types.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
@@ -95,9 +101,13 @@ mod class;
 mod classify;
 #[cfg(feature = "big")]
 mod cmp;
+#[cfg(all(feature = "big", feature = "fixed"))]
+mod fixed;
 mod mantissa;
 #[cfg(feature = "big")]
 mod ops;
+#[cfg(all(feature = "big", feature = "ops"))]
+mod ops_traits;
 #[cfg(feature = "big")]
 mod rounding;
 mod sign;
@@ -113,5 +123,7 @@ pub use status::flags;
 pub use big::{BigFloat, BuildError};
 #[cfg(feature = "big")]
 pub use classify::IeeeClass;
+#[cfg(all(feature = "big", feature = "fixed"))]
+pub use fixed::{ClassFixed, FixedFloat};
 #[cfg(feature = "big")]
 pub use rounding::RoundingMode;
