@@ -42,8 +42,14 @@
 //! and `_with_flags` siblings) handle NaN propagation, signed
 //! infinities, signed-zero arithmetic (including the IEEE sign rule
 //! for `±0 ± ±0` under `TowardNegative`), and mantissa alignment by
-//! `2^Δ` for arbitrary exponent gaps. Slices 1d–1f add mul, div,
-//! sqrt, fma.
+//! `2^Δ` for arbitrary exponent gaps.
+//!
+//! 1d: [`mul`](BigFloat::mul) (plus
+//! [`mul_round`](BigFloat::mul_round) and `_with_flags` siblings).
+//! Schoolbook + Karatsuba multiplication via the shared
+//! `ops::limbs` module; FFT (Schönhage-Strassen) deferred to 1.x
+//! per ADR-0010. Handles `0 × ∞ → qNaN + INVALID` per IEEE 754
+//! §7.2. Slices 1e–1f add div, sqrt, fma.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
