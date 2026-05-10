@@ -376,12 +376,15 @@ fn add_finite_finite(
     // Find the leading bit of the result.
     let leading_bit = top_set_bit(&sum_buf).expect("non-zero buffer has a top bit");
 
-    // Convert from "scale = e_s - p_s + 1" frame back to
-    // "exponent = position of MSB in mantissa-frame": result's MSB
-    // is at integer position `leading_bit` (in the buffer's frame),
-    // weighted by 2^(common_scale). The MSB's exponent (in pfloat's
-    // sense, position of MSB) is therefore `leading_bit + common_scale`.
-    let common_scale = e_s - i64::from(p_s) + 1;
+    // Convert from the common-scale frame back to "exponent =
+    // position of MSB in mantissa-frame": result's MSB is at integer
+    // position `leading_bit` (in the buffer's frame), weighted by
+    // 2^(common_scale). The MSB's exponent (in pfloat's sense,
+    // position of MSB) is `leading_bit + common_scale`. Earlier
+    // (slice 1c) this used `e_s - p_s + 1` directly, which happened
+    // to be the min only when `scale_s == min(scale_l, scale_s)`;
+    // slice 1f's FMA exposes the case where `scale_l` is the
+    // minimum and that shortcut produces the wrong exponent.
     let result_exponent = i64::try_from(leading_bit)
         .expect("leading bit fits in i64 at any practical precision")
         + common_scale;

@@ -57,7 +57,19 @@
 //! tracking from the remainder; routes through the rounding
 //! pipeline. Raises `DIV_BY_ZERO` per IEEE 754 §7.3 for
 //! `finite_nonzero / 0` and `INVALID` for `0 / 0` and `∞ / ∞`.
-//! Slice 1f adds sqrt and fma.
+//!
+//! 1f: [`sqrt`](BigFloat::sqrt) and
+//! [`fma`](BigFloat::fma), the last two arithmetic primitives in
+//! Phase 1 (plus `_round` and `_with_flags` siblings each). `sqrt`
+//! uses bit-by-bit integer square root with parity-adjusted shift
+//! so the result exponent splits cleanly; `fma` builds an exact
+//! product BigFloat then re-rounds via `add_round` for the IEEE
+//! 754 §9.4 single-rounding guarantee. The slice also fixes a
+//! latent `addsub` bug exposed by FMA (the result-exponent formula
+//! used `e_s - p_s + 1` instead of the genuine
+//! `min(scale_l, scale_s)`; both happened to coincide whenever
+//! `scale_s` was the minimum, which all of slice 1c's tests
+//! exercised, but cross-precision FMA does not).
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
