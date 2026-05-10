@@ -62,9 +62,10 @@ trig = ["exp-log"]
 
 # Tier-1 special functions: erf, erfc, gamma, lgamma, digamma, beta.
 # Slice 4a ships the erf family; the gamma family follows in 4b/4c.
-# Implies `exp-log` because every special function in this cluster
-# pulls in either the exp asymptotic or the ln/gamma recurrence.
-specials = ["exp-log"]
+# Implies `trig` because the gamma reflection formula
+# Γ(x)·Γ(1−x) = π / sin(πx) routes through `sin` for the
+# negative-x branch. (And `trig` implies `exp-log`.)
+specials = ["trig"]
 
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
