@@ -42,6 +42,18 @@
 //! The table size caps the supported input range at roughly
 //! `|x| < 2^3000`; beyond that, reduction loses precision and the
 //! kernel raises `INVALID` with a quiet NaN result.
+//!
+//! Slice 3g closes the trig family with the inverse functions:
+//! `atan`, `asin`, `acos`, and `atan2`. `atan` is the core
+//! primitive — it reduces large `|x|` via the reciprocal identity
+//! and small `|x|` via the half-angle identity, then sums the
+//! Taylor series at ~4 bits per term. The other three route
+//! through `atan` via cancellation-free identities so that the
+//! `±1` boundaries of `asin`/`acos` produce exact `±π/2` and
+//! `0` / `π` results. `atan2` dispatches the full IEEE 754-2019
+//! §9.2.1 special-case table for `(y, x)` zero, infinity, and
+//! quadrant pairs before delegating to `atan(y/x)` with a `±π`
+//! shift for negative `x`.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -79,6 +91,14 @@ pub(crate) mod sinh;
 #[cfg(feature = "exp-log")]
 pub(crate) mod tanh;
 
+#[cfg(feature = "trig")]
+pub(crate) mod acos;
+#[cfg(feature = "trig")]
+pub(crate) mod asin;
+#[cfg(feature = "trig")]
+pub(crate) mod atan;
+#[cfg(feature = "trig")]
+pub(crate) mod atan2;
 #[cfg(feature = "trig")]
 pub(crate) mod cos;
 #[cfg(feature = "trig")]
