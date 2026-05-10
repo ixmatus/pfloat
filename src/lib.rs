@@ -150,6 +150,21 @@
 //! that the kernel raises `INVALID` and returns qNaN. `tan` is
 //! defined as `sin/cos` over the same reduction.
 //!
+//! 3g: inverse trig family.
+//! [`atan`](BigFloat::atan) uses the identity
+//! `atan(x) = π/2 − atan(1/x)` for `|x| > 1` to bring the argument
+//! into `[0, 1]`, then applies the half-angle identity
+//! `atan(y) = 2 · atan(y / (1 + sqrt(1 + y²)))` repeatedly until
+//! `|y| < 1/16`, then sums the Taylor series. `asin(x)` and
+//! `acos(x)` route through `atan` via cancellation-free
+//! identities: `asin(x) = 2 · atan(x / (1 + sqrt(1 − x²)))`;
+//! `acos(x) = 2 · atan(sqrt((1 − x)/(1 + x)))` for `x ≥ 0`, and
+//! the reflected variant for `x < 0`. [`atan2`](BigFloat::atan2)
+//! dispatches the full IEEE 754-2019 §9.2.1 special-case table for
+//! `(y, x)` signs at zero, infinity, and the four quadrants, then
+//! reduces to `atan(y/x)` plus a `±π` shift for the second and
+//! third quadrants. All four are mirrored on `FixedFloat`.
+//!
 //! 3e: hyperbolic family.
 //! [`sinh`](BigFloat::sinh) uses
 //! `(expm1(x) − expm1(−x))/2` to avoid the cancellation of
