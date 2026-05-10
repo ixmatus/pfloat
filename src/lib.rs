@@ -98,6 +98,17 @@
 //! round-trip (Dragon4 / Steele-White) can be a future
 //! optimization; the current output is correct, just not always
 //! minimal.
+//!
+//! # Phase 3 (in progress)
+//!
+//! 3a: First transcendental — [`BigFloat::exp`](BigFloat::exp) (and
+//! `FixedFloat<PREC>::exp`) behind the `exp-log` cluster feature.
+//! Algorithm: range-reduce by `ln(2)` (hardcoded 1024-bit constant)
+//! so the residual `|r| ≤ ln(2)/2`, evaluate the Taylor series, and
+//! compose with a free exponent shift for the `2^k` factor. Fixed
+//! 64-bit guard above target precision; full Ziv-strategy retry
+//! deferred. Lefèvre–Muller worst-case verification wires in during
+//! Phase 6. Slices 3b–3? will add `ln`, trig, hyperbolic, and `pow`.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
@@ -128,6 +139,8 @@ mod fixed;
 #[cfg(feature = "big")]
 mod fmt;
 mod mantissa;
+#[cfg(feature = "exp-log")]
+mod math;
 #[cfg(feature = "big")]
 mod ops;
 #[cfg(all(feature = "big", feature = "ops"))]
