@@ -117,6 +117,15 @@
 //! `ln(m) = 2·atanh((m-1)/(m+1))`, which converges roughly three
 //! bits per term over `m ∈ [1, 2)`. `ln(2)` is shared with `exp`.
 //! Same fixed 64-bit guard as 3a.
+//!
+//! 3c: [`BigFloat::pow`](BigFloat::pow) (and `FixedFloat<PREC>::pow`).
+//! For positive finite `x` and finite `y`, evaluates
+//! `exp(y · ln(x))` at working precision and rounds back to target.
+//! Negative bases dispatch on integer parity of `y` (per IEEE 754-2019
+//! §9.2.1): odd integer flips the sign, even integer leaves it
+//! positive, non-integer raises `INVALID` and returns qNaN. Full
+//! special-case table for `0`, `±∞`, `NaN`, and the `pow(±1, ±∞) = 1`
+//! rule.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
