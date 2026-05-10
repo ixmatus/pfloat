@@ -1,6 +1,6 @@
 # ADR-0009: Verification scaffolding, copy-paste from ferrodec, no shared crate
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

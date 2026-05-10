@@ -1,6 +1,6 @@
 # ADR-0001: `u64` limb representation, sign-magnitude, top-bit-set normalization
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

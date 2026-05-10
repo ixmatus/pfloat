@@ -1,6 +1,6 @@
 # ADR-0008: Differential testing oracle, `gmp-mpfr-sys` on a feature-gated CI lane
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context
