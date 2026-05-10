@@ -14,6 +14,13 @@
 //! `x` the kernel evaluates `exp(y · ln(x))`, with full IEEE 754-2019
 //! §9.2.1 special-case handling around `0`, `±∞`, `NaN`, integer
 //! parity of `y`, and the `pow(±1, ±∞) = 1` rule.
+//!
+//! Slice 3d adds the thin wrappers around the two foundation
+//! transcendentals: `expm1`, `exp2`, `exp10`, `log1p`, `log2`,
+//! `log10`. Each composes `exp` or `ln` with a precision boost to
+//! handle the relevant cancellation regime (small `x` for `expm1`
+//! and `log1p`) or a base-change constant (`ln(2)` for `exp2`/`log2`,
+//! `ln(10)` for `exp10`/`log10`).
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -23,7 +30,19 @@ use crate::sign::Sign;
 #[cfg(feature = "exp-log")]
 pub(crate) mod exp;
 #[cfg(feature = "exp-log")]
+pub(crate) mod exp10;
+#[cfg(feature = "exp-log")]
+pub(crate) mod exp2;
+#[cfg(feature = "exp-log")]
+pub(crate) mod expm1;
+#[cfg(feature = "exp-log")]
 pub(crate) mod ln;
+#[cfg(feature = "exp-log")]
+pub(crate) mod log10;
+#[cfg(feature = "exp-log")]
+pub(crate) mod log1p;
+#[cfg(feature = "exp-log")]
+pub(crate) mod log2;
 #[cfg(feature = "exp-log")]
 pub(crate) mod pow;
 
@@ -73,4 +92,21 @@ pub(crate) fn ln_2_at(prec: u32) -> BigFloat {
         .round_to_precision(prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0
+}
+
+/// Returns `ln(10)` rounded to the requested precision.
+///
+/// Computed at call time as `ln(10)` via the existing `BigFloat::ln`
+/// kernel. Slice 3d takes the runtime cost: every `exp10` and
+/// `log10` invocation incurs one Taylor evaluation of `ln(10)` on
+/// top of its own. A hardcoded 1024-bit `LN10` constant analogous to
+/// [`LN2_LIMBS_1024`] is a frugal future optimization; the current
+/// shape keeps the slice scope narrow and lets the next iteration
+/// of `ln` improvements (Ziv strategy, Lefèvre–Muller tables) carry
+/// `ln(10)` forward without divergence.
+#[cfg(feature = "exp-log")]
+#[allow(dead_code)]
+pub(crate) fn ln_10_at(prec: u32) -> BigFloat {
+    let ten = BigFloat::try_from_i64_exact(10, prec).expect("precision >= 1");
+    ten.ln(RoundingMode::NearestEven).0
 }
