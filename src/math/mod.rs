@@ -31,6 +31,17 @@
 //! compose through `log1p` and `sqrt`: `asinh`, `acosh`, and
 //! `atanh` each use a small-argument identity that avoids the
 //! cancellation in `ln(x + sqrt(x² ± 1))` near the relevant boundary.
+//!
+//! Slice 3f opens the trig family with the forward functions
+//! `sin`, `cos`, `tan`. The argument reduction uses a Payne-Hanek-
+//! style multiplication of `x` by a hardcoded 4096-bit table of
+//! `2/π`: the result splits into an integer `q` (the quadrant
+//! index, taken mod 4) and a normalized fractional remainder `f`
+//! such that `x = (q + f) · π/2`. The reduced argument
+//! `r = f · π/2 ∈ [−π/4, π/4]` then drives the Taylor series.
+//! The table size caps the supported input range at roughly
+//! `|x| < 2^3000`; beyond that, reduction loses precision and the
+//! kernel raises `INVALID` with a quiet NaN result.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -67,6 +78,15 @@ pub(crate) mod pow;
 pub(crate) mod sinh;
 #[cfg(feature = "exp-log")]
 pub(crate) mod tanh;
+
+#[cfg(feature = "trig")]
+pub(crate) mod cos;
+#[cfg(feature = "trig")]
+pub(crate) mod sin;
+#[cfg(feature = "trig")]
+pub(crate) mod tan;
+#[cfg(feature = "trig")]
+pub(crate) mod trig_reduce;
 
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
@@ -131,4 +151,179 @@ pub(crate) fn ln_2_at(prec: u32) -> BigFloat {
 pub(crate) fn ln_10_at(prec: u32) -> BigFloat {
     let ten = BigFloat::try_from_i64_exact(10, prec).expect("precision >= 1");
     ten.ln(RoundingMode::NearestEven).0
+}
+
+/// Hardcoded `π` mantissa at 1024-bit precision.
+///
+/// `floor(π · 2^1022)` as 16 little-endian u64 limbs. Combined with
+/// `precision = 1024` and `exponent = 1`, this represents `π` (the
+/// value lives in `[2, 4)`, so the top bit sits at position 1).
+///
+/// Source: `mpmath` (Python) at 5000-bit working precision,
+/// generated at slice-3f authoring time. Verified by the inline
+/// `pi_constants_self_consistent` test in
+/// [`crate::math::trig_reduce`] which checks `π · (2/π) ≈ 2`.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) const PI_LIMBS_1024: [u64; 16] = [
+    0x98DA48361C55D39A,
+    0xC2007CB8A163BF05,
+    0x49286651ECE45B3D,
+    0xAE9F24117C4B1FE6,
+    0xEE386BFB5A899FA5,
+    0x0BFF5CB6F406B7ED,
+    0xF44C42E9A637ED6B,
+    0xE485B576625E7EC6,
+    0x4FE1356D6D51C245,
+    0x302B0A6DF25F1437,
+    0xEF9519B3CD3A431B,
+    0x514A08798E3404DD,
+    0x020BBEA63B139B22,
+    0x29024E088A67CC74,
+    0xC4C6628B80DC1CD1,
+    0xC90FDAA22168C234,
+];
+
+/// Hardcoded `2/π` mantissa at 4096-bit precision, the Payne-Hanek
+/// reduction table.
+///
+/// `floor((2/π) · 2^4096)` as 64 little-endian u64 limbs. Combined
+/// with `precision = 4096` and `exponent = −1`, this represents
+/// `2/π` (the value lives in `[1/2, 1)`).
+///
+/// The table size caps the supported input range: an input `x` with
+/// binary exponent `e_x` is correctly reducible while
+/// `e_x + working_precision + slack < 4096`. For the default
+/// working precision and reasonable target precisions (≤ 1024), the
+/// kernel handles `|x| < 2^3000` cleanly; beyond that, the
+/// reduction loses precision and the trig kernels report
+/// `INVALID` with a quiet NaN result.
+///
+/// Source: `mpmath` (Python) at 5000-bit working precision,
+/// generated at slice-3f authoring time.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) const TWO_OVER_PI_LIMBS_4096: [u64; 64] = [
+    0x36D9CAD2A8288D61,
+    0x818D67C12645CA55,
+    0x6F63A62DCBBFF4EF,
+    0x78738A5A8CAFBDD7,
+    0x775C83C2A3883C61,
+    0x0AB499D3F2A6067F,
+    0x425FAECE616AA428,
+    0x4A48D36710D8DDAA,
+    0xF57FB0ADF2E91E43,
+    0x6212830148835B8E,
+    0x1DF35BE01834132E,
+    0x08CB7DE050C017A7,
+    0x4D58E232CAC616E3,
+    0x9BDE2822D2E88628,
+    0x5DD7DE16DE3B5892,
+    0xCDC4EF09366CD43F,
+    0x652289E83260BFE6,
+    0x9947FBACD87F7EB7,
+    0xFF319F6A1E666157,
+    0x1F001B0AF1DFCE19,
+    0x24778AD623545AB9,
+    0xD9D63B3884A7CB23,
+    0xB07AE715175649C0,
+    0x64ABD770F87C6357,
+    0x1810A3FC764D2A9D,
+    0xA7B4D55537F63ED7,
+    0x9B0062337CD2B497,
+    0x467D862D71E39AC6,
+    0xC4AD414D2C5D000C,
+    0x15C614B59D19C3C2,
+    0xFA6ED5772D30433B,
+    0x87F121907C7C246A,
+    0x9F3A1F35CAF27F1D,
+    0xC33D26EF6B1E5EF8,
+    0x32C2DE4F98327DBB,
+    0xA5FF07053F7E33E8,
+    0xDDAF44D15719053E,
+    0x8359C4768B961CA6,
+    0x19C367CDDCE8092A,
+    0x60E27BC08C6B47C4,
+    0x06061556CA73A8C9,
+    0x8DFFD8804D732731,
+    0x6599855F14A06840,
+    0xA9E391615EE61B08,
+    0xF0CFBC209AF4361D,
+    0x56033046FC7B6BAB,
+    0x6BFB5FB11F8D5D08,
+    0x3D0739F78A5292EA,
+    0x7527BAC7EBE5F17B,
+    0x4F463F669E5FEA2D,
+    0x6D367ECF27CB09B7,
+    0xEF2F118B5A0A6D1F,
+    0x1FF897FFDE05980F,
+    0x9C845F8BBDF9283B,
+    0x3991D639835339F4,
+    0xE99C7026B45F7E41,
+    0xE88235F52EBB4484,
+    0xFE1DEB1CB129A73E,
+    0x06492EEA09D1921C,
+    0xB7246E3A424DD2E0,
+    0xFE5163ABDEBBC561,
+    0xDB6295993C439041,
+    0xFC2757D1F534DDC0,
+    0xA2F9836E4E441529,
+];
+
+/// Returns `π` rounded to the requested precision (up to 1024 bits
+/// faithfully).
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_at(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 1,
+            mantissa: PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
+/// Returns `π/2` rounded to the requested precision (up to 1024
+/// bits faithfully). Constructed from [`PI_LIMBS_1024`] with a
+/// single decremented exponent so no division is required.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_over_2_at(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
+/// Returns `2/π` rounded to the requested precision (up to 4096
+/// bits faithfully).
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn two_over_pi_at(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: -1,
+            mantissa: TWO_OVER_PI_LIMBS_4096.to_vec(),
+        },
+        precision: 4096,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
 }

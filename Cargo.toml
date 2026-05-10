@@ -51,6 +51,15 @@ ops = ["big"]
 # rest. Implies `big`.
 exp-log = ["big"]
 
+# Trig cluster: forward and inverse circular trigonometric functions
+# (sin, cos, tan, asin, acos, atan, atan2). Slice 3f ships the
+# forward trio with Payne-Hanek-style argument reduction against a
+# hardcoded 4096-bit table of 2/π. Inverse trig lands in a follow-up
+# slice. Implies `exp-log` because the reduction reuses ln(2)-style
+# hardcoded constants and the Taylor series share infrastructure
+# with the exp/ln kernels.
+trig = ["exp-log"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
