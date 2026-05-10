@@ -102,3 +102,7 @@ alone.
 - ADR-0004 (storage strategy that distinguishes the two)
 - ADR-0005 (`Class` and `ClassFixed`)
 - DESIGN.md, "Type architecture" section.
+
+## Update (2026-05-10)
+
+The MSRV-on-stable stance in *Costs* is **superseded by [ADR-0011](0011-msrv-nightly-for-generic-const-exprs.md)**. pfloat now requires a date-pinned nightly toolchain so `FixedFloat<const PREC: u32>`'s mantissa storage can use `feature(generic_const_exprs)` directly. The dual-API design recorded above is otherwise unchanged: `BigFloat` and `FixedFloat<PREC>` ship together in 1.0 with the same operational surface, the same conversions, and the shared private `Mantissa` trait abstracting over their storage.

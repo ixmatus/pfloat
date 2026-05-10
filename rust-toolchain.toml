@@ -1,4 +1,7 @@
+# pfloat depends on `feature(generic_const_exprs)` for FixedFloat<PREC>'s
+# bit-level const-generic mantissa storage. See ADR-0011. The channel
+# is date-pinned for reproducibility; bumps are deliberate.
 [toolchain]
-channel = "stable"
+channel = "nightly-2026-05-10"
 components = ["rustfmt", "clippy"]
 targets = ["thumbv6m-none-eabi", "thumbv8m.main-none-eabi"]

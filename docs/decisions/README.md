@@ -57,3 +57,4 @@ The Phase 0 ADRs (ratified as `accepted` on 2026-05-10):
 - [0008 — Differential testing oracle: `gmp-mpfr-sys` on a feature-gated CI lane](0008-differential-oracle.md)
 - [0009 — Verification scaffolding: copy-paste from ferrodec, no shared crate](0009-verification-scaffolding.md)
 - [0010 — Schönhage-Strassen FFT multiplication deferred to 1.x](0010-fft-deferred.md)
+- [0011 — MSRV moves to nightly to use `generic_const_exprs`](0011-msrv-nightly-for-generic-const-exprs.md)

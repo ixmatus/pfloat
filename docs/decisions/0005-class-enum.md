@@ -98,3 +98,9 @@ diagnostic bits per §6.2.2.
 - ADR-0004 (mantissa storage)
 - ADR-0009 (verification scaffolding)
 - DESIGN.md, "Special values" subsection.
+
+## Update (2026-05-10)
+
+The `payload: NanPayload` field shown in the variant declarations is replaced with **raw limb storage matching the mantissa shape**: `payload: alloc::vec::Vec<u64>` inside `Class::Nan` and `payload: [u64; limbs_for(PREC)]` inside `ClassFixed::<PREC>::Nan`. The `NanPayload(u64)` newtype originally implied by the ADR body is dropped from 1.0; the variable-width per-precision representation is faithful to IEEE 754 §6.2.2's "diagnostic information in the trailing significand" framing and avoids forcing a u64 ceiling on the payload of a 4096-bit mantissa.
+
+The rest of the ADR (tagged enum over reserved-exponent encoding, sign rides inside each variant, quiet/signaling distinction in the `Nan` variant) is unchanged. The accessor APIs on `BigFloat` / `FixedFloat<PREC>` expose the payload as `&[u64]` for read and as `&[u64]` (with length validation) for construction.

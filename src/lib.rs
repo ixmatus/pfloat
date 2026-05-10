@@ -1,7 +1,7 @@
 //! pfloat: pure Rust correctly-rounded arbitrary-precision floats.
 //!
 //! This crate is pre-1.0. The public surface is unstable and the
-//! algorithmic kernels are not yet implemented. See `DESIGN.md` at
+//! arithmetic kernels are not yet implemented. See `DESIGN.md` at
 //! the repository root for the full design and `docs/decisions/` for
 //! the architecture decision records that capture the load-bearing
 //! choices.
@@ -18,11 +18,27 @@
 //!
 //! - [`BigFloat`]: runtime-determined precision. Requires the
 //!   `alloc` feature.
-//! - [`FixedFloat`]: compile-time precision via a const generic.
-//!   Stack-allocated, works without `alloc`.
+//! - `FixedFloat<const PREC: u32>`: compile-time precision via a
+//!   const generic. Stack-allocated, works without `alloc`. Lands
+//!   in slice 1g.
 //!
-//! Both types are stubs at this stage of the project.
+//! # Slice 1a (this slice)
+//!
+//! Implements [`BigFloat`] type, classification predicates,
+//! comparison ([`partial_cmp`](BigFloat::partial_cmp),
+//! [`total_cmp`](BigFloat::total_cmp), [`min`](BigFloat::min),
+//! [`max`](BigFloat::max)), and exact integer construction
+//! ([`try_from_i64_exact`](BigFloat::try_from_i64_exact)). No
+//! arithmetic. Subsequent slices add the rounding pipeline (1b)
+//! and the arithmetic kernels (1c–1f).
 
+// pfloat depends on `feature(generic_const_exprs)` for the
+// `FixedFloat<const PREC: u32>` storage spelling that lands in
+// slice 1g. ADR-0011 records the trade-off (nightly toolchain
+// required); the feature is `incomplete` upstream, so its lint is
+// allowed at the crate root.
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 
@@ -32,13 +48,22 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-// `BigFloat` and `FixedFloat` will land as separate modules in Phase 1.
-// The names are reserved here so the crate surface is visible from
-// the start; the types do not exist yet.
 #[cfg(feature = "big")]
-#[doc(hidden)]
-pub struct BigFloat;
+mod big;
+#[cfg(feature = "big")]
+mod class;
+#[cfg(feature = "big")]
+mod classify;
+#[cfg(feature = "big")]
+mod cmp;
+mod mantissa;
+mod sign;
+mod status;
 
-#[cfg(feature = "fixed")]
-#[doc(hidden)]
-pub struct FixedFloat<const PREC: u32>;
+pub use sign::Sign;
+pub use status::Status;
+
+#[cfg(feature = "big")]
+pub use big::{BigFloat, BuildError};
+#[cfg(feature = "big")]
+pub use classify::IeeeClass;

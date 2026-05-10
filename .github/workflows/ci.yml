@@ -8,9 +8,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # pfloat requires nightly Rust per ADR-0011 (generic_const_exprs).
+  # The pin matches `rust-toolchain.toml`; bumps are deliberate.
+  PFLOAT_NIGHTLY: nightly-2026-05-10
 
 jobs:
   # ---------- Test matrix on Linux + macOS, default + feature combos ----------
+  # FixedFloat (--features=fixed) lands in slice 1g; readd that matrix row
+  # then.
   test:
     name: test (${{ matrix.os }} / ${{ matrix.features }})
     runs-on: ${{ matrix.os }}
@@ -21,27 +26,17 @@ jobs:
         features:
           - ""                                # default features (std, fmt, big)
           - "--no-default-features"           # bare lib
-          - "--no-default-features --features=fixed"
           - "--no-default-features --features=alloc,big"
           - "--all-features"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo build ${{ matrix.features }} --verbose
       - run: cargo test ${{ matrix.features }} --verbose
-
-  # ---------- MSRV check (1.84) ----------
-  msrv:
-    name: MSRV (1.84)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.84"
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-features --verbose
 
   # ---------- Cross-compile to thumbv6m (Cortex-M0+ floor) ----------
   thumbv6m:
@@ -49,12 +44,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
           targets: thumbv6m-none-eabi
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --verbose
-      - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=fixed --verbose
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=alloc,big --verbose
 
   # ---------- Format / lint ----------
@@ -63,8 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -73,8 +69,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-features --all-targets -- -D warnings
@@ -88,6 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
       - uses: model-checking/kani-github-action@v1.1
       - run: cargo kani --features=kani || echo "no harnesses yet (pre-Phase-6)"
