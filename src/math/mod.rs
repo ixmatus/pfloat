@@ -117,6 +117,10 @@ pub(crate) mod tan;
 pub(crate) mod trig_reduce;
 
 #[cfg(feature = "specials")]
+pub(crate) mod beta;
+#[cfg(feature = "specials")]
+pub(crate) mod digamma;
+#[cfg(feature = "specials")]
 pub(crate) mod erf;
 #[cfg(feature = "specials")]
 pub(crate) mod erfc;

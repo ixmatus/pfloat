@@ -131,6 +131,72 @@ pub(super) fn stirling_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
     sum
 }
 
+/// Computes `ψ(z) = digamma(z)` for `z` large enough that the
+/// digamma asymptotic
+///
+/// ```text
+/// ψ(z) = ln(z) − 1/(2z) − Σ_{k=1}^N B_{2k} / (2k · z^(2k))
+/// ```
+///
+/// converges to `working_prec` bits. The coefficients reuse the
+/// hardcoded `STIRLING_C` table: `B_{2k}/(2k) = c_k · (2k − 1)`.
+/// Same truncation cap (17 terms) as `stirling_lgamma`; callers
+/// shift small `z` up before invoking.
+pub(super) fn stirling_digamma(z: &BigFloat, working_prec: u32) -> BigFloat {
+    let z_w = z
+        .round_to_precision(working_prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
+    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+
+    // Leading: ln(z) − 1/(2z).
+    let (ln_z, _) = z_w.ln(RoundingMode::NearestEven);
+    let (two_z, _) = two.mul(&z_w, RoundingMode::NearestEven);
+    let (half_over_z, _) = one.div(&two_z, RoundingMode::NearestEven);
+    let (with_correction, _) = ln_z.sub(&half_over_z, RoundingMode::NearestEven);
+
+    // Tail: −Σ c'_k / z^(2k) where c'_k = B_{2k}/(2k) = c_k·(2k−1).
+    let (z_sq, _) = z_w.mul(&z_w, RoundingMode::NearestEven);
+    let (one_over_z_sq, _) = one.div(&z_sq, RoundingMode::NearestEven);
+
+    let mut z_power = one_over_z_sq.clone(); // z^(-2)
+    let mut sum = with_correction;
+
+    let mut prev_term_exp: i64 = 1;
+    for (k_minus_1, &(num, den)) in STIRLING_C.iter().enumerate() {
+        let k = (k_minus_1 + 1) as i64;
+        let multiplier = 2 * k - 1; // (2k − 1)
+        let num_scaled = num.saturating_mul(multiplier);
+        let num_bf =
+            BigFloat::try_from_i64_exact(num_scaled, working_prec).expect("precision >= 1");
+        let den_bf = BigFloat::try_from_i64_exact(den, working_prec).expect("precision >= 1");
+        let (coef, _) = num_bf.div(&den_bf, RoundingMode::NearestEven);
+        let (term, _) = coef.mul(&z_power, RoundingMode::NearestEven);
+
+        let term_exp = match &term.class {
+            crate::class::Class::Normal { exponent, .. } => *exponent,
+            _ => -i64::from(working_prec) - 1,
+        };
+        if term_exp >= prev_term_exp {
+            break;
+        }
+        prev_term_exp = term_exp;
+        let (next_sum, _) = sum.sub(&term, RoundingMode::NearestEven);
+        sum = next_sum;
+        if term_exp < -i64::from(working_prec) - 4 {
+            break;
+        }
+
+        // Advance: z^(-2(k+1)) = z^(-2k) · z^(-2).
+        let (next_power, _) = z_power.mul(&one_over_z_sq, RoundingMode::NearestEven);
+        z_power = next_power;
+    }
+
+    sum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
