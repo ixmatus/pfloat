@@ -14,8 +14,6 @@ env:
 
 jobs:
   # ---------- Test matrix on Linux + macOS, default + feature combos ----------
-  # FixedFloat (--features=fixed) lands in slice 1g; readd that matrix row
-  # then.
   test:
     name: test (${{ matrix.os }} / ${{ matrix.features }})
     runs-on: ${{ matrix.os }}
@@ -27,6 +25,8 @@ jobs:
           - ""                                # default features (std, fmt, big)
           - "--no-default-features"           # bare lib
           - "--no-default-features --features=alloc,big"
+          - "--no-default-features --features=fixed"
+          - "--no-default-features --features=ops,big"
           - "--all-features"
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --verbose
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=alloc,big --verbose
+      - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=fixed --verbose
 
   # ---------- Format / lint ----------
   format:

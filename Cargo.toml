@@ -31,9 +31,20 @@ fmt = []
 # Dynamic-precision `BigFloat`. Requires `alloc`.
 big = ["alloc"]
 
-# Const-generic `FixedFloat<const PREC: u32>`. Stack-allocated; works
-# without `alloc`. Independent of `big`.
-fixed = []
+# Const-generic `FixedFloat<const PREC: u32>`. Stack-allocated.
+#
+# Slice 1g implements the arithmetic by delegating to BigFloat via
+# heap-allocated conversion, so `fixed` currently implies `big` (and
+# transitively `alloc`). A future slice can extract the kernels to
+# work directly on `[u64; N]` storage and lift this dependency.
+fixed = ["big"]
+
+# `core::ops::Add` / `Sub` / `Mul` / `Div` / `Neg` overloads and
+# their `*Assign` variants for BigFloat and FixedFloat<PREC>. Opt-in
+# because the overloads use `RoundingMode::NearestEven` by default
+# and discard the Status return. Callers wanting explicit rounding
+# mode or flag accumulation continue to use the method form.
+ops = ["big"]
 
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
