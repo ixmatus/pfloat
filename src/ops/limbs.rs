@@ -226,6 +226,72 @@ pub(crate) fn cmp_limbs(a: &[u64], b: &[u64]) -> core::cmp::Ordering {
     Ordering::Equal
 }
 
+/// Integer square root: returns `(s, r)` such that
+/// `n = s² + r` and `0 <= r <= 2s`, equivalently
+/// `s = floor(sqrt(n))`.
+///
+/// `s` is sized to roughly `n.bit_length() / 2` bits;
+/// `r` is sized to at most `n`'s limb count.
+///
+/// Algorithm: classic bit-by-bit / pair-at-a-time digit-recurrence.
+/// Process the bits of `n` two at a time from MSB toward LSB; at
+/// each step, slide two bits into the running remainder, test
+/// against `(s << 2) | 1`, and either subtract-and-set-bit or
+/// shift-left-zero. Complexity O(`n.bit_length()` × `n.len()`).
+/// Phase 7 may replace with Karatsuba sqrt or a Newton-iteration
+/// path; correctness ships in slice 1f.
+pub(crate) fn isqrt_limbs(n: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    let Some(n_top) = top_set_bit(n) else {
+        return (vec![0u64], vec![0u64; n.len().max(1)]);
+    };
+
+    let s_bits = n_top / 2 + 1;
+    let s_limbs = s_bits.div_ceil(64).max(1);
+    let r_limbs = n.len() + 2; // headroom for the shift-by-2 inside the loop
+
+    let mut s = vec![0u64; s_limbs];
+    let mut r = vec![0u64; r_limbs];
+
+    let max_pair = (n_top + 1).div_ceil(2);
+
+    let mut test = vec![0u64; r_limbs];
+
+    for pair_idx in (0..max_pair).rev() {
+        // r <<= 2; OR in the next two bits of `n`.
+        shift_left_one_bit(&mut r);
+        shift_left_one_bit(&mut r);
+        let high = bit_at(n, 2 * pair_idx + 1);
+        let low = bit_at(n, 2 * pair_idx);
+        r[0] |= (u64::from(high) << 1) | u64::from(low);
+
+        // test = (s << 2) | 1, computed in a scratch buffer the
+        // same size as r so the shift cannot overflow.
+        test.fill(0);
+        for (i, &sv) in s.iter().enumerate() {
+            if let Some(slot) = test.get_mut(i) {
+                *slot = sv;
+            }
+        }
+        shift_left_one_bit(&mut test);
+        shift_left_one_bit(&mut test);
+        test[0] |= 1;
+
+        if matches!(
+            cmp_limbs(&r, &test),
+            core::cmp::Ordering::Greater | core::cmp::Ordering::Equal
+        ) {
+            limbs_sub_assign(&mut r, &test);
+            shift_left_one_bit(&mut s);
+            s[0] |= 1;
+        } else {
+            shift_left_one_bit(&mut s);
+        }
+    }
+
+    r.truncate(n.len().max(1));
+    (s, r)
+}
+
 /// Bit-by-bit long division: returns `(quotient, remainder)` such
 /// that `dividend = quotient × divisor + remainder` and
 /// `0 <= remainder < divisor`.
@@ -543,6 +609,69 @@ mod tests {
         let (q, r) = divmod_limbs(&[0u64, 0u64], &[5u64]);
         assert_eq!(q, vec![0u64, 0u64]);
         assert_eq!(r, vec![0u64]);
+    }
+
+    #[test]
+    fn isqrt_perfect_squares() {
+        for &(input, expected) in &[
+            (0u64, 0u64),
+            (1, 1),
+            (4, 2),
+            (9, 3),
+            (16, 4),
+            (25, 5),
+            (100, 10),
+            (10000, 100),
+            (2147483648u64 * 2147483648u64, 2147483648), // exact 2^62
+        ] {
+            let (s, r) = isqrt_limbs(&[input]);
+            assert_eq!(s[0], expected, "isqrt({input})");
+            // Verify s² <= input < (s+1)².
+            let s_squared = s[0].checked_mul(s[0]).expect("no overflow at this scale");
+            assert!(s_squared <= input);
+            if let Some(next) = (s[0] + 1).checked_mul(s[0] + 1) {
+                assert!(input < next);
+            }
+            assert_eq!(r[0], input - s_squared);
+        }
+    }
+
+    #[test]
+    fn isqrt_non_perfect_squares() {
+        for &input in &[2u64, 3, 5, 7, 10, 26, 999] {
+            let (s, r) = isqrt_limbs(&[input]);
+            // s² <= input < (s+1)²
+            let s_val = s[0];
+            assert!(s_val * s_val <= input, "isqrt({input}): s² > n");
+            assert!(
+                (s_val + 1) * (s_val + 1) > input,
+                "isqrt({input}): (s+1)² <= n"
+            );
+            assert_eq!(r[0], input - s_val * s_val);
+        }
+    }
+
+    #[test]
+    fn isqrt_multi_limb_perfect_square() {
+        // (2^64) squared = 2^128, occupying limb 2.
+        // sqrt should be 2^64 = [0, 1].
+        let n = [0u64, 0u64, 1u64];
+        let (s, r) = isqrt_limbs(&n);
+        assert_eq!(s, vec![0u64, 1u64]);
+        assert!(r.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn isqrt_multi_limb_near_square() {
+        // Pick a known perfect square: 10^18 squared.
+        let base: u64 = 1_000_000_000_000_000_000;
+        let squared = multiply_limbs_schoolbook(&[base], &[base]);
+        let (s, r) = isqrt_limbs(&squared);
+        assert_eq!(s[0], base, "isqrt of (10^18)² should be 10^18");
+        assert!(
+            r.iter().all(|&v| v == 0),
+            "remainder should be zero for perfect square"
+        );
     }
 
     #[test]

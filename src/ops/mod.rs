@@ -14,9 +14,13 @@ pub(crate) mod addsub;
 #[cfg(feature = "big")]
 pub(crate) mod div;
 #[cfg(feature = "big")]
+pub(crate) mod fma;
+#[cfg(feature = "big")]
 pub(crate) mod limbs;
 #[cfg(feature = "big")]
 pub(crate) mod mul;
+#[cfg(feature = "big")]
+pub(crate) mod sqrt;
 
 #[cfg(feature = "big")]
 use crate::big::BigFloat;
@@ -80,6 +84,33 @@ pub(crate) fn propagate_nan2(
         let nan = BigFloat::try_new_quiet_nan(*sign, target_precision, payload)
             .expect("BigFloat invariant: precision >= 1");
         return Some((nan, Status::OK));
+    }
+    None
+}
+
+/// Propagate NaN per IEEE 754-2019 §6.2.3 for a three-operand op
+/// (FMA). Same shape as [`propagate_nan2`] extended to three
+/// operands; sNaN priority is left-to-right.
+#[cfg(feature = "big")]
+#[allow(dead_code)] // consumed by slice 1f FMA kernel
+pub(crate) fn propagate_nan3(
+    a: &BigFloat,
+    b: &BigFloat,
+    c: &BigFloat,
+    target_precision: u32,
+) -> Option<(BigFloat, Status)> {
+    if a.is_signaling_nan() || b.is_signaling_nan() || c.is_signaling_nan() {
+        let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+            .expect("BigFloat invariant: precision >= 1");
+        crate::status::auto_raise(Status::INVALID);
+        return Some((nan, Status::INVALID));
+    }
+    for op in [a, b, c] {
+        if let Class::Nan { sign, payload, .. } = &op.class {
+            let nan = BigFloat::try_new_quiet_nan(*sign, target_precision, payload)
+                .expect("BigFloat invariant: precision >= 1");
+            return Some((nan, Status::OK));
+        }
     }
     None
 }
