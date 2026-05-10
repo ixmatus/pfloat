@@ -288,8 +288,13 @@ fn numeric_cmp_no_nan(a: &BigFloat, b: &BigFloat) -> Ordering {
 }
 
 /// Magnitude comparison ignoring sign: `|a| vs |b|`.
+///
+/// Used by [`numeric_cmp_no_nan`] for partial-comparison; also
+/// `pub(crate)` so the arithmetic kernels (slice 1c onward) can
+/// dispatch on which operand has the larger magnitude before
+/// alignment.
 #[cfg(feature = "big")]
-fn magnitude_cmp(a: &BigFloat, b: &BigFloat) -> Ordering {
+pub(crate) fn magnitude_cmp(a: &BigFloat, b: &BigFloat) -> Ordering {
     use Ordering as O;
     match (&a.class, &b.class) {
         (Class::Zero { .. }, Class::Zero { .. }) => O::Equal,

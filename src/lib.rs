@@ -22,7 +22,7 @@
 //!   const generic. Stack-allocated, works without `alloc`. Lands
 //!   in slice 1g.
 //!
-//! # Slices 1a–1b (currently shipped)
+//! # Slices 1a–1c (currently shipped)
 //!
 //! 1a: [`BigFloat`] type, classification predicates, comparison
 //! ([`partial_cmp`](BigFloat::partial_cmp),
@@ -34,8 +34,16 @@
 //! universal rounding pipeline, std-only thread-local flag accessors
 //! ([`flags`](status::flags)), and rounding-required constructors
 //! ([`try_from_i64_round`](BigFloat::try_from_i64_round) and
-//! [`round_to_precision`](BigFloat::round_to_precision)). No
-//! arithmetic kernels yet; those land in slices 1c–1f.
+//! [`round_to_precision`](BigFloat::round_to_precision)).
+//!
+//! 1c: first arithmetic kernel.
+//! [`add`](BigFloat::add) and [`sub`](BigFloat::sub) (plus
+//! [`add_round`](BigFloat::add_round) / [`sub_round`](BigFloat::sub_round)
+//! and `_with_flags` siblings) handle NaN propagation, signed
+//! infinities, signed-zero arithmetic (including the IEEE sign rule
+//! for `±0 ± ±0` under `TowardNegative`), and mantissa alignment by
+//! `2^Δ` for arbitrary exponent gaps. Slices 1d–1f add mul, div,
+//! sqrt, fma.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
@@ -62,6 +70,8 @@ mod classify;
 #[cfg(feature = "big")]
 mod cmp;
 mod mantissa;
+#[cfg(feature = "big")]
+mod ops;
 #[cfg(feature = "big")]
 mod rounding;
 mod sign;
