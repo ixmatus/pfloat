@@ -11,6 +11,10 @@
 
 #[cfg(feature = "big")]
 pub(crate) mod addsub;
+#[cfg(feature = "big")]
+pub(crate) mod limbs;
+#[cfg(feature = "big")]
+pub(crate) mod mul;
 
 #[cfg(feature = "big")]
 use crate::big::BigFloat;

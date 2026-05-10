@@ -466,220 +466,32 @@ fn huge_gap_short_circuit(
     (value, status)
 }
 
-// ----- Multi-limb arithmetic helpers -----
+// Multi-limb arithmetic helpers live in `crate::ops::limbs`.
 
 /// Place `src`'s mantissa-as-integer into `dst` shifted left by
-/// `left_shift` bits. `src_precision` is the count of meaningful bits
-/// in `src` (with `src`'s MSB at the top of its storage's MSL).
-///
-/// On entry `dst` holds zeros (or the caller has cleared the bits
-/// being written). The function ORs the shifted source into `dst`.
+/// `left_shift` bits. Adapter over `limbs::or_left_shifted_into`
+/// that first extracts the top-aligned mantissa into a bottom-
+/// aligned integer.
 fn place_value_left_shifted(dst: &mut [u64], src: &[u64], src_precision: u32, left_shift: u32) {
-    // src's mantissa-as-integer LSB is at src storage bit position
-    // `src_low_zero = src_storage_bits - src_precision`. We want
-    // its LSB to land at dst storage bit position `left_shift`.
-    //
-    // Equivalently: gather src's bits as an integer, then place
-    // them in dst with bottom bit at `left_shift`.
-    //
-    // Walk source bit-windows limb by limb and OR into dst with
-    // appropriate offset.
     let src_storage_bits = (src.len() as u32) * 64;
     let src_low_zero = src_storage_bits - src_precision;
 
-    // For each bit i in [0, src_precision), src's value bit i is
-    // at src storage position (src_low_zero + i). It maps to dst
-    // storage position (left_shift + i). We can do this limb-wise:
-    //
-    //   For each src storage limb index k (0..src.len()):
-    //     The bits of src[k] at positions [src_low_zero - k*64, ..)
-    //     contribute to value bits [j..]. Skip bits below
-    //     src_low_zero.
-    //
-    // Simpler: we treat src as a big-endian-by-limb integer with
-    // `src_precision` meaningful bits at the top. Compute the value
-    // limbs (ignoring src's low-zero zone) via a right-shift by
-    // src_low_zero, then place those into dst with a left-shift by
-    // left_shift.
-
-    // Step 1: compute "value limbs" (src as integer, bit 0 at limb 0 bit 0).
-    //   value_limbs has limbs_for(src_precision) entries.
     let value_limb_count = limbs_for(src_precision);
     let mut value_limbs: Vec<u64> = vec![0u64; value_limb_count];
-    extract_value_limbs(src, src_low_zero, src_precision, &mut value_limbs);
+    crate::ops::limbs::extract_value_limbs(src, src_low_zero, src_precision, &mut value_limbs);
 
-    // Step 2: OR value_limbs into dst with left shift.
-    or_left_shifted_into(dst, &value_limbs, src_precision, left_shift);
-}
-
-/// Extract the `bits` consecutive bits at storage position
-/// `low_bit_pos` from `src`, packing them as a little-endian limb
-/// array (bit 0 of the extracted value at out[0] bit 0).
-fn extract_value_limbs(src: &[u64], low_bit_pos: u32, bits: u32, out: &mut [u64]) {
-    if bits == 0 {
-        return;
-    }
-    let limb_offset = (low_bit_pos / 64) as usize;
-    let bit_offset = low_bit_pos % 64;
-
-    if bit_offset == 0 {
-        // Whole-limb-aligned extraction.
-        let copy_count = bits.div_ceil(64) as usize;
-        for i in 0..copy_count {
-            if let Some(&v) = src.get(limb_offset + i) {
-                if let Some(slot) = out.get_mut(i) {
-                    *slot = v;
-                }
-            }
-        }
-        // Mask high bits beyond `bits` if needed.
-        let last_idx = ((bits - 1) / 64) as usize;
-        let last_bit = bits % 64;
-        if last_bit != 0 {
-            if let Some(slot) = out.get_mut(last_idx) {
-                let mask = (1u64 << last_bit) - 1;
-                *slot &= mask;
-            }
-        }
-        return;
-    }
-
-    // Misaligned: each output limb is composed from two source limbs.
-    let inv_offset = 64 - bit_offset;
-    let mut i = 0usize;
-    let mut bits_remaining = bits;
-    while bits_remaining > 0 {
-        let lo = src.get(limb_offset + i).copied().unwrap_or(0);
-        let hi = src.get(limb_offset + i + 1).copied().unwrap_or(0);
-        let combined = (lo >> bit_offset) | (hi << inv_offset);
-        let take = bits_remaining.min(64);
-        let mask = if take == 64 {
-            !0u64
-        } else {
-            (1u64 << take) - 1
-        };
-        if let Some(slot) = out.get_mut(i) {
-            *slot = combined & mask;
-        }
-        bits_remaining = bits_remaining.saturating_sub(64);
-        i += 1;
-    }
-}
-
-/// OR `value` (a little-endian limb array of `value_bits` bits) into
-/// `dst` shifted left by `left_shift` storage-bit positions.
-fn or_left_shifted_into(dst: &mut [u64], value: &[u64], value_bits: u32, left_shift: u32) {
-    if value_bits == 0 {
-        return;
-    }
-    let limb_shift = (left_shift / 64) as usize;
-    let bit_shift = left_shift % 64;
-
-    if bit_shift == 0 {
-        for (i, &v) in value.iter().enumerate() {
-            if let Some(slot) = dst.get_mut(i + limb_shift) {
-                *slot |= v;
-            }
-        }
-        return;
-    }
-
-    let inv_shift = 64 - bit_shift;
-    for (i, &v) in value.iter().enumerate() {
-        let lo = v << bit_shift;
-        let hi = v >> inv_shift;
-        if let Some(slot) = dst.get_mut(i + limb_shift) {
-            *slot |= lo;
-        }
-        if let Some(slot) = dst.get_mut(i + limb_shift + 1) {
-            *slot |= hi;
-        }
-    }
+    crate::ops::limbs::or_left_shifted_into(dst, &value_limbs, src_precision, left_shift);
 }
 
 /// Place `src` (a little-endian limb array of `value_bits` bits) into
 /// `dst` storage with bottom bit at `dst_low_zero`. Caller-supplied
 /// invariant: `dst` has at least `dst_low_zero + value_bits` storage
-/// bits. The `dst` should be zeroed before this call.
+/// bits and was zeroed before this call.
 fn place_buffer_left_shifted(dst: &mut [u64], src: &[u64], value_bits: u32, dst_low_zero: u32) {
-    or_left_shifted_into(dst, src, value_bits, dst_low_zero);
+    crate::ops::limbs::or_left_shifted_into(dst, src, value_bits, dst_low_zero);
 }
 
-/// `dst += src`, returning final carry (true if the addition
-/// produced a carry out of the top of `dst`).
-fn limbs_add_assign(dst: &mut [u64], src: &[u64]) -> bool {
-    let mut carry: u64 = 0;
-    for (i, &s) in src.iter().enumerate() {
-        let Some(slot) = dst.get_mut(i) else {
-            // src has more limbs than dst: any non-zero limb means
-            // the sum did not fit. Treat as carry-out for safety.
-            // Caller chose working_prec to prevent this.
-            if s != 0 {
-                return true;
-            }
-            continue;
-        };
-        let (sum1, c1) = slot.overflowing_add(s);
-        let (sum2, c2) = sum1.overflowing_add(carry);
-        *slot = sum2;
-        carry = u64::from(c1) + u64::from(c2);
-    }
-    if carry == 0 {
-        return false;
-    }
-    // Propagate remaining carry through dst's higher limbs.
-    for slot in dst.iter_mut().skip(src.len()) {
-        let (sum, c) = slot.overflowing_add(carry);
-        *slot = sum;
-        if c {
-            carry = 1;
-        } else {
-            return false;
-        }
-    }
-    carry != 0
-}
-
-/// `dst -= src`. Caller-supplied invariant: `dst >= src` (otherwise
-/// the borrow propagates past the top, which is a bug).
-fn limbs_sub_assign(dst: &mut [u64], src: &[u64]) {
-    let mut borrow: u64 = 0;
-    for (i, &s) in src.iter().enumerate() {
-        let Some(slot) = dst.get_mut(i) else {
-            // Same shape as in limbs_add_assign: out-of-range limbs
-            // imply caller violated the invariant.
-            debug_assert_eq!(s, 0, "sub overflow: src has bits past dst");
-            continue;
-        };
-        let (diff1, b1) = slot.overflowing_sub(s);
-        let (diff2, b2) = diff1.overflowing_sub(borrow);
-        *slot = diff2;
-        borrow = u64::from(b1) + u64::from(b2);
-    }
-    // Propagate borrow.
-    for slot in dst.iter_mut().skip(src.len()) {
-        if borrow == 0 {
-            return;
-        }
-        let (diff, b) = slot.overflowing_sub(borrow);
-        *slot = diff;
-        borrow = u64::from(b);
-    }
-    debug_assert_eq!(borrow, 0, "sub overflow: dst < src");
-}
-
-/// Returns the (zero-indexed) position of the most-significant set
-/// bit of `buffer`, or `None` if all limbs are zero.
-fn top_set_bit(buffer: &[u64]) -> Option<usize> {
-    for (i, &limb) in buffer.iter().enumerate().rev() {
-        if limb != 0 {
-            let leading = limb.leading_zeros();
-            let bit_in_limb = 63 - (leading as usize);
-            return Some(i * 64 + bit_in_limb);
-        }
-    }
-    None
-}
+use crate::ops::limbs::{limbs_add_assign, limbs_sub_assign, top_set_bit};
 
 #[cfg(test)]
 mod tests {
@@ -923,14 +735,6 @@ mod tests {
         assert!(flags.inexact());
     }
 
-    // --- Helpers ---
-
-    #[test]
-    fn top_set_bit_works() {
-        assert_eq!(top_set_bit(&[0u64, 0u64]), None);
-        assert_eq!(top_set_bit(&[1u64, 0u64]), Some(0));
-        assert_eq!(top_set_bit(&[0u64, 1u64]), Some(64));
-        assert_eq!(top_set_bit(&[1u64 << 63, 0u64]), Some(63));
-        assert_eq!(top_set_bit(&[0u64, 1u64 << 63]), Some(127));
-    }
+    // Helper tests for limb-level primitives live in
+    // `src/ops/limbs.rs::tests`.
 }
