@@ -1,0 +1,94 @@
+[package]
+name = "pfloat"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.84"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ixmatus/pfloat"
+description = "Pure Rust correctly-rounded arbitrary-precision floats."
+keywords = ["float", "ieee754", "arbitrary-precision", "no_std", "mpfr"]
+categories = ["mathematics", "no-std", "no-std::no-alloc"]
+
+[features]
+# Defaults match the std + dynamic-precision profile most callers
+# expect from an MPFR replacement. Embedded users opt out via
+# `default-features = false` and pick `fixed` (const-generic
+# `FixedFloat<PREC>`) for an alloc-free build.
+default = ["std", "fmt", "big"]
+
+# Standard library: pulls in alloc, plus thread-local sticky exception
+# flags and `std::error::Error` impls.
+std = ["alloc"]
+
+# Heap-allocated multi-limb buffers for `BigFloat`.
+alloc = []
+
+# `core::fmt::Write`-based parse and format.
+fmt = []
+
+# Dynamic-precision `BigFloat`. Requires `alloc`.
+big = ["alloc"]
+
+# Const-generic `FixedFloat<const PREC: u32>`. Stack-allocated; works
+# without `alloc`. Independent of `big`.
+fixed = []
+
+# Compile Kani proof harnesses. Off in normal builds.
+kani = []
+
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints we explicitly allow. Two categories:
+#
+# 1. Cast lints — multi-precision arithmetic does width-shrinking and
+#    sign-changing casts deliberately, with bounds maintained by the
+#    surrounding logic. Letting clippy fight them adds noise.
+# 2. Style lints that disagree with the kernel's needs:
+#    - `match_same_arms` for IEEE classification dispatches that
+#      deliberately enumerate every Class variant for clarity.
+#    - `similar_names` flags `lo` vs. `lo_lo`, `mid` vs. `mid_lo` etc.
+#      in the multi-limb arithmetic; those names are precise.
+#    - `float_cmp` — sometimes the right test (e.g. checking f64 == 0.0
+#      to detect underflow exactly).
+#    - `unreadable_literal` — some constants are clearer without
+#      digit-separator clutter (e.g. bit masks, magic exponents).
+#    - The various "too many" / "single char" counts — math kernels
+#      legitimately have wide operand surfaces and short symbolic names.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_lossless = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+match_same_arms = "allow"
+similar_names = "allow"
+float_cmp = "allow"
+single_match_else = "allow"
+unreadable_literal = "allow"
+items_after_statements = "allow"
+many_single_char_names = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+assertions_on_constants = "allow"
+trivially_copy_pass_by_ref = "allow"
+fn_params_excessive_bools = "allow"
+should_implement_trait = "allow"
+manual_let_else = "allow"
+enum_variant_names = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = false
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
