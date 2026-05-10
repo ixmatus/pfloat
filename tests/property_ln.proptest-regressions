@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 62ef9abe027d79fa4c5b080a44fbaccb2b4e8370a8f4f574fbcc0988a56f3672 # shrinks to x = BigFloat { class: Normal { sign: Positive, exponent: 10, mantissa: [10358279142952140800] }, precision: 53 }
