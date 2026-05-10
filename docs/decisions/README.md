@@ -18,9 +18,8 @@ broader ADR community.
 - **Format**: see `template.md`. Each ADR is short. A single page is
   the target; the form matters more than the length.
 - **Status lifecycle**:
-  - `proposed` — drafted, not yet acted on. Phase 0 ADRs sit here
-    until the first implementation lands that exercises the
-    decision.
+  - `proposed` — drafted, not yet acted on. Avoid this for
+    retroactive ADRs.
   - `accepted` — the decision is in effect.
   - `superseded by ADR-NNNN` — replaced; keep the file as a
     historical record, link forward.
@@ -46,8 +45,7 @@ whether to revisit a path.
 
 ## Index
 
-The Phase 0 ADRs (all `proposed` until the corresponding
-implementation lands):
+The Phase 0 ADRs (ratified as `accepted` on 2026-05-10):
 
 - [0001 — `u64` limb representation, sign-magnitude, top-bit-set normalization](0001-limb-representation.md)
 - [0002 — Bit-level precision granularity](0002-bit-level-precision.md)

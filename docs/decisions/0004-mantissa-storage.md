@@ -1,6 +1,6 @@
 # ADR-0004: Mantissa storage, `Vec<u64>` for `BigFloat`, `[u64; N]` for `FixedFloat`
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

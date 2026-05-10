@@ -1,6 +1,6 @@
 # ADR-0006: `i64` exponent
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

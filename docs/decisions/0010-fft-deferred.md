@@ -1,6 +1,6 @@
 # ADR-0010: Schönhage-Strassen FFT multiplication deferred to 1.x
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

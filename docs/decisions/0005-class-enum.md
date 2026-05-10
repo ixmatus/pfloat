@@ -1,6 +1,6 @@
 # ADR-0005: Special-value encoding via tagged `Class` enum
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

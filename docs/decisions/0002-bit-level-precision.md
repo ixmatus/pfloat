@@ -1,6 +1,6 @@
 # ADR-0002: Bit-level precision granularity
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

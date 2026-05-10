@@ -1,6 +1,6 @@
 # ADR-0007: Rounding mode and exception flags
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context

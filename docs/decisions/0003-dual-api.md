@@ -1,6 +1,6 @@
 # ADR-0003: Dual API, `BigFloat` (dynamic) and `FixedFloat<const PREC: u32>` (const-generic)
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-05-10
 
 ## Context
