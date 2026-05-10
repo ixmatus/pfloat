@@ -85,8 +85,19 @@
 //! signed decimal numbers with optional decimal point and `e/E`
 //! exponent, plus case-insensitive `nan` / `inf` / `infinity`.
 //! Routes through the rounding pipeline via a multi-precision
-//! `m × 5^exp × 2^exp` decomposition. Slice 2b will add the
-//! reverse direction (decimal formatting + `Display`).
+//! `m × 5^exp × 2^exp` decomposition.
+//!
+//! 2b: Decimal formatting via
+//! [`BigFloat::to_decimal_string`](BigFloat::to_decimal_string)
+//! and the standard [`Display`](core::fmt::Display) trait for both
+//! types. `Display` uses
+//! [`BigFloat::round_trip_digit_count`](BigFloat::round_trip_digit_count)
+//! digits — enough that `parse_str` at the same precision recovers
+//! the exact value. Output uses fixed-point notation for moderate
+//! magnitudes and scientific notation otherwise. Shortest
+//! round-trip (Dragon4 / Steele-White) can be a future
+//! optimization; the current output is correct, just not always
+//! minimal.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
@@ -114,6 +125,8 @@ mod classify;
 mod cmp;
 #[cfg(all(feature = "big", feature = "fixed"))]
 mod fixed;
+#[cfg(feature = "big")]
+mod fmt;
 mod mantissa;
 #[cfg(feature = "big")]
 mod ops;
