@@ -9,6 +9,11 @@
 //!
 //! All functions are gated behind the `exp-log` or `trig` cluster
 //! features so embedded users can compile in only what they need.
+//!
+//! Slice 3c adds `pow`, which composes the prior two: for positive
+//! `x` the kernel evaluates `exp(y · ln(x))`, with full IEEE 754-2019
+//! §9.2.1 special-case handling around `0`, `±∞`, `NaN`, integer
+//! parity of `y`, and the `pow(±1, ±∞) = 1` rule.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -19,6 +24,8 @@ use crate::sign::Sign;
 pub(crate) mod exp;
 #[cfg(feature = "exp-log")]
 pub(crate) mod ln;
+#[cfg(feature = "exp-log")]
+pub(crate) mod pow;
 
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
