@@ -138,6 +138,18 @@
 //! [`log2`](BigFloat::log2) / [`log10`](BigFloat::log10) compose as
 //! `ln(x) / ln(b)`. All six are mirrored on `FixedFloat`.
 //!
+//! 3f: forward trig family.
+//! [`sin`](BigFloat::sin), [`cos`](BigFloat::cos), and
+//! [`tan`](BigFloat::tan) on `BigFloat` and `FixedFloat`. Behind a
+//! separate `trig` feature flag. Argument reduction multiplies `x`
+//! by a hardcoded 4096-bit table of `2/π` (Payne-Hanek style),
+//! yielding `q mod 4` (the quadrant index) and a reduced
+//! `r ∈ [−π/4, π/4]`. The kernel then evaluates `sin(r)` or
+//! `cos(r)` via Taylor and dispatches on the quadrant. The table
+//! caps the supported input range at roughly `|x| < 2^3000`; past
+//! that the kernel raises `INVALID` and returns qNaN. `tan` is
+//! defined as `sin/cos` over the same reduction.
+//!
 //! 3e: hyperbolic family.
 //! [`sinh`](BigFloat::sinh) uses
 //! `(expm1(x) − expm1(−x))/2` to avoid the cancellation of
