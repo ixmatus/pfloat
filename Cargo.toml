@@ -2,7 +2,9 @@
 name = "pfloat"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.84"
+# No `rust-version`: pfloat requires nightly Rust for
+# `feature(generic_const_exprs)` per ADR-0011. The toolchain is pinned
+# in `rust-toolchain.toml` and bumped deliberately.
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ixmatus/pfloat"
 description = "Pure Rust correctly-rounded arbitrary-precision floats."
@@ -35,6 +37,10 @@ fixed = []
 
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
+
+[dev-dependencies]
+# Property-based testing for the integration suite under `tests/`.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"
