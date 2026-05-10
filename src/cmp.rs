@@ -37,6 +37,7 @@ impl BigFloat {
         let mut status = Status::OK;
         if self.is_signaling_nan() || other.is_signaling_nan() {
             status |= Status::INVALID;
+            crate::status::auto_raise(status);
             return (None, status);
         }
         if self.is_nan() || other.is_nan() {
@@ -81,12 +82,14 @@ impl BigFloat {
     #[must_use]
     pub fn min(&self, other: &Self) -> (Self, Status) {
         if self.is_signaling_nan() || other.is_signaling_nan() {
-            // For 1a we surface the INVALID flag and return a quiet
-            // NaN at the higher of the two precisions. Slice 1b
-            // refines the NaN payload-propagation rules.
+            // Return a quiet NaN at the higher of the two precisions.
+            // Slice 1b's NaN-payload-propagation rules are minimal:
+            // empty payload, positive sign. The arithmetic kernels
+            // (1c+) refine payload propagation per IEEE 754-2019 §6.2.3.
             let prec = self.precision.max(other.precision);
             let nan = BigFloat::try_new_quiet_nan(Sign::Positive, prec, &[])
                 .expect("BigFloat invariant: precision >= 1");
+            crate::status::auto_raise(Status::INVALID);
             return (nan, Status::INVALID);
         }
         if self.is_quiet_nan() && other.is_quiet_nan() {

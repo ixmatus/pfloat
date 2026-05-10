@@ -14,7 +14,9 @@ use alloc::vec::Vec;
 
 use crate::class::Class;
 use crate::mantissa::{limbs_for, storage_shift};
+use crate::rounding::{round_finite_to_precision, RoundingMode};
 use crate::sign::Sign;
+use crate::status::Status;
 
 /// Pure-Rust correctly-rounded arbitrary-precision binary float
 /// with runtime precision.
@@ -24,10 +26,10 @@ use crate::sign::Sign;
 /// [`FixedFloat<PREC>`] (slice 1g) when the precision is known at
 /// compile time and stack allocation is preferable.
 ///
-/// Slice 1a (this slice) ships construction, classification, sign
-/// manipulation, comparison, and exact integer conversion. Slice 1b
-/// adds the rounding pipeline; slices 1c–1f add the arithmetic
-/// kernels.
+/// Slices 1a–1b (currently shipped) provide construction,
+/// classification, sign manipulation, comparison, exact and
+/// rounding-aware integer conversion, and re-rounding to a different
+/// precision. Slices 1c–1f add the arithmetic kernels.
 ///
 /// [`FixedFloat<PREC>`]: ../fixed/struct.FixedFloat.html
 #[cfg(feature = "big")]
@@ -226,6 +228,197 @@ impl BigFloat {
             },
             precision,
         })
+    }
+
+    /// Constructs a `BigFloat` from an `i64`, rounding under
+    /// `mode` when the value's significant bits exceed
+    /// `precision`. Always succeeds at any `precision >= 1`.
+    ///
+    /// Returns the value and a [`Status`] carrying
+    /// [`Status::INEXACT`] when rounding discarded a non-zero bit.
+    /// Under the `std` feature, the status is also OR-accumulated
+    /// into the thread-local flag set
+    /// (see [`flags`](crate::status::flags)).
+    pub fn try_from_i64_round(
+        n: i64,
+        precision: u32,
+        mode: RoundingMode,
+    ) -> Result<(Self, Status), BuildError> {
+        validate_precision(precision)?;
+
+        if n == 0 {
+            // Zero is exact at every precision.
+            return Ok((
+                Self {
+                    class: Class::Zero {
+                        sign: Sign::Positive,
+                    },
+                    precision,
+                },
+                Status::OK,
+            ));
+        }
+
+        let sign = if n < 0 {
+            Sign::Negative
+        } else {
+            Sign::Positive
+        };
+        let magnitude: u64 = if n == i64::MIN {
+            1u64 << 63
+        } else {
+            n.unsigned_abs()
+        };
+
+        let trailing = magnitude.trailing_zeros();
+        let total_bits = u64::BITS - magnitude.leading_zeros();
+        let significant = total_bits - trailing;
+
+        if significant <= precision {
+            // Exact path: identical to `try_from_i64_exact`.
+            let value = Self::try_from_i64_exact(n, precision)
+                .expect("exact-fit case already validated above");
+            return Ok((value, Status::OK));
+        }
+
+        // Rounding required. Build an intermediate at `significant`-bit
+        // precision (the natural width of the magnitude after stripping
+        // trailing zeros), then route through the rounding pipeline to
+        // shrink to the user's `precision`.
+        let intermediate_precision = significant;
+        let intermediate_limbs = limbs_for(intermediate_precision);
+        let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
+        let reduced: u64 = magnitude >> trailing;
+        // `reduced` has `significant` bits with the top bit set.
+        // Place it at the top of the intermediate storage.
+        let total_shift = storage_shift(intermediate_limbs, significant);
+        let whole = (total_shift / 64) as usize;
+        let intra = total_shift % 64;
+        if intra == 0 {
+            intermediate[whole] = reduced;
+        } else {
+            intermediate[whole] = reduced << intra;
+            if 64 - intra < significant && whole + 1 < intermediate_limbs {
+                intermediate[whole + 1] = reduced >> (64 - intra);
+            }
+        }
+
+        let exponent = i64::from(trailing) + i64::from(significant) - 1;
+
+        let (value, status) = round_finite_to_precision(
+            sign,
+            exponent,
+            &intermediate,
+            intermediate_precision,
+            false, // no upstream sticky
+            precision,
+            mode,
+        );
+
+        crate::status::auto_raise(status);
+        Ok((value, status))
+    }
+
+    /// `try_from_i64_round` accumulating into a caller-supplied
+    /// flag bag (`no_std`-friendly variant).
+    ///
+    /// Equivalent to:
+    /// ```ignore
+    /// let (value, status) = BigFloat::try_from_i64_round(n, precision, mode)?;
+    /// *flags |= status;
+    /// Ok(value)
+    /// ```
+    pub fn try_from_i64_round_with_flags(
+        n: i64,
+        precision: u32,
+        mode: RoundingMode,
+        flags: &mut Status,
+    ) -> Result<Self, BuildError> {
+        let (value, status) = Self::try_from_i64_round(n, precision, mode)?;
+        *flags |= status;
+        Ok(value)
+    }
+
+    /// Re-rounds `self` to a new precision under `mode`.
+    ///
+    /// When `new_precision >= self.precision`, the result is exact
+    /// (the mantissa pads with trailing zeros). When
+    /// `new_precision < self.precision`, the rounding pipeline
+    /// applies and may set [`Status::INEXACT`].
+    ///
+    /// Special values pass through: NaN preserves payload (zero-
+    /// padded or truncated to the new precision), `±0` and `±∞`
+    /// re-emit at the new precision unchanged.
+    ///
+    /// Returns [`BuildError::PrecisionZero`] when
+    /// `new_precision == 0`.
+    pub fn round_to_precision(
+        &self,
+        new_precision: u32,
+        mode: RoundingMode,
+    ) -> Result<(Self, Status), BuildError> {
+        validate_precision(new_precision)?;
+
+        let (value, status) = match &self.class {
+            Class::Zero { sign } => (
+                Self {
+                    class: Class::Zero { sign: *sign },
+                    precision: new_precision,
+                },
+                Status::OK,
+            ),
+            Class::Infinity { sign } => (
+                Self {
+                    class: Class::Infinity { sign: *sign },
+                    precision: new_precision,
+                },
+                Status::OK,
+            ),
+            Class::Nan {
+                quiet,
+                sign,
+                payload,
+            } => (
+                Self {
+                    class: Class::Nan {
+                        quiet: *quiet,
+                        sign: *sign,
+                        payload: pad_payload(payload, limbs_for(new_precision)),
+                    },
+                    precision: new_precision,
+                },
+                Status::OK,
+            ),
+            Class::Normal {
+                sign,
+                exponent,
+                mantissa,
+            } => round_finite_to_precision(
+                *sign,
+                *exponent,
+                mantissa,
+                self.precision,
+                false,
+                new_precision,
+                mode,
+            ),
+        };
+
+        crate::status::auto_raise(status);
+        Ok((value, status))
+    }
+
+    /// `round_to_precision` accumulating into a caller-supplied
+    /// flag bag.
+    pub fn round_to_precision_with_flags(
+        &self,
+        new_precision: u32,
+        mode: RoundingMode,
+        flags: &mut Status,
+    ) -> Result<Self, BuildError> {
+        let (value, status) = self.round_to_precision(new_precision, mode)?;
+        *flags |= status;
+        Ok(value)
     }
 
     /// Returns the precision (in bits) of this value.
@@ -450,5 +643,206 @@ mod tests {
             }
             _ => panic!("expected Normal"),
         }
+    }
+
+    // ---------- Slice 1b: rounding-aware constructors ----------
+
+    #[test]
+    fn try_from_i64_round_exact_path_no_flags() {
+        let (one, status) = BigFloat::try_from_i64_round(1, 53, RoundingMode::NearestEven).unwrap();
+        assert!(status.is_ok());
+        assert_eq!(one, BigFloat::try_from_i64_exact(1, 53).unwrap());
+    }
+
+    #[test]
+    fn try_from_i64_round_inexact_sets_inexact_flag() {
+        // 5 has 3 significant bits. Precision 2 cannot hold it.
+        // Top 2 bits of 0b101 are 0b10 = 2, with guard=0 sticky=1.
+        // NearestEven: guard=0 → no round up. Result mantissa = 0b10
+        // (= 2). Exponent: top bit of 5 is at position 2, so
+        // result has exponent = 2.
+        let (v, status) = BigFloat::try_from_i64_round(5, 2, RoundingMode::NearestEven).unwrap();
+        assert!(status.inexact());
+        assert!(!status.invalid());
+        assert!(!status.overflow());
+        // The rounded value should be 4 (= 0b100, which is 2 << 2,
+        // i.e., mantissa 0b10 with exponent 2).
+        let four = BigFloat::try_from_i64_exact(4, 2).unwrap();
+        assert_eq!(v, four);
+    }
+
+    #[test]
+    fn try_from_i64_round_nearest_even_round_up() {
+        // 7 = 0b111. Precision 2 keeps top 2 bits = 0b11.
+        // Guard = bit 0 = 1, sticky = 0, lowest_kept = 1.
+        // NearestEven: guard && (sticky || lowest_kept) = 1 && (0 || 1) = round up.
+        // 0b11 + 1 = 0b100 → renormalize: mantissa 0b10, exponent +1.
+        // Original exponent for 7 (bit_length 3, trailing 0): 0 + 3 - 1 = 2.
+        // After round-up: mantissa 0b10 with exponent 3, value = 2 * 2^(3-2+1) = 2*4 = 8.
+        let (v, status) = BigFloat::try_from_i64_round(7, 2, RoundingMode::NearestEven).unwrap();
+        assert!(status.inexact());
+        let eight = BigFloat::try_from_i64_exact(8, 2).unwrap();
+        assert_eq!(v, eight);
+    }
+
+    #[test]
+    fn try_from_i64_round_toward_zero_truncates() {
+        // 7 = 0b111 at precision 2 with TowardZero: truncate to 0b11 = 3,
+        // exponent stays at 2. Value = 3 * 2^(2-2+1) = 3*2 = 6.
+        let (v, status) = BigFloat::try_from_i64_round(7, 2, RoundingMode::TowardZero).unwrap();
+        assert!(status.inexact());
+        let six = BigFloat::try_from_i64_exact(6, 2).unwrap();
+        assert_eq!(v, six);
+    }
+
+    #[test]
+    fn try_from_i64_round_toward_positive_positive_rounds_up() {
+        let (v, status) = BigFloat::try_from_i64_round(5, 2, RoundingMode::TowardPositive).unwrap();
+        assert!(status.inexact());
+        // 5 → top 2 bits 0b10 with sticky bit set → round up to 0b11
+        // → 6.
+        let six = BigFloat::try_from_i64_exact(6, 2).unwrap();
+        assert_eq!(v, six);
+    }
+
+    #[test]
+    fn try_from_i64_round_toward_negative_negative_rounds_up() {
+        // -5 magnitude 5. TowardNegative on negative sign: round up
+        // toward -∞ means away from zero in magnitude. Same shape
+        // as TowardPositive on a positive 5.
+        let (v, status) =
+            BigFloat::try_from_i64_round(-5, 2, RoundingMode::TowardNegative).unwrap();
+        assert!(status.inexact());
+        let neg_six = BigFloat::try_from_i64_exact(-6, 2).unwrap();
+        assert_eq!(v, neg_six);
+    }
+
+    #[test]
+    fn try_from_i64_round_directed_modes_truncate_wrong_sign() {
+        // TowardPositive on a negative value: truncate toward zero
+        // (the "ceiling" for negative is closer to zero).
+        let (v, _) = BigFloat::try_from_i64_round(-5, 2, RoundingMode::TowardPositive).unwrap();
+        // -5 → top 2 bits 0b10 truncated = magnitude 4 → -4.
+        let neg_four = BigFloat::try_from_i64_exact(-4, 2).unwrap();
+        assert_eq!(v, neg_four);
+    }
+
+    #[test]
+    fn try_from_i64_round_zero_is_always_exact() {
+        let (z, status) = BigFloat::try_from_i64_round(0, 53, RoundingMode::NearestEven).unwrap();
+        assert!(status.is_ok());
+        assert!(z.is_zero());
+        assert!(z.is_sign_positive());
+    }
+
+    #[test]
+    fn try_from_i64_round_with_flags_accumulates() {
+        let mut flags = Status::OK;
+        let _ =
+            BigFloat::try_from_i64_round_with_flags(7, 2, RoundingMode::NearestEven, &mut flags)
+                .unwrap();
+        assert!(flags.inexact());
+        // Calling again accumulates without clearing.
+        let _ =
+            BigFloat::try_from_i64_round_with_flags(0, 53, RoundingMode::NearestEven, &mut flags)
+                .unwrap();
+        assert!(flags.inexact()); // still set from before
+    }
+
+    #[test]
+    fn round_to_precision_extension_is_exact() {
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        let (extended, status) = one
+            .round_to_precision(113, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(status.is_ok());
+        assert_eq!(extended.precision(), 113);
+        // Numerically equal to the original.
+        assert_eq!(
+            extended.partial_cmp(&one).0,
+            Some(core::cmp::Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn round_to_precision_narrows_with_inexact() {
+        // Build a 4-bit mantissa value 0b1101 (= 13) at precision 4
+        // with exponent 3 (so the value is 13).
+        let thirteen = BigFloat::try_from_i64_exact(13, 4).unwrap();
+        // Round to precision 2: top 2 bits 0b11, guard 0, sticky 1
+        // → no round up under NearestEven; result mantissa 0b11 at
+        // exponent 3 → value 12.
+        let (rounded, status) = thirteen
+            .round_to_precision(2, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(status.inexact());
+        let twelve = BigFloat::try_from_i64_exact(12, 2).unwrap();
+        assert_eq!(rounded, twelve);
+    }
+
+    #[test]
+    fn round_to_precision_preserves_zero() {
+        let pz = BigFloat::try_new_zero(Sign::Positive, 113).unwrap();
+        let (r, _) = pz
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(r.is_zero());
+        assert!(r.is_sign_positive());
+        assert_eq!(r.precision(), 53);
+    }
+
+    #[test]
+    fn round_to_precision_preserves_negative_zero() {
+        let nz = BigFloat::try_new_zero(Sign::Negative, 113).unwrap();
+        let (r, _) = nz
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(r.is_zero());
+        assert!(r.is_sign_negative());
+    }
+
+    #[test]
+    fn round_to_precision_preserves_infinity() {
+        let pi = BigFloat::try_new_infinity(Sign::Positive, 53).unwrap();
+        let (r, _) = pi
+            .round_to_precision(113, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(r.is_infinite());
+        assert!(r.is_sign_positive());
+    }
+
+    #[test]
+    fn round_to_precision_preserves_nan() {
+        let n = BigFloat::try_new_quiet_nan(Sign::Negative, 113, &[42]).unwrap();
+        let (r, _) = n.round_to_precision(53, RoundingMode::NearestEven).unwrap();
+        assert!(r.is_quiet_nan());
+        assert!(r.is_sign_negative());
+        assert_eq!(r.precision(), 53);
+        match r.class {
+            Class::Nan { payload, .. } => {
+                // Truncated to 1 limb (limbs_for(53) = 1).
+                assert_eq!(payload.len(), 1);
+                assert_eq!(payload[0], 42);
+            }
+            _ => panic!("expected NaN"),
+        }
+    }
+
+    #[test]
+    fn round_to_precision_rejects_zero_precision() {
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        assert_eq!(
+            one.round_to_precision(0, RoundingMode::NearestEven),
+            Err(BuildError::PrecisionZero)
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn rounding_ops_update_thread_local_flags() {
+        crate::status::flags::clear();
+        let _ = BigFloat::try_from_i64_round(7, 2, RoundingMode::NearestEven).unwrap();
+        assert!(crate::status::flags::test().inexact());
+        crate::status::flags::clear();
     }
 }
