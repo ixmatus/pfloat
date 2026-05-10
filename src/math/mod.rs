@@ -21,12 +21,30 @@
 //! handle the relevant cancellation regime (small `x` for `expm1`
 //! and `log1p`) or a base-change constant (`ln(2)` for `exp2`/`log2`,
 //! `ln(10)` for `exp10`/`log10`).
+//!
+//! Slice 3e adds the hyperbolic family: `sinh`, `cosh`, `tanh`,
+//! `asinh`, `acosh`, `atanh`. Forward hyperbolic functions compose
+//! through `exp` / `expm1` with cancellation-aware identities
+//! (`sinh(x) = (expm1(x) − expm1(−x))/2` for the small-argument
+//! regime; `tanh(x) = (1 − exp(−2|x|)) / (1 + exp(−2|x|))` with a
+//! sign flip for negative `x`). Inverse hyperbolic functions
+//! compose through `log1p` and `sqrt`: `asinh`, `acosh`, and
+//! `atanh` each use a small-argument identity that avoids the
+//! cancellation in `ln(x + sqrt(x² ± 1))` near the relevant boundary.
 
 use crate::big::BigFloat;
 use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 
+#[cfg(feature = "exp-log")]
+pub(crate) mod acosh;
+#[cfg(feature = "exp-log")]
+pub(crate) mod asinh;
+#[cfg(feature = "exp-log")]
+pub(crate) mod atanh;
+#[cfg(feature = "exp-log")]
+pub(crate) mod cosh;
 #[cfg(feature = "exp-log")]
 pub(crate) mod exp;
 #[cfg(feature = "exp-log")]
@@ -45,6 +63,10 @@ pub(crate) mod log1p;
 pub(crate) mod log2;
 #[cfg(feature = "exp-log")]
 pub(crate) mod pow;
+#[cfg(feature = "exp-log")]
+pub(crate) mod sinh;
+#[cfg(feature = "exp-log")]
+pub(crate) mod tanh;
 
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///

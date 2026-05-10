@@ -137,6 +137,29 @@
 //! 1024-bit constant, `ln(10)` is computed lazily per call.
 //! [`log2`](BigFloat::log2) / [`log10`](BigFloat::log10) compose as
 //! `ln(x) / ln(b)`. All six are mirrored on `FixedFloat`.
+//!
+//! 3e: hyperbolic family.
+//! [`sinh`](BigFloat::sinh) uses
+//! `(expm1(x) − expm1(−x))/2` to avoid the cancellation of
+//! `exp(x) − exp(−x)` for small `|x|`.
+//! [`cosh`](BigFloat::cosh) is the direct
+//! `(exp(x) + exp(−x))/2` (both summands non-negative, no
+//! cancellation).
+//! [`tanh`](BigFloat::tanh) computes
+//! `(1 − exp(−2|x|))/(1 + exp(−2|x|))` then flips the sign for
+//! negative `x`; the form is well-behaved at `±∞` (returns ±1
+//! directly).
+//! [`asinh`](BigFloat::asinh) uses
+//! `sign(x) · log1p(|x| + |x|²/(sqrt(|x|² + 1) + 1))`, avoiding the
+//! catastrophic cancellation in `ln(x + sqrt(x² + 1))` for large
+//! negative `x`.
+//! [`acosh`](BigFloat::acosh) uses
+//! `log1p((x − 1) + sqrt((x − 1)(x + 1)))` so the near-1 case
+//! routes through `log1p`'s cancellation-aware path.
+//! [`atanh`](BigFloat::atanh) uses
+//! `(log1p(x) − log1p(−x))/2`. Domain check rejects `|x| > 1` with
+//! `INVALID` and `|x| = 1` with `DIV_BY_ZERO`. All six are mirrored
+//! on `FixedFloat`.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
