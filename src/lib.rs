@@ -126,6 +126,17 @@
 //! positive, non-integer raises `INVALID` and returns qNaN. Full
 //! special-case table for `0`, `±∞`, `NaN`, and the `pow(±1, ±∞) = 1`
 //! rule.
+//!
+//! 3d: thin wrappers around `exp` and `ln`.
+//! [`expm1`](BigFloat::expm1) and [`log1p`](BigFloat::log1p) handle
+//! the small-argument cancellation regime by boosting working
+//! precision proportional to `-exponent(x)` before invoking the base
+//! transcendental, then rounding back to target.
+//! [`exp2`](BigFloat::exp2) / [`exp10`](BigFloat::exp10) compose as
+//! `exp(x · ln(b))` for `b ∈ {2, 10}`; `ln(2)` reuses the hardcoded
+//! 1024-bit constant, `ln(10)` is computed lazily per call.
+//! [`log2`](BigFloat::log2) / [`log10`](BigFloat::log10) compose as
+//! `ln(x) / ln(b)`. All six are mirrored on `FixedFloat`.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
