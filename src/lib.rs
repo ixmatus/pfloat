@@ -76,6 +76,17 @@
 //! operator overloads (`Add`, `Sub`, `Mul`, `Div`, `Neg`, and the
 //! `*Assign` siblings) for both types behind the `ops` feature.
 //! Phase 1 arithmetic surface complete on both types.
+//!
+//! # Phase 2 (in progress)
+//!
+//! 2a: Decimal string parsing via
+//! [`BigFloat::parse_str`](BigFloat::parse_str) and
+//! [`FixedFloat::parse_str`](FixedFloat::parse_str). Accepts
+//! signed decimal numbers with optional decimal point and `e/E`
+//! exponent, plus case-insensitive `nan` / `inf` / `infinity`.
+//! Routes through the rounding pipeline via a multi-precision
+//! `m × 5^exp × 2^exp` decomposition. Slice 2b will add the
+//! reverse direction (decimal formatting + `Display`).
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
@@ -109,6 +120,8 @@ mod ops;
 #[cfg(all(feature = "big", feature = "ops"))]
 mod ops_traits;
 #[cfg(feature = "big")]
+mod parse;
+#[cfg(feature = "big")]
 mod rounding;
 mod sign;
 mod status;
@@ -125,5 +138,7 @@ pub use big::{BigFloat, BuildError};
 pub use classify::IeeeClass;
 #[cfg(all(feature = "big", feature = "fixed"))]
 pub use fixed::{ClassFixed, FixedFloat};
+#[cfg(feature = "big")]
+pub use parse::ParseError;
 #[cfg(feature = "big")]
 pub use rounding::RoundingMode;
