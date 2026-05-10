@@ -150,6 +150,17 @@
 //! that the kernel raises `INVALID` and returns qNaN. `tan` is
 //! defined as `sin/cos` over the same reduction.
 //!
+//! 4a: erf family — opens Phase 4 (tier-1 special functions) with
+//! [`erf`](BigFloat::erf) and [`erfc`](BigFloat::erfc) on `BigFloat`
+//! and `FixedFloat`, behind a `specials` cluster feature. For
+//! `|x|` inside a target-dependent threshold the kernel evaluates
+//! the Maclaurin series of `erf` at working precision boosted by
+//! roughly `x² · log₂ e` bits, then composes `1 − erf(x)` for
+//! `erfc`. For larger `|x|` the kernel evaluates the divergent
+//! asymptotic expansion of `erfc` to its smallest-term truncation,
+//! then composes `1 − erfc(x)` for `erf`. A hardcoded 1024-bit
+//! `2/sqrt(π)` constant supplies the leading coefficient.
+//!
 //! 3g: inverse trig family.
 //! [`atan`](BigFloat::atan) uses the identity
 //! `atan(x) = π/2 − atan(1/x)` for `|x| > 1` to bring the argument
