@@ -172,6 +172,17 @@
 //! the reflection routes through `sin`. Hardcoded `ln(2π)` at
 //! 1024 bits supplies the Stirling constant.
 //!
+//! 4c: closes Phase 4 by adding
+//! [`digamma`](BigFloat::digamma) and [`beta`](BigFloat::beta).
+//! `digamma` reuses the lgamma Stirling shift, then evaluates the
+//! derivative series `ψ(z) = ln(z) − 1/(2z) − Σ B_{2k}/(2k z^{2k})`
+//! with coefficients derived from the same 17-pair table.
+//! Negative non-integer `x` reflects through
+//! `ψ(x) = ψ(1 − x) − π · cot(πx)`. `beta` evaluates
+//! `exp(lgamma(a) + lgamma(b) − lgamma(a + b))` and currently
+//! restricts to `a, b > 0` (negative/zero inputs return
+//! `qNaN + INVALID`).
+//!
 //! 3g: inverse trig family.
 //! [`atan`](BigFloat::atan) uses the identity
 //! `atan(x) = π/2 − atan(1/x)` for `|x| > 1` to bring the argument

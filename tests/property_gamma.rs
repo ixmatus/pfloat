@@ -5,7 +5,7 @@
 
 use core::cmp::Ordering;
 
-use pfloat::{BigFloat, RoundingMode, Sign};
+use pfloat::{BigFloat, RoundingMode};
 use proptest::prelude::*;
 
 fn arb_precision() -> impl Strategy<Value = u32> {
