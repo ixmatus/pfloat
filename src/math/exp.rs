@@ -8,7 +8,7 @@
 //! 2. Range reduce: choose integer `k = round(x / ln(2))`, then
 //!    `r = x − k · ln(2)`. After reduction `|r| ≤ ln(2)/2 ≈ 0.347`.
 //!    `ln(2)` is hardcoded at 1024-bit precision (see
-//!    `LN2_LIMBS_1024`).
+//!    `super::LN2_LIMBS_1024`).
 //! 3. Taylor series: `exp(r) = 1 + r + r²/2! + r³/3! + …`. With
 //!    `|r| < 0.5`, the series converges geometrically faster than
 //!    one bit per term once `n > |r| · target_precision`.
@@ -37,53 +37,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-/// Hardcoded `ln(2)` mantissa at 1024-bit precision.
-///
-/// Layout: little-endian limbs, top-bit-set. The mantissa-as-integer
-/// equals `floor(ln(2) × 2^1024)`. Combined with `precision = 1024`
-/// and `exponent = -1`, this represents `ln(2)`.
-///
-/// Source: the value of `ln(2)` from MPFR / standard mathematical
-/// references, truncated to 1024 bits.
-const LN2_LIMBS_1024: [u64; 16] = [
-    0x4DC7_2A88_F1F1_1A0F,
-    0x0C3B_36F2_5FF2_1D85,
-    0x8BCB_17A7_7B11_D2B4,
-    0xB72C_E87B_19D4_540F,
-    0xB256_FA0E_C765_7F74,
-    0xEB9E_A9BC_3B13_6603,
-    0x51AC_BDA1_1317_C387,
-    0x53E9_6CA1_6224_AE8C,
-    0x0275_73B2_9116_9B82,
-    0xED2E_AE35_C138_2144,
-    0x5595_52FB_4AFA_1B10,
-    0xE7B8_7620_6DEB_AC98,
-    0x8A0D_175B_8BAA_FA2B,
-    0x40F3_4326_7298_B62D,
-    0xC9E3_B398_03F2_F6AF,
-    0xB172_17F7_D1CF_79AB,
-];
-
-/// Returns `ln(2)` rounded to the requested precision (up to 1024
-/// bits). For higher precisions, the constant is extended with
-/// zero bits at the low end — the result is correctly rounded to
-/// precisions up to 1024 bits and a slight under-approximation
-/// for higher (a few ULPs off, well within slice 3a's accepted
-/// tolerance).
-fn ln_2_at(prec: u32) -> BigFloat {
-    let stored = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: -1,
-            mantissa: LN2_LIMBS_1024.to_vec(),
-        },
-        precision: 1024,
-    };
-    stored
-        .round_to_precision(prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0
-}
+use super::ln_2_at;
 
 impl BigFloat {
     /// `exp(self)`: returns `e^x` rounded under `mode` to

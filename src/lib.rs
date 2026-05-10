@@ -108,7 +108,15 @@
 //! compose with a free exponent shift for the `2^k` factor. Fixed
 //! 64-bit guard above target precision; full Ziv-strategy retry
 //! deferred. Lefèvre–Muller worst-case verification wires in during
-//! Phase 6. Slices 3b–3? will add `ln`, trig, hyperbolic, and `pow`.
+//! Phase 6.
+//!
+//! 3b: [`BigFloat::ln`](BigFloat::ln) (and `FixedFloat<PREC>::ln`).
+//! Range-reduce by the binary exponent
+//! (`x = m × 2^e` with `m ∈ [1, 2)`), then `ln(x) = ln(m) + e · ln(2)`.
+//! The `ln(m)` part uses the atanh series
+//! `ln(m) = 2·atanh((m-1)/(m+1))`, which converges roughly three
+//! bits per term over `m ∈ [1, 2)`. `ln(2)` is shared with `exp`.
+//! Same fixed 64-bit guard as 3a.
 
 // pfloat depends on `feature(generic_const_exprs)` for the
 // `FixedFloat<const PREC: u32>` storage spelling that lands in
