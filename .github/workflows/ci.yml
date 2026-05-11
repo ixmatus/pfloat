@@ -96,14 +96,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.PFLOAT_NIGHTLY }}
+      # The `kani-github-action` runs `cargo-kani ${args}` itself
+      # during its `Run Kani` composite step. Features must be
+      # passed via the `args` input — a follow-up `- run: cargo kani`
+      # step never fires because the action already failed by then.
+      # `specials` transitively pulls in trig + exp-log; fixed + ops
+      # cover the const-generic and operator-overload paths.
+      # `differential-mpfr` is omitted (would pull in the MPFR
+      # system dependency).
       - uses: model-checking/kani-github-action@v1.1
-      # `cargo kani` needs every feature whose verify file appears
-      # in src/verify/: specials (transitively pulls in trig +
-      # exp-log) for the transcendental harnesses; fixed + ops for
-      # the const-generic and operator-overload paths. We omit
-      # `differential-mpfr` because it would pull in the MPFR
-      # system dependency.
-      - run: cargo kani --features=std,fmt,big,fixed,ops,exp-log,trig,specials
+        with:
+          args: --features=std,fmt,big,fixed,ops,exp-log,trig,specials
 
   # ---------- libFuzzer smoke ----------
   # ADR-0013 records the layout. Each target gets a 60-second smoke
