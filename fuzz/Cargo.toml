@@ -1,0 +1,35 @@
+[package]
+name = "pfloat-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# This subcrate is intentionally not a member of the parent
+# `pfloat` package's workspace. `cargo build` from the repository
+# root does not build it. `cargo +nightly fuzz run <target>`
+# invoked from the repository root cd's into this directory and
+# builds it independently. ADR-0013 records the layout decision.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.pfloat]
+path = ".."
+features = ["std", "fmt", "big", "ops", "exp-log", "trig", "specials"]
+
+# Each fuzz target is a separate binary. cargo-fuzz expects them
+# under `fuzz_targets/`; explicit `[[bin]]` entries pin
+# `test = false` / `doc = false` / `bench = false` to keep cargo
+# from trying to run them as anything other than libFuzzer entry
+# points.
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false

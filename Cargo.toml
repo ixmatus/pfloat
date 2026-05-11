@@ -70,9 +70,31 @@ specials = ["trig"]
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
+# Differential testing against MPFR via `rug` (a safe wrapper over
+# `gmp-mpfr-sys`). ADR-0014 records the choice; ADR-0008 documents
+# the broader oracle policy. The feature gates the differential test
+# files via `required-features` below — cargo does not allow
+# dev-dependencies to be `optional`, so the `rug` build itself runs
+# unconditionally on Unix.
+differential-mpfr = []
+
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
 proptest = { version = "1", default-features = false, features = ["std"] }
+
+# `rug` is the safe high-level wrapper over `gmp-mpfr-sys`. Unix-only
+# per ADR-0014; Windows differential coverage is not available
+# because gmp-mpfr-sys does not build on stock Windows toolchains.
+[target.'cfg(unix)'.dev-dependencies]
+rug = { version = "1", default-features = false, features = ["float"] }
+
+# Differential tests only build when the `differential-mpfr` feature
+# is active. Without the feature flag, `cargo test` skips them, and
+# the test binaries do not link against `rug`.
+[[test]]
+name = "differential_add"
+path = "tests/differential_add.rs"
+required-features = ["differential-mpfr"]
 
 [lints.rust]
 unsafe_code = "forbid"
