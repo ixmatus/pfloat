@@ -217,6 +217,22 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6f: classification, comparison, parse, and fmt verification.
+//! Four new `src/verify/<op>.rs` files cover the non-arithmetic
+//! surface: classification totality on the canonical set (every
+//! value is exactly one of NaN, infinite, zero, normal),
+//! `signum` and `abs` sign-preservation rules, `total_cmp`
+//! reflexivity, the `partial_cmp` NaN contract (returns `None`
+//! for any NaN; quiet NaN raises no flag, signaling NaN raises
+//! `INVALID`), `min` and `max` idempotence, parse of the
+//! canonical literals (`nan`, `inf`, `-inf`, `0`), and Display
+//! string contents for the canonical special values. One new
+//! fuzz target (`fmt`) exercises the Display to parse round-trip
+//! on i64 inputs. One new differential test
+//! (`differential_parse`) compares pfloat's parser against rug's
+//! on a hand-curated battery of decimal strings plus a
+//! parse to Display to parse round-trip.
+//!
 //! 6e: tier-1 specials verification. Six new
 //! `src/verify/<op>.rs` files (erf, erfc, gamma, lgamma, digamma,
 //! beta) cover NaN propagation, sNaN INVALID, the gamma pole at
