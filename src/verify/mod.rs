@@ -34,3 +34,8 @@
 pub(super) mod helpers;
 
 mod add;
+mod div;
+mod fma;
+mod mul;
+mod sqrt;
+mod sub;

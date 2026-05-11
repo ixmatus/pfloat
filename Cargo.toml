@@ -96,6 +96,31 @@ name = "differential_add"
 path = "tests/differential_add.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "differential_sub"
+path = "tests/differential_sub.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_mul"
+path = "tests/differential_mul.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_div"
+path = "tests/differential_div.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_sqrt"
+path = "tests/differential_sqrt.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_fma"
+path = "tests/differential_fma.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

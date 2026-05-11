@@ -19,7 +19,7 @@ use rug::Float;
 pub fn mpfr_round_of(mode: RoundingMode) -> Round {
     match mode {
         RoundingMode::NearestEven => Round::Nearest,
-        RoundingMode::NearestAwayFromZero => Round::AwayZero,
+        RoundingMode::NearestAway => Round::AwayZero,
         RoundingMode::TowardZero => Round::Zero,
         RoundingMode::TowardPositive => Round::Up,
         RoundingMode::TowardNegative => Round::Down,
@@ -70,7 +70,7 @@ pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 /// All five IEEE 754-2019 rounding modes.
 pub const ALL_ROUNDING_MODES: &[RoundingMode] = &[
     RoundingMode::NearestEven,
-    RoundingMode::NearestAwayFromZero,
+    RoundingMode::NearestAway,
     RoundingMode::TowardZero,
     RoundingMode::TowardPositive,
     RoundingMode::TowardNegative,
