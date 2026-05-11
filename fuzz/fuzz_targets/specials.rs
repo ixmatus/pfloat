@@ -37,7 +37,7 @@ fuzz_target!(|input: Input| {
         return;
     };
 
-    match input.op % 6 {
+    match input.op % 7 {
         0 => {
             let _ = x.erf(mode);
         }
@@ -55,6 +55,9 @@ fuzz_target!(|input: Input| {
         }
         5 => {
             let _ = x.beta(&y, mode);
+        }
+        6 => {
+            let _ = x.agm(&y, mode);
         }
         _ => unreachable!(),
     }
