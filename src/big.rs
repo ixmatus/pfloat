@@ -427,6 +427,99 @@ impl BigFloat {
     pub fn precision(&self) -> u32 {
         self.precision
     }
+
+    /// Borrowed read-only view of the raw IEEE-shaped structure.
+    ///
+    /// Pattern-match on [`Parts`] to inspect the sign, exponent,
+    /// mantissa limbs, and (for NaN) payload limbs without
+    /// allocating or rounding. External callers that need bit-exact
+    /// access to the representation (differential testing,
+    /// serialization, raw-form printers) should reach for this
+    /// accessor rather than going through `Display` and a round-trip
+    /// parser, which loses up to 1 ULP under non-NearestEven
+    /// rounding.
+    ///
+    /// The accessor is `O(1)` and panic-free. The returned [`Parts`]
+    /// borrows from `self` for the slice fields, so it cannot
+    /// outlive this `BigFloat`.
+    ///
+    /// pfloat does not expose a converse constructor from raw parts.
+    /// Construction goes through the validated `try_new_*` paths so
+    /// the top-bit-set mantissa normalization, the
+    /// `limbs_for(precision)` storage shape, and the
+    /// precision-bound payload length stay invariants the type
+    /// system checks.
+    #[inline]
+    #[must_use]
+    pub fn parts(&self) -> Parts<'_> {
+        match &self.class {
+            Class::Zero { sign } => Parts::Zero { sign: *sign },
+            Class::Infinity { sign } => Parts::Infinity { sign: *sign },
+            Class::Nan {
+                quiet,
+                sign,
+                payload,
+            } => Parts::Nan {
+                quiet: *quiet,
+                sign: *sign,
+                payload,
+            },
+            Class::Normal {
+                sign,
+                exponent,
+                mantissa,
+            } => Parts::Normal {
+                sign: *sign,
+                exponent: *exponent,
+                mantissa,
+                precision: self.precision,
+            },
+        }
+    }
+}
+
+/// Read-only view of a [`BigFloat`]'s raw IEEE-shaped representation.
+///
+/// Public mirror of the internal tagged-union storage. The lifetime
+/// `'a` ties the borrowed slice fields (`payload`, `mantissa`) to
+/// the `BigFloat` that produced this `Parts`.
+///
+/// Each variant carries exactly the fields IEEE 754-2019 §3.2 lists
+/// for the corresponding value kind. The `Normal` variant's
+/// `mantissa` is a little-endian limb slice (`mantissa[0]` is the
+/// least significant 64 bits) with the top bit of the most
+/// significant limb set; the integer interpretation of the
+/// mantissa, scaled by `2^(exponent - precision + 1)`, is the value.
+/// ADR-0001 records the layout; ADR-0006 fixes the `i64` exponent;
+/// ADR-0016 records the rationale for exposing this view publicly.
+#[cfg(feature = "big")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Parts<'a> {
+    /// Signed zero (IEEE 754-2019 §6.3).
+    Zero { sign: Sign },
+    /// Signed infinity (IEEE 754-2019 §3.2).
+    Infinity { sign: Sign },
+    /// NaN with payload (IEEE 754-2019 §6.2). `quiet` is `true` for
+    /// quiet NaN, `false` for signaling NaN. The payload slice has
+    /// length `limbs_for(precision)`; the `precision` is the
+    /// originating `BigFloat`'s precision and is recoverable from
+    /// `BigFloat::precision()` if needed (omitted from the variant
+    /// to keep `Parts` zero-cost to construct).
+    Nan {
+        quiet: bool,
+        sign: Sign,
+        payload: &'a [u64],
+    },
+    /// Finite non-zero value. The integer interpretation of
+    /// `mantissa` (top-bit set, `precision` bits wide) scaled by
+    /// `2^(exponent - precision + 1)` and signed by `sign` is the
+    /// represented value.
+    Normal {
+        sign: Sign,
+        exponent: i64,
+        mantissa: &'a [u64],
+        precision: u32,
+    },
 }
 
 #[cfg(feature = "big")]

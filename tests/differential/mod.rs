@@ -8,6 +8,14 @@
 //! ADR-0014 records the comparison strategy. Binary radix means
 //! one canonical normalized form per finite value, so bit-for-bit
 //! equality of `rug::Float` values is the right test.
+//!
+//! Slice 7a (ADR-0016) replaces the original `Display + parse`
+//! converter with a bit-exact one built on the public
+//! [`pfloat::Parts`] accessor. The new converter is rounding-mode
+//! independent: it reads pfloat's raw mantissa limbs and exponent
+//! and constructs the corresponding [`rug::Float`] via
+//! [`rug::Integer::from_digits`] and `mul_2si`. The differential
+//! sweep accordingly exercises all five IEEE rounding modes.
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 // Each `tests/differential_*.rs` test crate uses a different
@@ -15,9 +23,10 @@
 // generate `dead_code` warnings under that crate's compilation.
 #![allow(dead_code)]
 
-use pfloat::{BigFloat, RoundingMode};
-use rug::float::Round;
-use rug::Float;
+use pfloat::{BigFloat, Parts, RoundingMode, Sign};
+use rug::float::{Round, Special};
+use rug::integer::Order;
+use rug::{Float, Integer};
 
 /// Map pfloat's [`RoundingMode`] to MPFR's [`Round`].
 pub fn mpfr_round_of(mode: RoundingMode) -> Round {
@@ -30,18 +39,79 @@ pub fn mpfr_round_of(mode: RoundingMode) -> Round {
     }
 }
 
-/// Convert a [`BigFloat`] to a [`rug::Float`] at the same precision.
+/// Convert a [`BigFloat`] to a [`rug::Float`] at the same precision,
+/// bit-exact regardless of which rounding mode produced the value.
 ///
-/// Uses pfloat's [`core::fmt::Display`] output, which renders
-/// `round_trip_digit_count(p)` decimal digits — exactly enough that
-/// re-parsing at precision `p` recovers the original value. MPFR's
-/// `Float::parse` is correctly rounded, so the round-trip preserves
-/// the bit pattern.
+/// Reads pfloat's raw representation via [`BigFloat::parts`] and
+/// builds the corresponding [`Float`] directly: a [`rug::Integer`]
+/// from the little-endian mantissa limbs, then `mul_2si` to apply
+/// the signed exponent shift. The construction is exact because the
+/// pfloat mantissa-as-integer has exactly `precision` significant
+/// bits (top-bit set) and the destination Float is built at
+/// precision `precision`.
+///
+/// Specials map to MPFR's special constructors. NaN payload is not
+/// preserved (MPFR does not expose payload bits via the public
+/// API); differential tests do not compare NaN values for bit
+/// equality (NaN != NaN under IEEE) so the loss is intentional.
 pub fn bigfloat_to_rug(value: &BigFloat) -> Float {
     let p = value.precision();
-    let s = value.to_string();
-    let parsed = Float::parse(&s).expect("BigFloat Display must produce valid input");
-    Float::with_val(p, parsed)
+    match value.parts() {
+        Parts::Zero { sign } => signed(Float::with_val(p, 0u32), sign),
+        Parts::Infinity { sign } => signed(Float::with_val(p, Special::Infinity), sign),
+        Parts::Nan { .. } => Float::with_val(p, Special::Nan),
+        Parts::Normal {
+            sign,
+            exponent,
+            mantissa,
+            precision: _precision,
+        } => {
+            // pfloat's mantissa Vec<u64> is left-aligned within the
+            // most significant limb (top bit of the highest limb is
+            // 1, bits below the precision are zero). The integer
+            // read out of the limbs is therefore the precision-bit
+            // mantissa value shifted left by
+            // `limbs * 64 - precision` bits. Setting a `p`-precision
+            // Float to that integer truncates the storage padding
+            // exactly (the trailing zeros below the precision do
+            // not contribute), and the corrected shift below
+            // accounts for the storage alignment so the result
+            // recovers the original value bit-for-bit.
+            let int = Integer::from_digits(mantissa, Order::Lsf);
+            let mut f = Float::with_val(p, &int);
+            let stored_bits = (mantissa.len() as i64) * 64;
+            let shift: i64 = exponent + 1 - stored_bits;
+            mul_2si_chunked(&mut f, shift);
+            signed(f, sign)
+        }
+    }
+}
+
+fn signed(f: Float, sign: Sign) -> Float {
+    if matches!(sign, Sign::Negative) {
+        -f
+    } else {
+        f
+    }
+}
+
+/// In-place `f *= 2^shift`, splitting the exponent into i32-sized
+/// chunks so the helper is correct for any `i64` shift even though
+/// MPFR's `mpfr_mul_2si` takes a `long` (i32 on rug's interface).
+/// For the precisions and operand magnitudes the differential lane
+/// exercises, this loop runs once.
+fn mul_2si_chunked(f: &mut Float, shift: i64) {
+    let mut remaining = shift;
+    while remaining != 0 {
+        let step = if remaining >= 0 {
+            remaining.min(i64::from(i32::MAX)) as i32
+        } else {
+            remaining.max(i64::from(i32::MIN)) as i32
+        };
+        // Float << i32 is exact mul_2si.
+        *f <<= step;
+        remaining -= i64::from(step);
+    }
 }
 
 /// Construct a [`BigFloat`] at the given precision from an [`i64`].
@@ -59,7 +129,7 @@ pub fn rug_from_i64(n: i64, p: u32) -> Float {
 
 /// Splitmix64 step. Used by each `differential_*` test for
 /// deterministic input generation; consolidated here so the
-/// helper isn't duplicated 22 times and so the i64 range math is
+/// helper isn't duplicated 23 times and so the i64 range math is
 /// fixed in one place.
 pub fn next_u64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -71,10 +141,7 @@ pub fn next_u64(state: &mut u64) -> u64 {
 
 /// Draw an i64 uniformly from `[lo, hi]` using the splitmix64
 /// state. Uses i128 arithmetic so the span can cover the full i64
-/// range without overflow (the previous `(hi - lo) as u64 + 1`
-/// form overflowed in debug mode when `lo = -i64::MAX` and
-/// `hi = i64::MAX`, which is the CI default for arithmetic tests
-/// at p >= 64).
+/// range without overflow.
 pub fn next_i64_in(state: &mut u64, lo: i64, hi: i64) -> i64 {
     debug_assert!(lo <= hi);
     let span = (i128::from(hi) - i128::from(lo) + 1) as u64;
@@ -93,53 +160,116 @@ pub fn sweep_size() -> u32 {
     }
 }
 
-/// The four precisions exercised by the CI sweep. Used for the
-/// arithmetic core and for the `parse` lane, where pfloat is
-/// expected to be bit-exact against MPFR at every tested precision.
-///
-/// `dead_code` is allowed because each `tests/differential_*.rs`
-/// file uses **either** this constant or
-/// [`TRANSCENDENTAL_PRECISIONS`], not both. The `mod.rs` module is
-/// compiled once per test crate, so the unused constant generates
-/// a warning under the test crate that uses the other one.
+/// The four precisions exercised by the CI sweep for arithmetic and
+/// parsing, where pfloat is expected to be bit-exact against MPFR at
+/// every tested precision.
 pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 
 /// Precisions used by transcendental and tier-1 special function
-/// differential tests. Capped at 256 bits because pfloat's
-/// elementary transcendentals (exp, ln, pow, sin, cos, tan, atan2,
-/// sinh, cosh, asinh, erf) all use **hardcoded 1024-bit constants**
-/// (`ln(2)`, `2/π`, `2/sqrt(π)`, etc.) for argument reduction or
-/// the leading coefficient. A 64-bit guard above target precision
-/// means target precisions above 960 bits exceed the constants'
-/// reach and produce divergence from MPFR. Phase 5 / 7 follow-up
-/// is to either extend the constants (4096-bit `ln(2)` etc.) or
-/// compute them on the fly via AGM-style algorithms.
+/// differential tests. Capped at 256 bits per slice-6h limitation
+/// #2: pfloat's elementary transcendentals (exp, ln, pow, sin, cos,
+/// tan, atan2, sinh, cosh, asinh, erf) all use hardcoded 1024-bit
+/// constants (`ln(2)`, `2/π`, `2/sqrt(π)`, etc.) for argument
+/// reduction or the leading coefficient. A 64-bit guard above
+/// target precision means target precisions above 960 bits exceed
+/// the constants' reach and produce divergence from MPFR.
+///
+/// Slice 7b lifts this restriction by computing the constants
+/// on-the-fly via AGM. Until then the transcendental lane stays at
+/// or below 256 bits target precision.
 pub const TRANSCENDENTAL_PRECISIONS: &[u32] = &[53, 113, 256];
 
-/// IEEE 754-2019 rounding modes exercised in the differential lane.
+/// All five IEEE 754-2019 rounding modes. Used by the differential
+/// tests for operations whose pfloat kernel is bit-exact correctly
+/// rounded under any mode: add, sub, mul, div, sqrt, fma, and
+/// decimal parsing. Slice 7a (ADR-0016) unblocks this list by
+/// landing the bit-exact `BigFloat`→`rug::Float` converter; the
+/// old `Display + parse` route lost up to 1 ULP under non-NE rounding
+/// and obscured the bit-exact kernel agreement.
+pub const BIT_EXACT_ROUNDING_MODES: &[RoundingMode] = &[
+    RoundingMode::NearestEven,
+    RoundingMode::NearestAway,
+    RoundingMode::TowardZero,
+    RoundingMode::TowardPositive,
+    RoundingMode::TowardNegative,
+];
+
+/// Rounding modes exercised by differential tests for operations
+/// whose pfloat kernel is correctly rounded only under NearestEven:
+/// all transcendentals (exp, ln, pow, sin, cos, tan, atan2, sinh,
+/// cosh, asinh), all tier-1 specials (erf, erfc, gamma, lgamma,
+/// digamma, beta), and AGM.
 ///
-/// **Currently NearestEven only.** The full five-mode sweep needs a
-/// bit-exact `BigFloat` ↔ `rug::Float` converter; the current
-/// [`bigfloat_to_rug`] helper goes via `BigFloat::Display` and
-/// `rug::Float::parse`, which is rounding-mode-aware and lossy by
-/// up to 1 ULP for values produced under non-NearestEven rounding
-/// (Display rounds at the precision under NearestEven; rug's parse
-/// rounds the same way; values that pfloat produced under, say,
-/// NearestAway lose the 1-ULP difference from NearestEven through
-/// the round-trip).
-///
-/// Concrete cases where this surfaces empirically:
-///
-/// - `div(-966132233652331, 1233101814760529)` at `p=53,
-///   NearestAway`: pfloat and MPFR disagree by 1 ULP — but pfloat
-///   under `NearestEven` matches MPFR exactly.
-/// - `sqrt(2473446)` at `p=53, NearestAway`: same artifact.
-/// - `fma(big, big, big)` whenever the exact `a*b+c` exceeds the
-///   precision: same artifact.
-///
-/// Full five-mode sweep is a tracked follow-up. The fix is either
-/// (a) a `pub` raw-parts accessor on [`BigFloat`] that lets the test
-/// helpers build a `rug::Float` directly from sign + exponent +
-/// limbs, or (b) a hex/binary radix Display on `BigFloat` that
-/// round-trips exactly under any rounding mode.
-pub const ALL_ROUNDING_MODES: &[RoundingMode] = &[RoundingMode::NearestEven];
+/// These kernels compute at working precision `target + 64` under
+/// `NearestEven` and apply the user's mode only at the final round
+/// to target precision. The fixed 64-bit guard is not Ziv-strategy
+/// retry: at tie cases the final round under non-NearestEven modes
+/// can diverge from MPFR's correctly-rounded result by up to 1 ULP.
+/// Slice 7c (Ziv retry on `pow`) and follow-ups will lift this
+/// restriction; until then the differential lane gates these kernels
+/// under NearestEven only, the same correctness floor that ships
+/// today.
+pub const NEAREST_EVEN_ROUNDING_MODES: &[RoundingMode] = &[RoundingMode::NearestEven];
+
+/// Back-compat alias preserved during the slice 7a rollout. New
+/// tests should pick [`BIT_EXACT_ROUNDING_MODES`] or
+/// [`NEAREST_EVEN_ROUNDING_MODES`] explicitly based on what the
+/// pfloat kernel under test guarantees.
+pub const ALL_ROUNDING_MODES: &[RoundingMode] = NEAREST_EVEN_ROUNDING_MODES;
+
+#[cfg(test)]
+mod converter_tests {
+    use super::*;
+
+    // Sanity test: converting a BigFloat built by arithmetic round
+    // trips through rug bit-exactly when both sides perform the same
+    // operation under NearestEven. If this passes but
+    // `differential_div` fails under non-NearestEven, the converter
+    // is sound and the divergence is a kernel correctness gap.
+    #[test]
+    fn converter_round_trips_under_nearest_even() {
+        let a = BigFloat::try_from_i64_exact(3, 53).unwrap();
+        let b = BigFloat::try_from_i64_exact(7, 53).unwrap();
+        let (q_bf, _) = a.div(&b, RoundingMode::NearestEven);
+        let q_rug = bigfloat_to_rug(&q_bf);
+        let a_r = rug_from_i64(3, 53);
+        let b_r = rug_from_i64(7, 53);
+        let (q_direct, _) = Float::with_val_round(53, &a_r / &b_r, Round::Nearest);
+        assert_eq!(
+            q_rug, q_direct,
+            "3/7 NE: bf->rug={q_rug}, direct={q_direct}"
+        );
+    }
+
+    // The slice-6h problem case under NearestEven: must round-trip.
+    #[test]
+    fn converter_round_trips_slice_6h_case_ne() {
+        let a = BigFloat::try_from_i64_exact(-966132233652331, 53).unwrap();
+        let b = BigFloat::try_from_i64_exact(1233101814760529, 53).unwrap();
+        let (q_bf, _) = a.div(&b, RoundingMode::NearestEven);
+        let q_rug = bigfloat_to_rug(&q_bf);
+        let a_r = rug_from_i64(-966132233652331, 53);
+        let b_r = rug_from_i64(1233101814760529, 53);
+        let (q_direct, _) = Float::with_val_round(53, &a_r / &b_r, Round::Nearest);
+        assert_eq!(
+            q_rug, q_direct,
+            "slice-6h NE: bf->rug={q_rug}, direct={q_direct}"
+        );
+    }
+
+    // Integer round-trips at several precisions.
+    #[test]
+    fn converter_round_trips_integers() {
+        for n in [1i64, -1, 7, -42, 1_000_000, -(1 << 50)] {
+            for p in [53u32, 113, 256, 1024] {
+                let bf = bigfloat_from_i64(n, p);
+                let bf_as_rug = bigfloat_to_rug(&bf);
+                let direct = rug_from_i64(n, p);
+                assert_eq!(
+                    bf_as_rug, direct,
+                    "i64 {n} at p={p}: bf->rug={bf_as_rug}, direct={direct}"
+                );
+            }
+        }
+    }
+}
