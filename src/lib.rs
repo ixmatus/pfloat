@@ -198,6 +198,25 @@
 //! reduces to `atan(y/x)` plus a `±π` shift for the second and
 //! third quadrants. All four are mirrored on `FixedFloat`.
 //!
+//! # Phase 6 (in progress) — verification
+//!
+//! Phase 6 lands verification infrastructure on the Phase 1–4
+//! surface. The work is internal: no public API changes. ADR-0012,
+//! ADR-0013, and ADR-0014 record the architecture.
+//!
+//! 6a: scaffold slice. `src/verify/` ships Kani harnesses for
+//! `add` (NaN propagation, ±∞ ± ±∞, ±0 ± ±0 sign rule, signaling-NaN
+//! status). `fuzz/` ships a libfuzzer-sys subcrate with a `parse`
+//! target (panic-freedom + `parse(fmt(x)) == x` round-trip).
+//! `tests/differential/` ships the MPFR differential lane against
+//! `rug`, with a canonical `differential_add` test that asserts
+//! bit-for-bit agreement between `BigFloat::add` and `rug::Float`
+//! addition for integer operands at precisions 53, 113, 256, 1024
+//! and all five rounding modes. The Kani CI lane is advisory
+//! (`continue-on-error: true`) per the `feedback_kani_ci_timeout_ok`
+//! engineering memory; the fuzz and differential lanes are blocking.
+//! Slices 6b–6g extend the pattern across the rest of the surface.
+//!
 //! 3e: hyperbolic family.
 //! [`sinh`](BigFloat::sinh) uses
 //! `(expm1(x) − expm1(−x))/2` to avoid the cancellation of
@@ -262,6 +281,8 @@ mod parse;
 mod rounding;
 mod sign;
 mod status;
+#[cfg(all(kani, feature = "big"))]
+mod verify;
 
 pub use sign::Sign;
 pub use status::Status;
