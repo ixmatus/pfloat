@@ -217,6 +217,24 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6h: differential lane local sweep + bit-exactness fixes. The
+//! first local MPFR sweep surfaced three structural limitations
+//! the original test infrastructure did not anticipate; all are
+//! documented in ADR-0014's status update. The differential lane
+//! is now NearestEven-only (bit-exact conversion via Display +
+//! `rug::Float::parse` is rounding-mode-aware and loses up to
+//! 1 ULP under non-NE modes; full 5-mode coverage needs a
+//! bit-exact converter). Transcendental tests are precision-
+//! capped at 256 bits via `TRANSCENDENTAL_PRECISIONS`
+//! (pfloat's hardcoded 1024-bit constants run out of bits above
+//! ~960 bits target precision). The `pow` differential uses 2
+//! ULP tolerance (slice 3c's `exp(y·ln(x))` composition is not
+//! correctly-rounded; bit-exact pow needs Ziv-strategy retry or
+//! an integer-exponent fast path). 22 differential test files
+//! pass under `--features=differential-mpfr` on macOS; 768
+//! total cargo tests pass under
+//! `--features=differential-mpfr,fixed,ops`.
+//!
 //! 6g: Phase 6 close. `fuzz/oss-fuzz/` ships the
 //! upstream-submission scaffold (`Dockerfile`, `build.sh`,
 //! `project.yaml`, `README.md`) for the OSS-Fuzz PR. ADR-0012,

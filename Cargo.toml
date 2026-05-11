@@ -75,8 +75,9 @@ kani = []
 # the broader oracle policy. The feature gates the differential test
 # files via `required-features` below — cargo does not allow
 # dev-dependencies to be `optional`, so the `rug` build itself runs
-# unconditionally on Unix.
-differential-mpfr = []
+# unconditionally on Unix. Implies `specials` so every math op the
+# differential tests call (ln, sinh, gamma, ...) is available.
+differential-mpfr = ["std", "fmt", "big", "specials"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.

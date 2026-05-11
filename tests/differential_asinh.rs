@@ -6,7 +6,7 @@ mod differential;
 
 use differential::{
     bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, rug_from_i64, sweep_size,
-    ALL_ROUNDING_MODES, SWEEP_PRECISIONS,
+    ALL_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 
 fn next_u64(state: &mut u64) -> u64 {
@@ -28,7 +28,7 @@ fn asinh_matches_mpfr_on_integer_inputs() {
     let mut state: u64 = u64::from_le_bytes(*b"pfloat6d");
     let cases = sweep_size().min(1_000);
 
-    for &p in SWEEP_PRECISIONS {
+    for &p in TRANSCENDENTAL_PRECISIONS {
         let cap = if p >= 64 {
             i64::MAX
         } else {

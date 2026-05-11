@@ -76,15 +76,19 @@ fn add_matches_mpfr_at_boundary_cases() {
     // A handful of hand-curated pairs that touch sign-of-zero,
     // exponent boundaries, and cancellation. These complement the
     // randomized sweep.
+    // Boundary values must fit in the smallest tested precision
+    // (53 bits) under try_from_i64_exact; |v| < 2^52.
     let pairs: &[(i64, i64)] = &[
         (0, 0),
         (0, 1),
         (1, -1),
         (1_000_000_000, -1_000_000_000),
-        (i64::MAX / 2, 1),
-        (i64::MIN / 2, -1),
+        (1_i64 << 50, 1),
+        (-(1_i64 << 50), -1),
         (1, 1),
         (-1, -1),
+        (1_000_000, 999_999),
+        (-999_999, 1_000_000),
     ];
     for &p in SWEEP_PRECISIONS {
         for &(a, b) in pairs {
