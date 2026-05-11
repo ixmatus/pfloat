@@ -80,33 +80,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials --all-targets -- -D warnings
 
-  # ---------- Kani proof harnesses (advisory, non-blocking) ----------
-  # Phase 6 lands the harness layout in slice 6a. ADR-0012 records
-  # the decision to gate this lane as advisory (`continue-on-error`)
-  # rather than blocking: ferrodec's experience (memory:
-  # `feedback_kani_ci_timeout_ok.md`) is that Kani's GitHub Actions
-  # runs time out reliably on transcendental-heavy surfaces. Failures
-  # surface in PR status; they do not block merge.
-  kani:
-    name: kani harnesses (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.PFLOAT_NIGHTLY }}
-      # The `kani-github-action` runs `cargo-kani ${args}` itself
-      # during its `Run Kani` composite step. Features must be
-      # passed via the `args` input — a follow-up `- run: cargo kani`
-      # step never fires because the action already failed by then.
-      # `specials` transitively pulls in trig + exp-log; fixed + ops
-      # cover the const-generic and operator-overload paths.
-      # `differential-mpfr` is omitted (would pull in the MPFR
-      # system dependency).
-      - uses: model-checking/kani-github-action@v1.1
-        with:
-          args: --features=std,fmt,big,fixed,ops,exp-log,trig,specials
+  # Kani harnesses moved to a manual `workflow_dispatch` trigger
+  # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status
+  # update records the shift: every-push runs were costly (~10
+  # minutes) without delivering useful evidence (proofs time out
+  # before completing on the transcendental-heavy surface). The
+  # harnesses still live in `src/verify/`; run them on demand from
+  # the Actions tab when you want a verification pass.
 
   # ---------- libFuzzer smoke ----------
   # ADR-0013 records the layout. Each target gets a 60-second smoke

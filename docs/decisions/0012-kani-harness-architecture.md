@@ -3,6 +3,32 @@
 - **Status**: accepted (Phase 6 complete)
 - **Date**: 2026-05-10
 
+## Status update (slice 6k, 2026-05-11)
+
+Moved the Kani CI lane from every-push to **manual
+`workflow_dispatch`**. Across slices 6c–6j the kani job ran on
+every push for ~10 minutes per run, never delivering a completed
+proof on pfloat's transcendental-heavy surface (the harnesses
+compile fine after the slice-6i Status-API fix and slice-6j
+action-args fix, but proof completion on `BigFloat` operands —
+whose `Vec<u64>` mantissa is hostile to CBMC's symbolic
+execution — has not yet succeeded in the time budget).
+
+The harnesses still live in `src/verify/`. They can be invoked
+locally with `cargo kani --features=...` whenever a verification
+pass is wanted. A dedicated `.github/workflows/kani.yml` workflow
+wires the same invocation behind a manual trigger (Actions tab →
+"Kani" → "Run workflow"), so the evidence run is available
+without paying for it on every push.
+
+This is a continuation of the advisory posture, not a reversal.
+The original ADR text already treated Kani as advisory; the
+slice-6k change moves the runtime cost from the push-time
+critical path to an explicit on-demand action. The trigger to
+revisit (Kani reliably completing within free-tier limits, or
+Anthropic-funded runners) still applies — at that point the
+manual workflow can move back to push-triggered.
+
 ## Status update (slice 6g, 2026-05-10)
 
 Phase 6 closed at 196 Kani harnesses across 38 op files in
