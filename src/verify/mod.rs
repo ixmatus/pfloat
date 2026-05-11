@@ -35,7 +35,16 @@ pub(super) mod helpers;
 
 mod add;
 mod div;
+mod exp;
+mod exp10;
+mod exp2;
+mod expm1;
 mod fma;
+mod ln;
+mod log10;
+mod log1p;
+mod log2;
 mod mul;
+mod pow;
 mod sqrt;
 mod sub;
