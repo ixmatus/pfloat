@@ -33,7 +33,7 @@ fn fma_signaling_nan_in_a_raises_invalid() {
     let (r, status) = a.fma(&b, &c, RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(0 × ∞) + 1` raises `INVALID` and returns a quiet NaN.
@@ -44,7 +44,7 @@ fn fma_zero_times_inf_plus_finite_is_nan_invalid() {
     let c = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (r, status) = a.fma(&b, &c, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(0 × ∞) + qNaN` propagates the NaN **without** an additional
@@ -59,7 +59,7 @@ fn fma_zero_times_inf_plus_qnan_no_extra_invalid() {
     let (r, status) = a.fma(&b, &c, RoundingMode::NearestEven);
     assert!(r.is_nan());
     // c is quiet NaN: no INVALID expected from the 0×∞ product.
-    assert!(!status.contains(Status::INVALID));
+    assert!(!status.invalid());
 }
 
 /// `(+∞) × 1 + 0` is `+∞` (no flag).
@@ -71,5 +71,5 @@ fn fma_inf_times_finite_plus_zero_is_inf() {
     let (r, status) = a.fma(&b, &c, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

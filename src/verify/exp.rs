@@ -21,7 +21,7 @@ fn exp_signaling_nan_raises_invalid() {
     let (r, status) = a.exp(RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -30,7 +30,7 @@ fn exp_pos_inf_is_pos_inf() {
     let (r, status) = a.exp(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -39,5 +39,5 @@ fn exp_neg_inf_is_pos_zero() {
     let (r, status) = a.exp(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

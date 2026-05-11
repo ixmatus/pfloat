@@ -29,7 +29,7 @@ fn div_signaling_nan_raises_invalid() {
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `0 / 0` raises `INVALID` and returns a quiet NaN.
@@ -39,7 +39,7 @@ fn div_zero_by_zero_is_nan_invalid() {
     let b = BigFloat::try_new_zero(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `∞ / ∞` raises `INVALID` and returns a quiet NaN.
@@ -49,7 +49,7 @@ fn div_inf_by_inf_is_nan_invalid() {
     let b = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `1 / (+0)` is `+∞` and raises `DIV_BY_ZERO` per IEEE 754-2019 §7.3.
@@ -60,7 +60,7 @@ fn div_pos_finite_by_pos_zero_is_pos_inf_div_by_zero() {
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 /// `1 / (−0)` is `−∞` and raises `DIV_BY_ZERO`.
@@ -71,7 +71,7 @@ fn div_pos_finite_by_neg_zero_is_neg_inf_div_by_zero() {
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_negative());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 /// `0 / 1` is `+0` (no flag); sign comes from the dividend.
@@ -82,7 +82,7 @@ fn div_pos_zero_by_pos_finite_is_pos_zero() {
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `(+∞) / 1` is `+∞` (no flag).
@@ -93,5 +93,5 @@ fn div_pos_inf_by_pos_finite_is_pos_inf() {
     let (r, status) = a.div(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

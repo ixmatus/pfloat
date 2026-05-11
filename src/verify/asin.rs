@@ -21,7 +21,7 @@ fn asin_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.asin(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -29,7 +29,7 @@ fn asin_out_of_domain_is_nan_invalid() {
     let a = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
     let (r, status) = a.asin(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -37,7 +37,7 @@ fn asin_pos_inf_is_nan_invalid() {
     let a = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.asin(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -46,5 +46,5 @@ fn asin_neg_zero_is_neg_zero() {
     let (r, status) = a.asin(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

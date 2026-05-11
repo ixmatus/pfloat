@@ -24,7 +24,7 @@ fn atan2_signaling_nan_raises_invalid() {
     let x = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (r, status) = y.atan2(&x, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `atan2(+0, +1) = +0`.
@@ -35,7 +35,7 @@ fn atan2_pos_zero_pos_one_is_pos_zero() {
     let (r, status) = y.atan2(&x, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `atan2(-0, +1) = -0`.
@@ -46,5 +46,5 @@ fn atan2_neg_zero_pos_one_is_neg_zero() {
     let (r, status) = y.atan2(&x, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

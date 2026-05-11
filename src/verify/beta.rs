@@ -32,7 +32,7 @@ fn beta_signaling_nan_raises_invalid() {
     let b = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (r, status) = a.beta(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -41,7 +41,7 @@ fn beta_zero_a_is_nan_invalid() {
     let b = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (r, status) = a.beta(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -50,5 +50,5 @@ fn beta_neg_a_is_nan_invalid() {
     let b = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (r, status) = a.beta(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }

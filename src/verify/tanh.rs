@@ -19,7 +19,7 @@ fn tanh_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.tanh(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -29,7 +29,7 @@ fn tanh_pos_inf_is_one() {
     let one = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (cmp, _) = r.partial_cmp(&one);
     assert_eq!(cmp, Some(core::cmp::Ordering::Equal));
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -39,7 +39,7 @@ fn tanh_neg_inf_is_neg_one() {
     let neg_one = BigFloat::try_from_i64_exact(-1, 53).expect("-1 fits");
     let (cmp, _) = r.partial_cmp(&neg_one);
     assert_eq!(cmp, Some(core::cmp::Ordering::Equal));
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -48,5 +48,5 @@ fn tanh_neg_zero_is_neg_zero() {
     let (r, status) = a.tanh(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

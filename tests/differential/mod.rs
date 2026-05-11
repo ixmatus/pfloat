@@ -10,6 +10,10 @@
 //! equality of `rug::Float` values is the right test.
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
+// Each `tests/differential_*.rs` test crate uses a different
+// subset of the helpers below; the unused subset would otherwise
+// generate `dead_code` warnings under that crate's compilation.
+#![allow(dead_code)]
 
 use pfloat::{BigFloat, RoundingMode};
 use rug::float::Round;
@@ -53,6 +57,31 @@ pub fn rug_from_i64(n: i64, p: u32) -> Float {
     Float::with_val(p, n)
 }
 
+/// Splitmix64 step. Used by each `differential_*` test for
+/// deterministic input generation; consolidated here so the
+/// helper isn't duplicated 22 times and so the i64 range math is
+/// fixed in one place.
+pub fn next_u64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Draw an i64 uniformly from `[lo, hi]` using the splitmix64
+/// state. Uses i128 arithmetic so the span can cover the full i64
+/// range without overflow (the previous `(hi - lo) as u64 + 1`
+/// form overflowed in debug mode when `lo = -i64::MAX` and
+/// `hi = i64::MAX`, which is the CI default for arithmetic tests
+/// at p >= 64).
+pub fn next_i64_in(state: &mut u64, lo: i64, hi: i64) -> i64 {
+    debug_assert!(lo <= hi);
+    let span = (i128::from(hi) - i128::from(lo) + 1) as u64;
+    let offset = next_u64(state) % span;
+    (i128::from(lo) + i128::from(offset)) as i64
+}
+
 /// Number of random pairs exercised per `(precision, mode)` cell in
 /// each cargo-test run. The deep sweep (10⁶) runs locally under
 /// `PFLOAT_DEEP=1` per ADR-0014.
@@ -67,6 +96,12 @@ pub fn sweep_size() -> u32 {
 /// The four precisions exercised by the CI sweep. Used for the
 /// arithmetic core and for the `parse` lane, where pfloat is
 /// expected to be bit-exact against MPFR at every tested precision.
+///
+/// `dead_code` is allowed because each `tests/differential_*.rs`
+/// file uses **either** this constant or
+/// [`TRANSCENDENTAL_PRECISIONS`], not both. The `mod.rs` module is
+/// compiled once per test crate, so the unused constant generates
+/// a warning under the test crate that uses the other one.
 pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 
 /// Precisions used by transcendental and tier-1 special function

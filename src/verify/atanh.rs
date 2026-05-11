@@ -20,7 +20,7 @@ fn atanh_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -28,7 +28,7 @@ fn atanh_above_one_is_nan_invalid() {
     let a = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -36,7 +36,7 @@ fn atanh_pos_inf_is_nan_invalid() {
     let a = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -45,7 +45,7 @@ fn atanh_pos_one_is_pos_inf_div_by_zero() {
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 #[kani::proof]
@@ -54,7 +54,7 @@ fn atanh_neg_one_is_neg_inf_div_by_zero() {
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_negative());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 #[kani::proof]
@@ -63,5 +63,5 @@ fn atanh_neg_zero_is_neg_zero() {
     let (r, status) = a.atanh(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

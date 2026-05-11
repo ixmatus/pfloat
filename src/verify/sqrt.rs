@@ -24,7 +24,7 @@ fn sqrt_signaling_nan_raises_invalid() {
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `sqrt(−1)` raises `INVALID` and returns a quiet NaN.
@@ -33,7 +33,7 @@ fn sqrt_neg_finite_is_nan_invalid() {
     let a = BigFloat::try_from_i64_exact(-1, 53).expect("-1 fits");
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `sqrt(−∞)` raises `INVALID` and returns a quiet NaN.
@@ -42,7 +42,7 @@ fn sqrt_neg_inf_is_nan_invalid() {
     let a = BigFloat::try_new_infinity(Sign::Negative, 53).expect("precision >= 1");
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `sqrt(−0) = −0` per IEEE 754-2019 §5.4.1. Sign is preserved
@@ -53,7 +53,7 @@ fn sqrt_neg_zero_is_neg_zero() {
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `sqrt(+0) = +0`.
@@ -63,7 +63,7 @@ fn sqrt_pos_zero_is_pos_zero() {
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `sqrt(+∞) = +∞`.
@@ -73,5 +73,5 @@ fn sqrt_pos_inf_is_pos_inf() {
     let (r, status) = a.sqrt(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

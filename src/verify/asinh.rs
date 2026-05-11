@@ -21,7 +21,7 @@ fn asinh_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.asinh(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -30,7 +30,7 @@ fn asinh_pos_inf_is_pos_inf() {
     let (r, status) = a.asinh(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -39,7 +39,7 @@ fn asinh_neg_inf_is_neg_inf() {
     let (r, status) = a.asinh(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -48,5 +48,5 @@ fn asinh_neg_zero_is_neg_zero() {
     let (r, status) = a.asinh(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
