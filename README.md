@@ -17,14 +17,11 @@ table maker's dilemma literature for correctly rounded transcendentals, and publ
 The agent is instructed to cite recalled sources rather than reproduce verbatim, to surface provenance uncertainty rather than hide it, and to choose surface forms (identifiers, helper
 decomposition, file layout) fresh for idiomatic Rust rather than copying from existing C and C++ reference implementations (MPFR is the principal behavioral oracle).
 
-These are instructions to the agent, not guarantees about every line of output. A verbatim reproduction or an unflagged derivation could slip through. The project's defense against that is the
-instruction discipline above plus the human reviewer's ability to notice architectural smells that suggest a problem upstream, not a clean room audit. If you spot a passage that reads like a copy   from a source it should not be copied from, please open an issue.
+These are instructions to the agent, not guarantees about every line of output. A verbatim reproduction or an unflagged derivation could slip through. The project's defense against that is the instruction discipline above plus the human reviewer's ability to notice architectural smells that suggest a problem upstream, not a clean room audit. If you spot a passage that reads like a copy from a source it should not be copied from, please open an issue.
 
-**Verification.** The verification design places correctness in the type system where it can (precision and rounding mode as types, the `FixedFloat<const PREC: u32>` parameterization that lets
-`no_std` consumers escape `alloc`, sticky exception flags as observable state), in formal proof harnesses (Kani) where the cost is justified, in IEEE 754-2019 conformance vectors and the worst
-case rounding tables run as integration tests, in differential tests against MPFR on a separate CI lane behind a feature flag, and in fuzz coverage of every parser entry. CI runs the usual lints
-and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks
-carry a written justification at the call site.
+**Verification.** The verification design places correctness in the type system where it can (precision and rounding mode as types, compile-time precision parameterization that lets `no_std`
+consumers escape `alloc`, IEEE 754 exception semantics surfaced as observable state), in formal proof harnesses (Kani) where the cost is justified, in IEEE 754-2019 conformance vectors and the
+worst case rounding tables run as integration tests, in differential tests against a trusted reference oracle on a separate CI lane, and in fuzz coverage of parser entry points. CI runs the usual lints and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks carry a written justification at the call site.
 
 **Scope.** pfloat is a personal project. The intended consumer is the broader Rust scientific and embedded ecosystem (anyone who needs more than `f64` with correctly rounded results and no C
 toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate has not reached 1.0 and is unpublished; the design, the
