@@ -1,7 +1,34 @@
 # ADR-0014: MPFR differential CI gating and implementation choice
 
-- **Status**: accepted
+- **Status**: accepted (Phase 6 complete)
 - **Date**: 2026-05-10
+
+## Status update (slice 6g, 2026-05-10)
+
+Phase 6 closed with 22 differential test files under `tests/`,
+one per op (or per cluster where the underlying kernel is
+shared): `differential_{add, sub, mul, div, sqrt, fma, exp, ln,
+pow, sin, cos, tan, atan2, sinh, cosh, asinh, erf, gamma,
+lgamma, digamma, beta, parse}.rs`. Each is gated by
+`required-features = ["differential-mpfr"]` so default builds
+stay pure Rust. The `rug` safe wrapper covered the full surface
+without an `unsafe` block in test code.
+
+The 10⁴-in-CI / 10⁶-local split via `PFLOAT_DEEP=1` is in place;
+the actual deep-sweep ritual is the Phase 6 exit pass and
+becomes a regular slice-cadence step once Phase 5 (tier-2
+specials) lands.
+
+The macOS-runner cost of building `gmp-mpfr-sys` from source is
+real (~2 minutes cold). pfloat's CI test matrix avoids this by
+not enabling `differential-mpfr` in the cross-OS matrix row —
+the dedicated `differential` job (Linux-only) covers it with
+`apt-get install libmpfr-dev libgmp-dev` in ~30 seconds. The
+gating is documented in `.github/workflows/ci.yml`.
+
+The astro-float-removal clause from this ADR's body remains in
+effect; ADR-0008's secondary-oracle text is permanently
+superseded.
 
 ## Context
 

@@ -1,0 +1,10 @@
+homepage: "https://github.com/ixmatus/pfloat"
+language: rust
+primary_contact: "parnell@digitalmentat.com"
+auto_ccs:
+  - "parnell@digitalmentat.com"
+main_repo: "https://github.com/ixmatus/pfloat"
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address

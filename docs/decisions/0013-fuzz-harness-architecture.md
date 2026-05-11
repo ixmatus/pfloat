@@ -1,7 +1,29 @@
 # ADR-0013: Fuzz harness architecture
 
-- **Status**: accepted
+- **Status**: accepted (Phase 6 complete)
 - **Date**: 2026-05-10
+
+## Status update (slice 6g, 2026-05-10)
+
+Phase 6 closed with seven fuzz targets covering the full op
+surface: `parse`, `arith`, `exp_log_family`, `trig`, `hyperbolic`,
+`specials`, and `fmt`. The cluster-level grain (one target per
+feature cluster, not one per op) kept the count bounded and
+manageable. The non-workspace `fuzz/` subcrate layout worked
+without friction; the `path = ".."` dep on pfloat compiled
+cleanly under every slice.
+
+The OSS-Fuzz upstream PR scaffolding lives in `fuzz/oss-fuzz/`
+(Dockerfile, build.sh, project.yaml, README.md). Submission is a
+post-Phase-6 follow-up. The upstream PR is tracked in the slice
+6g merge commit.
+
+The no-checked-in-corpus policy held. Counterexamples that
+surface in CI's 60-second smoke or in local deep runs are
+expected to be promoted to `.proptest-regressions` entries
+against the relevant property test, per
+`feedback_proptest_regression_seeds.md`. No counterexamples
+surfaced during slice cadence; the property suite stayed clean.
 
 ## Context
 
