@@ -14,9 +14,18 @@ without friction; the `path = ".."` dep on pfloat compiled
 cleanly under every slice.
 
 The OSS-Fuzz upstream PR scaffolding lives in `fuzz/oss-fuzz/`
-(Dockerfile, build.sh, project.yaml, README.md). Submission is a
-post-Phase-5 follow-up. The upstream PR is tracked in the slice
-6g merge commit.
+(Dockerfile, build.sh, project.yaml, README.md). The upstream
+submission is **descoped**. Rationale: pfloat's local
+libfuzzer-sys lane already gates panic-freedom in CI on every
+push, the MPFR differential lane covers correctness at scales
+fuzz cannot reach, and coupling pfloat to a Google-operated
+continuous-fuzzing service sits poorly against the
+Permacomputing-horizon framing this project is built to. The
+marginal value of continuous fuzzing on Google's compute does
+not earn its keep against the maintenance cost of a cross-repo
+PR (build.sh upkeep whenever fuzz targets change). The
+scaffolding stays in `fuzz/oss-fuzz/` as zero-cost optionality
+for any future contributor who wants to drive the upstream PR.
 
 The no-checked-in-corpus policy held. Counterexamples that
 surface in CI's 60-second smoke or in local deep runs are
