@@ -364,7 +364,7 @@ ADR-0008.
 
 ### Kani harnesses
 
-Phase 6 lands the harness layout copy-pasted from ferrodec, then
+Phase 5 lands the harness layout copy-pasted from ferrodec, then
 adapted. Initial properties:
 
 - No panic on bounded-precision inputs for `+`, `−`, `×`, `÷`,
@@ -410,13 +410,22 @@ exit criterion in CI.
 | 2 | string I/O, conformance harness | 2 |
 | 3 | elementary transcendentals (exp, log, trig, hyperbolic, pow) | 6–8 |
 | 4 | tier-1 specials (gamma family, erf family) | 4 |
-| 5 | tier-2 specials (Bessel, zeta, Ei/Si/Ci, Airy, AGM) | 6–8 |
-| 6 | Kani harnesses, fuzz harnesses, OSS-Fuzz | 2 |
+| 5 | Kani harnesses, fuzz harnesses, OSS-Fuzz | 2 |
+| 6 | tier-2 specials (Bessel, zeta, Ei/Si/Ci, Airy, AGM) | 6–8 |
 | 7 | performance tuning, threshold calibration | 2–4 |
 | 8 | docs, README conformance evidence, 1.0 tag | 1 |
 
 Each phase merges to `main` via a signed commit; each ADR lands
 in the same merge as the code that ratifies it.
+
+Phases 5 and 6 swapped from the originally-tabulated order:
+the verification surface (Kani, fuzz, OSS-Fuzz) landed before
+the tier-2 specials. Git history reflects this directly. The
+slices that built out verification are labelled `slice-6a`
+through `slice-6k` (the leading `6` predates the renumbering
+and is preserved verbatim as the git-historical record); the
+ADRs they ratify (0012, 0013, 0014) carry status-update
+sections that read against the renumbered phase plan.
 
 ## Caveats and open questions
 

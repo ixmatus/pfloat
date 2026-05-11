@@ -1,6 +1,6 @@
 # ADR-0014: MPFR differential CI gating and implementation choice
 
-- **Status**: accepted (Phase 6 complete)
+- **Status**: accepted (Phase 5 complete)
 - **Date**: 2026-05-10
 
 ## Status update (slice 6h, 2026-05-10)
@@ -9,7 +9,7 @@ First full local MPFR sweep surfaced three structural limitations
 on the differential lane that the original ADR text did not
 anticipate. All three are documented in the test code and
 either patched (constants in `tests/differential/mod.rs`) or
-tracked as Phase 5 / Phase 7 follow-ups:
+tracked as Phase 6 / Phase 7 follow-ups:
 
 1. **Rounding mode coverage is NearestEven only**, not all five.
    The `bigfloat_to_rug` helper goes via `BigFloat::Display` and
@@ -54,7 +54,7 @@ in roughly 5 minutes total. 768 cargo tests pass overall
 
 ## Status update (slice 6g, 2026-05-10)
 
-Phase 6 closed with 22 differential test files under `tests/`,
+Phase 5 closed with 22 differential test files under `tests/`,
 one per op (or per cluster where the underlying kernel is
 shared): `differential_{add, sub, mul, div, sqrt, fma, exp, ln,
 pow, sin, cos, tan, atan2, sinh, cosh, asinh, erf, gamma,
@@ -64,8 +64,8 @@ stay pure Rust. The `rug` safe wrapper covered the full surface
 without an `unsafe` block in test code.
 
 The 10⁴-in-CI / 10⁶-local split via `PFLOAT_DEEP=1` is in place;
-the actual deep-sweep ritual is the Phase 6 exit pass and
-becomes a regular slice-cadence step once Phase 5 (tier-2
+the actual deep-sweep ritual is the Phase 5 exit pass and
+becomes a regular slice-cadence step once Phase 6 (tier-2
 specials) lands.
 
 The macOS-runner cost of building `gmp-mpfr-sys` from source is
@@ -83,7 +83,7 @@ superseded.
 
 ADR-0008 established MPFR via `gmp-mpfr-sys` as the primary
 differential oracle, with `astro-float` as a secondary pure-Rust
-oracle on the default Linux lane. Phase 6 planning revisited the
+oracle on the default Linux lane. Phase 5 planning revisited the
 secondary-oracle clause and concluded that **MPFR alone is the right
 sole oracle** for pfloat:
 
@@ -110,7 +110,7 @@ safe wrapper for `gmp-mpfr-sys` is **`rug`**, which provides a
 high-level type-safe API over the same MPFR binary. `rug` is the
 right surface for pfloat's differential tests.
 
-A second question Phase 6 settles: the CI sweep size. DESIGN.md
+A second question Phase 5 settles: the CI sweep size. DESIGN.md
 states "10⁶ random inputs per op per rounding mode" as the Phase 1
 exit criterion for arithmetic. Running 10⁶ inputs per
 op × precision × rounding mode × cluster in every CI run is

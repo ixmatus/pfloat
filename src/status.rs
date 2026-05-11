@@ -3,7 +3,7 @@
 //! [`Status`] packs the five IEEE 754-2019 sticky exception flags
 //! (`INVALID`, `DIV_BY_ZERO`, `OVERFLOW`, `UNDERFLOW`, `INEXACT`)
 //! into a single byte. The bit layout matches ferrodec's
-//! `src/status.rs::Status` so the differential lane in Phase 6 has a
+//! `src/status.rs::Status` so the differential lane in Phase 5 has a
 //! 1:1 translation.
 //!
 //! Two access patterns coexist:

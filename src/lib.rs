@@ -108,7 +108,7 @@
 //! compose with a free exponent shift for the `2^k` factor. Fixed
 //! 64-bit guard above target precision; full Ziv-strategy retry
 //! deferred. Lefèvre–Muller worst-case verification wires in during
-//! Phase 6.
+//! Phase 5.
 //!
 //! 3b: [`BigFloat::ln`](BigFloat::ln) (and `FixedFloat<PREC>::ln`).
 //! Range-reduce by the binary exponent
@@ -198,9 +198,9 @@
 //! reduces to `atan(y/x)` plus a `±π` shift for the second and
 //! third quadrants. All four are mirrored on `FixedFloat`.
 //!
-//! # Phase 6 (in progress) — verification
+//! # Phase 5 — verification
 //!
-//! Phase 6 lands verification infrastructure on the Phase 1–4
+//! Phase 5 lands verification infrastructure on the Phase 1–4
 //! surface. The work is internal: no public API changes. ADR-0012,
 //! ADR-0013, and ADR-0014 record the architecture.
 //!
@@ -235,16 +235,16 @@
 //! total cargo tests pass under
 //! `--features=differential-mpfr,fixed,ops`.
 //!
-//! 6g: Phase 6 close. `fuzz/oss-fuzz/` ships the
+//! 6g: Phase 5 close. `fuzz/oss-fuzz/` ships the
 //! upstream-submission scaffold (`Dockerfile`, `build.sh`,
 //! `project.yaml`, `README.md`) for the OSS-Fuzz PR. ADR-0012,
-//! ADR-0013, and ADR-0014 move to `accepted (Phase 6 complete)`
+//! ADR-0013, and ADR-0014 move to `accepted (Phase 5 complete)`
 //! with status-update sections documenting what landed and what
-//! was deferred. Phase 6 final counts: 196 Kani harnesses across
+//! was deferred. Phase 5 final counts: 196 Kani harnesses across
 //! 38 op files, 7 fuzz targets, 22 differential test files.
 //! 744 tests pass under
 //! `--features=std,fmt,big,fixed,ops,exp-log,trig,specials`
-//! unchanged across all of Phase 6.
+//! unchanged across all of Phase 5.
 //!
 //! 6f: classification, comparison, parse, and fmt verification.
 //! Four new `src/verify/<op>.rs` files cover the non-arithmetic
@@ -320,7 +320,7 @@
 //! `a + 0 ≡ a`, `a × 1 ≡ a`, and `a − a = 0`. Five new differential
 //! tests (`differential_{sub,mul,div,sqrt,fma}.rs`) mirror the
 //! integer-operand pattern from `differential_add.rs`. Slice 6b
-//! closes DESIGN.md's verbatim Phase 6 properties for the
+//! closes DESIGN.md's verbatim Phase 5 properties for the
 //! arithmetic core.
 //!
 //! 3e: hyperbolic family.

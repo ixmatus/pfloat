@@ -1,6 +1,6 @@
 # ADR-0012: Kani harness architecture and CI gating
 
-- **Status**: accepted (Phase 6 complete)
+- **Status**: accepted (Phase 5 complete)
 - **Date**: 2026-05-10
 
 ## Status update (slice 6k, 2026-05-11)
@@ -31,9 +31,9 @@ manual workflow can move back to push-triggered.
 
 ## Status update (slice 6g, 2026-05-10)
 
-Phase 6 closed at 196 Kani harnesses across 38 op files in
+Phase 5 closed at 196 Kani harnesses across 38 op files in
 `src/verify/`. The advisory-CI decision held without modification
-across all seven Phase 6 slices. No proof regressions were
+across all seven Phase 5 slices. No proof regressions were
 observed locally during slice cadence (every slice ran clippy +
 rustfmt + thumbv6m + test). The `continue-on-error` flag on the
 CI lane remains the right gate; the trigger to revisit
@@ -53,9 +53,9 @@ differential lane.
 
 ## Context
 
-Phase 6 lands the verification surface that DESIGN.md scopes:
+Phase 5 lands the verification surface that DESIGN.md scopes:
 
-> Phase 6 lands the harness layout copy-pasted from ferrodec, then
+> Phase 5 lands the harness layout copy-pasted from ferrodec, then
 > adapted. Initial properties:
 >
 > - No panic on bounded-precision inputs for `+`, `−`, `×`, `÷`,
