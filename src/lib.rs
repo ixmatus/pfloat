@@ -217,6 +217,21 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6c: exp/log family verification. Nine new `src/verify/<op>.rs`
+//! files (`exp`, `expm1`, `exp2`, `exp10`, `ln`, `log1p`, `log2`,
+//! `log10`, `pow`) cover NaN propagation, signaling-NaN INVALID,
+//! the `ln(±0) = −∞ + DIV_BY_ZERO` form, the
+//! `ln(negative_finite) → qNaN + INVALID` and `ln(−∞) → qNaN +
+//! INVALID` forms, the `pow(NaN, ±0) = 1` and `pow(+1, NaN) = 1`
+//! §9.2.1 trumping rules, `pow(±0, neg) = ±∞ + DIV_BY_ZERO`,
+//! `pow(±0, pos) = ±0`, `pow(±∞, neg) = ±0`, `pow(±∞, pos) = ±∞`,
+//! and the `pow(neg, non-integer) → qNaN + INVALID` rule. The
+//! `exp_log_family` fuzz target dispatches across all nine ops.
+//! Three new differential tests (`differential_{exp,ln,pow}.rs`)
+//! cover one differential per mathematically distinct kernel
+//! (the *2/*10/m1/1p variants share underlying kernels with `exp`
+//! and `ln`).
+//!
 //! 6b: arithmetic-core verification. Kani harnesses for `sub`,
 //! `mul`, `div`, `sqrt`, and `fma` cover NaN propagation,
 //! signaling-NaN INVALID, the IEEE 754 invalid forms (`±0 × ±∞`,

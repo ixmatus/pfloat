@@ -40,3 +40,10 @@ path = "fuzz_targets/arith.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "exp_log_family"
+path = "fuzz_targets/exp_log_family.rs"
+test = false
+doc = false
+bench = false

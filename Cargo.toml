@@ -121,6 +121,21 @@ name = "differential_fma"
 path = "tests/differential_fma.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "differential_exp"
+path = "tests/differential_exp.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_ln"
+path = "tests/differential_ln.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_pow"
+path = "tests/differential_pow.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
