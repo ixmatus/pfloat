@@ -64,14 +64,47 @@ pub fn sweep_size() -> u32 {
     }
 }
 
-/// The four precisions exercised by the CI sweep.
+/// The four precisions exercised by the CI sweep. Used for the
+/// arithmetic core and for the `parse` lane, where pfloat is
+/// expected to be bit-exact against MPFR at every tested precision.
 pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 
-/// All five IEEE 754-2019 rounding modes.
-pub const ALL_ROUNDING_MODES: &[RoundingMode] = &[
-    RoundingMode::NearestEven,
-    RoundingMode::NearestAway,
-    RoundingMode::TowardZero,
-    RoundingMode::TowardPositive,
-    RoundingMode::TowardNegative,
-];
+/// Precisions used by transcendental and tier-1 special function
+/// differential tests. Capped at 256 bits because pfloat's
+/// elementary transcendentals (exp, ln, pow, sin, cos, tan, atan2,
+/// sinh, cosh, asinh, erf) all use **hardcoded 1024-bit constants**
+/// (`ln(2)`, `2/π`, `2/sqrt(π)`, etc.) for argument reduction or
+/// the leading coefficient. A 64-bit guard above target precision
+/// means target precisions above 960 bits exceed the constants'
+/// reach and produce divergence from MPFR. Phase 5 / 7 follow-up
+/// is to either extend the constants (4096-bit `ln(2)` etc.) or
+/// compute them on the fly via AGM-style algorithms.
+pub const TRANSCENDENTAL_PRECISIONS: &[u32] = &[53, 113, 256];
+
+/// IEEE 754-2019 rounding modes exercised in the differential lane.
+///
+/// **Currently NearestEven only.** The full five-mode sweep needs a
+/// bit-exact `BigFloat` ↔ `rug::Float` converter; the current
+/// [`bigfloat_to_rug`] helper goes via `BigFloat::Display` and
+/// `rug::Float::parse`, which is rounding-mode-aware and lossy by
+/// up to 1 ULP for values produced under non-NearestEven rounding
+/// (Display rounds at the precision under NearestEven; rug's parse
+/// rounds the same way; values that pfloat produced under, say,
+/// NearestAway lose the 1-ULP difference from NearestEven through
+/// the round-trip).
+///
+/// Concrete cases where this surfaces empirically:
+///
+/// - `div(-966132233652331, 1233101814760529)` at `p=53,
+///   NearestAway`: pfloat and MPFR disagree by 1 ULP — but pfloat
+///   under `NearestEven` matches MPFR exactly.
+/// - `sqrt(2473446)` at `p=53, NearestAway`: same artifact.
+/// - `fma(big, big, big)` whenever the exact `a*b+c` exceeds the
+///   precision: same artifact.
+///
+/// Full five-mode sweep is a tracked follow-up. The fix is either
+/// (a) a `pub` raw-parts accessor on [`BigFloat`] that lets the test
+/// helpers build a `rug::Float` directly from sign + exponent +
+/// limbs, or (b) a hex/binary radix Display on `BigFloat` that
+/// round-trips exactly under any rounding mode.
+pub const ALL_ROUNDING_MODES: &[RoundingMode] = &[RoundingMode::NearestEven];

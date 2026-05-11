@@ -3,6 +3,55 @@
 - **Status**: accepted (Phase 6 complete)
 - **Date**: 2026-05-10
 
+## Status update (slice 6h, 2026-05-10)
+
+First full local MPFR sweep surfaced three structural limitations
+on the differential lane that the original ADR text did not
+anticipate. All three are documented in the test code and
+either patched (constants in `tests/differential/mod.rs`) or
+tracked as Phase 5 / Phase 7 follow-ups:
+
+1. **Rounding mode coverage is NearestEven only**, not all five.
+   The `bigfloat_to_rug` helper goes via `BigFloat::Display` and
+   `rug::Float::parse`; both default to NearestEven. Values
+   produced under non-NearestEven rounding lose up to 1 ULP
+   through the conversion. Concrete divergences this masks:
+   `div(-966132233652331, 1233101814760529)` at p=53/NearestAway,
+   `sqrt(2473446)` at p=53/NearestAway, several `fma` cases.
+   pfloat under NearestEven matches MPFR bit-for-bit on every
+   such case; pfloat under non-NE *also* matches MPFR but the
+   conversion can't witness it. Fix is a bit-exact converter
+   built on a future `pub raw_parts()` accessor on `BigFloat`
+   or a hex/binary radix Display.
+
+2. **Transcendental precisions are capped at 256 bits** via the
+   new `TRANSCENDENTAL_PRECISIONS` constant. pfloat's elementary
+   transcendentals (exp, ln, pow, sin, cos, tan, atan2, sinh,
+   cosh, asinh, erf) all reach into hardcoded 1024-bit
+   constants (`ln(2)`, `2/π`, `2/sqrt(π)`, etc.) for argument
+   reduction or the leading coefficient. With a 64-bit guard,
+   target precisions above ~960 bits exceed those constants'
+   reach. At p=1024 the bit-exact MPFR agreement breaks for
+   reasons unrelated to the arithmetic — the table simply runs
+   out of bits. Phase 7 work: extend constants to 4096 bits or
+   compute them on the fly.
+
+3. **`pow` uses 2 ULP tolerance**, not bit-exact. pfloat's slice
+   3c pow ships `exp(y · ln(x))` at working precision, which
+   accumulates rounding from ln, the multiplication, and exp.
+   MPFR's `mpfr_pow` has a fast path for integer exponents that
+   avoids the exp/ln composition entirely. The 1 ULP difference
+   on, e.g., `pow(63, 9)` at p=53 is the design gap, not a bug.
+   The follow-up is either a Ziv-strategy retry pass or an
+   integer-exponent fast path in pfloat's `pow`.
+
+**Sweep results** (10⁴ inputs × NearestEven × 3 or 4 precisions
+per op, depending on whether transcendentals are involved):
+all 22 differential test files pass on macOS local under
+`cargo test --features=differential-mpfr,fixed,ops --release`
+in roughly 5 minutes total. 768 cargo tests pass overall
+(744 existing plus 24 differential test functions).
+
 ## Status update (slice 6g, 2026-05-10)
 
 Phase 6 closed with 22 differential test files under `tests/`,

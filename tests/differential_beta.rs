@@ -68,8 +68,9 @@ fn beta_matches_mpfr_lgamma_composition_loosely() {
             // Allow 2 ULP slack because the oracle compounds three
             // ln_gamma calls plus an exp.
             let diff = rug::Float::with_val(p_oracle, &bf_as_rug - &rug_r).abs();
+            let ulp_scale = 2.0_f64.powi(-(p as i32 - 2));
             let ulp = rug::Float::with_val(p_oracle, &rug_r).abs()
-                * rug::Float::with_val(p_oracle, 2.0).pow(-(p as i32 - 2));
+                * rug::Float::with_val(p_oracle, ulp_scale);
             assert!(
                 diff <= ulp,
                 "beta({a}, {b}) at p={p}, mode={mode:?}: pfloat={bf_as_rug}, oracle={rug_r}, diff={diff}"
