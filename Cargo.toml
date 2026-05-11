@@ -171,6 +171,31 @@ name = "differential_asinh"
 path = "tests/differential_asinh.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "differential_erf"
+path = "tests/differential_erf.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_gamma"
+path = "tests/differential_gamma.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_lgamma"
+path = "tests/differential_lgamma.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_digamma"
+path = "tests/differential_digamma.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_beta"
+path = "tests/differential_beta.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
