@@ -217,6 +217,22 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6b: arithmetic-core verification. Kani harnesses for `sub`,
+//! `mul`, `div`, `sqrt`, and `fma` cover NaN propagation,
+//! signaling-NaN INVALID, the IEEE 754 invalid forms (`±0 × ±∞`,
+//! `0/0`, `∞/∞`, `sqrt(negative_finite)`, `(0 × ∞) + finite`), the
+//! `DIV_BY_ZERO` flag for `finite_nonzero / 0`, sign-of-product /
+//! sign-of-quotient correctness, the `sqrt(−0) = −0` rule, and the
+//! subtle §7.2 carve-out where `(0 × ∞) + NaN` propagates the NaN
+//! without raising an extra INVALID. The fuzz arith target derives
+//! an `(Op, a, b, c, mode)` tuple, exercises each of the six
+//! arithmetic ops, and asserts the cheap identity invariants
+//! `a + 0 ≡ a`, `a × 1 ≡ a`, and `a − a = 0`. Five new differential
+//! tests (`differential_{sub,mul,div,sqrt,fma}.rs`) mirror the
+//! integer-operand pattern from `differential_add.rs`. Slice 6b
+//! closes DESIGN.md's verbatim Phase 6 properties for the
+//! arithmetic core.
+//!
 //! 3e: hyperbolic family.
 //! [`sinh`](BigFloat::sinh) uses
 //! `(expm1(x) − expm1(−x))/2` to avoid the cancellation of

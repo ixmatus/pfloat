@@ -47,7 +47,7 @@ pub(super) fn nondet_rounding_mode() -> RoundingMode {
     kani::assume(idx <= 4);
     match idx {
         0 => RoundingMode::NearestEven,
-        1 => RoundingMode::NearestAwayFromZero,
+        1 => RoundingMode::NearestAway,
         2 => RoundingMode::TowardZero,
         3 => RoundingMode::TowardPositive,
         _ => RoundingMode::TowardNegative,
