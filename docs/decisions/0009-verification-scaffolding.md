@@ -60,12 +60,12 @@ The bootstrap commit imports:
 
 The bootstrap commit does not import:
 
-- `src/verify/` Kani harnesses. Phase 6 lands harnesses adapted to
+- `src/verify/` Kani harnesses. Phase 5 lands harnesses adapted to
   pfloat's surface (transcendentals, special functions, dual API).
   The directory shape will follow ferrodec's, but the proofs will
   not transfer literally.
 - Conformance corpus. Different domain.
-- Fuzz harnesses. Phase 6 task.
+- Fuzz harnesses. Phase 5 task.
 - KNOWN_ISSUES.md, CHANGELOG.md. Empty until 1.0 work begins.
 
 When ferrodec evolves its scaffolding (a CI workflow update, a

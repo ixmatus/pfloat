@@ -3,7 +3,7 @@
 //!
 //! pfloat's `IeeeClass` mirrors ferrodec's at
 //! `ferrodec/src/classify.rs::IeeeClass` so the differential lane in
-//! Phase 6 has a 1:1 enum translation when comparing pfloat values
+//! Phase 5 has a 1:1 enum translation when comparing pfloat values
 //! against MPFR (via `gmp-mpfr-sys`) or against ferrodec's
 //! `Decimal128` for cross-format sanity.
 //!

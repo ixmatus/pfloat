@@ -1,11 +1,11 @@
 # ADR-0013: Fuzz harness architecture
 
-- **Status**: accepted (Phase 6 complete)
+- **Status**: accepted (Phase 5 complete)
 - **Date**: 2026-05-10
 
 ## Status update (slice 6g, 2026-05-10)
 
-Phase 6 closed with seven fuzz targets covering the full op
+Phase 5 closed with seven fuzz targets covering the full op
 surface: `parse`, `arith`, `exp_log_family`, `trig`, `hyperbolic`,
 `specials`, and `fmt`. The cluster-level grain (one target per
 feature cluster, not one per op) kept the count bounded and
@@ -15,7 +15,7 @@ cleanly under every slice.
 
 The OSS-Fuzz upstream PR scaffolding lives in `fuzz/oss-fuzz/`
 (Dockerfile, build.sh, project.yaml, README.md). Submission is a
-post-Phase-6 follow-up. The upstream PR is tracked in the slice
+post-Phase-5 follow-up. The upstream PR is tracked in the slice
 6g merge commit.
 
 The no-checked-in-corpus policy held. Counterexamples that
@@ -27,7 +27,7 @@ surfaced during slice cadence; the property suite stayed clean.
 
 ## Context
 
-DESIGN.md scopes Phase 6 to include `cargo-fuzz` harnesses and an
+DESIGN.md scopes Phase 5 to include `cargo-fuzz` harnesses and an
 eventual OSS-Fuzz integration. ferrodec ships six libfuzzer-sys
 targets under `fuzz/fuzz_targets/`, with no checked-in corpus, and
 treats fuzz as a panic-freedom + identity-invariant smoke gate rather
@@ -138,7 +138,7 @@ OSS-Fuzz upstream PR is **deferred to slice 6g**. A
 - Counterexamples that matter end up as proptest regressions, where
   they get versioned with the code. The fuzz directory stays empty.
 - Cluster-level targets keep the count bounded as pfloat grows
-  through Phase 5 (Bessel, zeta, Airy) and beyond.
+  through Phase 6 (Bessel, zeta, Airy) and beyond.
 - The OSS-Fuzz upstream PR gives pfloat continuous fuzzing without
   pfloat paying the compute bill.
 
@@ -160,7 +160,7 @@ OSS-Fuzz upstream PR is **deferred to slice 6g**. A
 - OSS-Fuzz onboarding produces feedback (corpus growth rates, bug
   classes) that suggests a different harness layout would catch
   more. Update this ADR to reflect.
-- Phase 5 / Phase 7 surface introduces input shapes (e.g. complex
+- Phase 6 / Phase 7 surface introduces input shapes (e.g. complex
   numbers, intervals) that the current cluster layout does not fit
   well. New target file per shape; update this ADR.
 - libFuzzer is replaced by a different fuzzing engine

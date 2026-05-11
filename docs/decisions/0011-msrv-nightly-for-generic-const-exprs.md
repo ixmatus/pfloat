@@ -64,7 +64,7 @@ otherwise unchanged.
 - Const-generic precision arithmetic in kernels (loop bounds, mask
   computations) is straightforward; the optimizer sees each
   precision instantiation as a distinct concrete type.
-- The differential lane (Phase 6+) compares pfloat against MPFR at
+- The differential lane (Phase 5+) compares pfloat against MPFR at
   the natural precision granularity. No precision-rounding-up cost.
 
 **Costs:**

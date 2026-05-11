@@ -23,7 +23,7 @@
 //! cases at the boundary of the rounding ULP could miss; the
 //! Lefèvre–Muller worst-case tables for `exp` cover the known hard
 //! arguments at common precisions and can be wired in later as
-//! Phase 6 verification.
+//! Phase 5 verification.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -45,7 +45,7 @@ impl BigFloat {
     ///
     /// See [the module docs](self) for the algorithm. Slice 3a
     /// uses a fixed 64-bit guard; pathological round-to-nearest
-    /// tie cases at the rounding ULP boundary may miss. Phase 6
+    /// tie cases at the rounding ULP boundary may miss. Phase 5
     /// will wire in the Lefèvre–Muller worst-case test corpus.
     #[must_use]
     pub fn exp(&self, mode: RoundingMode) -> (Self, Status) {
