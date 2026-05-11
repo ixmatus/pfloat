@@ -47,3 +47,17 @@ path = "fuzz_targets/exp_log_family.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "trig"
+path = "fuzz_targets/trig.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hyperbolic"
+path = "fuzz_targets/hyperbolic.rs"
+test = false
+doc = false
+bench = false

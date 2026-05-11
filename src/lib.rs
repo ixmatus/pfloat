@@ -217,6 +217,19 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6d: trig + inverse + hyperbolic verification. Thirteen new
+//! `src/verify/<op>.rs` files cover the circular and hyperbolic
+//! transcendentals. NaN propagation, sNaN INVALID, domain checks
+//! for asin/acos/atanh (qNaN + INVALID for `|x| > 1`), the
+//! `atanh(±1) = ±∞ + DIV_BY_ZERO` endpoint, `acosh(x < 1) → qNaN +
+//! INVALID`, and the `cos(±0) = +1` / `cosh(±0) = +1` /
+//! `tanh(±∞) = ±1` identity rules. Two new fuzz targets (`trig`,
+//! `hyperbolic`) dispatch across the seven trig ops and the six
+//! hyperbolic ops respectively. Seven new differential tests
+//! cover sin, cos, tan, atan2, sinh, cosh, asinh — one per
+//! kernel whose MPFR counterpart admits straightforward bit-for-
+//! bit agreement on integer inputs.
+//!
 //! 6c: exp/log family verification. Nine new `src/verify/<op>.rs`
 //! files (`exp`, `expm1`, `exp2`, `exp10`, `ln`, `log1p`, `log2`,
 //! `log10`, `pow`) cover NaN propagation, signaling-NaN INVALID,
