@@ -33,7 +33,16 @@
 
 pub(super) mod helpers;
 
+mod acos;
+mod acosh;
 mod add;
+mod asin;
+mod asinh;
+mod atan;
+mod atan2;
+mod atanh;
+mod cos;
+mod cosh;
 mod div;
 mod exp;
 mod exp10;
@@ -46,5 +55,9 @@ mod log1p;
 mod log2;
 mod mul;
 mod pow;
+mod sin;
+mod sinh;
 mod sqrt;
 mod sub;
+mod tan;
+mod tanh;
