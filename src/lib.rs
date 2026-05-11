@@ -375,7 +375,7 @@ mod fixed;
 #[cfg(feature = "big")]
 mod fmt;
 mod mantissa;
-#[cfg(feature = "exp-log")]
+#[cfg(any(feature = "exp-log", feature = "agm"))]
 mod math;
 #[cfg(feature = "big")]
 mod ops;

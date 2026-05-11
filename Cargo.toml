@@ -67,6 +67,14 @@ trig = ["exp-log"]
 # negative-x branch. (And `trig` implies `exp-log`.)
 specials = ["trig"]
 
+# Arithmetic-geometric mean. Pure arithmetic primitive (uses only
+# add, sub, mul, div, sqrt from Phase 1), independent of the
+# transcendental cluster. ADR-0015 records the feature-gating
+# rationale. Slice 7b will widen `exp-log` to depend on `agm`
+# when on-the-fly transcendental constants land; until then, AGM
+# is genuinely standalone.
+agm = ["big"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -76,8 +84,9 @@ kani = []
 # files via `required-features` below — cargo does not allow
 # dev-dependencies to be `optional`, so the `rug` build itself runs
 # unconditionally on Unix. Implies `specials` so every math op the
-# differential tests call (ln, sinh, gamma, ...) is available.
-differential-mpfr = ["std", "fmt", "big", "specials"]
+# differential tests call (ln, sinh, gamma, ...) is available, plus
+# `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`.
+differential-mpfr = ["std", "fmt", "big", "specials", "agm"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
@@ -200,6 +209,11 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "differential_parse"
 path = "tests/differential_parse.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_agm"
+path = "tests/differential_agm.rs"
 required-features = ["differential-mpfr"]
 
 [lints.rust]

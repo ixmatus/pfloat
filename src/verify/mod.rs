@@ -36,6 +36,8 @@ pub(super) mod helpers;
 mod acos;
 mod acosh;
 mod add;
+#[cfg(feature = "agm")]
+mod agm;
 mod asin;
 mod asinh;
 mod atan;

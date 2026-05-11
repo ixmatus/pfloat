@@ -116,6 +116,9 @@ pub(crate) mod tan;
 #[cfg(feature = "trig")]
 pub(crate) mod trig_reduce;
 
+#[cfg(feature = "agm")]
+pub(crate) mod agm;
+
 #[cfg(feature = "specials")]
 pub(crate) mod beta;
 #[cfg(feature = "specials")]
