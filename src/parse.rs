@@ -75,6 +75,18 @@ impl BigFloat {
     /// `Err(ParseError)` for syntactic errors and
     /// `Ok((value, Status))` otherwise. The status carries
     /// [`Status::INEXACT`] when the decimal value rounded.
+    ///
+    /// # Untrusted input
+    ///
+    /// This function does not cap the digit count: the lexer
+    /// collects integer and fractional digits into an allocated
+    /// buffer whose size is proportional to the input string.
+    /// Callers handling strings from untrusted sources should bound
+    /// the input length before invoking `parse_str`. The decimal
+    /// exponent magnitude is capped internally at `1_000_000`, so
+    /// an oversized exponent converts to overflow or underflow
+    /// without further allocation; the digit count itself has no
+    /// such cap.
     pub fn parse_str(
         s: &str,
         precision: u32,

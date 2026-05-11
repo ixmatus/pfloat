@@ -137,9 +137,12 @@ pub(crate) mod lgamma;
 /// equals `floor(ln(2) × 2^1024)`. Combined with `precision = 1024`
 /// and `exponent = -1`, this represents `ln(2)`.
 ///
-/// Source: the value of `ln(2)` from MPFR / standard mathematical
-/// references, truncated to 1024 bits. Verified via the inline
-/// test (top byte `0xB1`, matching `ln(2) ≈ 0.1011000101110010…`).
+/// Source: the mathematical value of `ln(2)` truncated to 1024
+/// bits. Cross checked against MPFR and `mpmath` reference values
+/// at this precision; the limbs are a mathematical fact, not
+/// adapted from any specific implementation's source. Verified via
+/// the inline test (top byte `0xB1`, matching
+/// `ln(2) ≈ 0.1011000101110010…`).
 #[allow(dead_code)] // referenced by exp and ln; treat as logically pub(super) for the cluster.
 pub(crate) const LN2_LIMBS_1024: [u64; 16] = [
     0x4DC7_2A88_F1F1_1A0F,
