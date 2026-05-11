@@ -96,7 +96,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # per ADR-0014; Windows differential coverage is not available
 # because gmp-mpfr-sys does not build on stock Windows toolchains.
 [target.'cfg(unix)'.dev-dependencies]
-rug = { version = "1", default-features = false, features = ["float"] }
+rug = { version = "1", default-features = false, features = ["float", "integer"] }
 
 # Differential tests only build when the `differential-mpfr` feature
 # is active. Without the feature flag, `cargo test` skips them, and

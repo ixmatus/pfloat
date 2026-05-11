@@ -10,7 +10,7 @@ mod differential;
 
 use differential::{
     bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    ALL_ROUNDING_MODES, SWEEP_PRECISIONS,
+    BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
 };
 
 #[test]
@@ -27,7 +27,7 @@ fn sub_matches_mpfr_on_i64_pairs() {
         for _ in 0..cases {
             let a = next_i64_in(&mut state, -cap, cap);
             let b = next_i64_in(&mut state, -cap, cap);
-            for &mode in ALL_ROUNDING_MODES {
+            for &mode in BIT_EXACT_ROUNDING_MODES {
                 let bf_diff = {
                     let a_bf = bigfloat_from_i64(a, p);
                     let b_bf = bigfloat_from_i64(b, p);

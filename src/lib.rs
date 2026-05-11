@@ -397,7 +397,7 @@ pub use status::Status;
 pub use status::flags;
 
 #[cfg(feature = "big")]
-pub use big::{BigFloat, BuildError};
+pub use big::{BigFloat, BuildError, Parts};
 #[cfg(feature = "big")]
 pub use classify::IeeeClass;
 #[cfg(all(feature = "big", feature = "fixed"))]
