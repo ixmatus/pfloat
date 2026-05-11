@@ -217,6 +217,23 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6e: tier-1 specials verification. Six new
+//! `src/verify/<op>.rs` files (erf, erfc, gamma, lgamma, digamma,
+//! beta) cover NaN propagation, sNaN INVALID, the gamma pole at
+//! `±0` (returns `±∞ + DIV_BY_ZERO`), the gamma pole at every
+//! non-positive integer (returns `qNaN + INVALID`), the lgamma
+//! pole at `±0` (returns `+∞ + DIV_BY_ZERO`), the digamma pole
+//! at `0` and at every non-positive integer (returns `−∞ +
+//! DIV_BY_ZERO`), the erf saturation rules at `±∞` (returns
+//! `±1`), the erfc saturation rules (`+∞ → +0` and `−∞ → +2`),
+//! and beta's restricted domain (non-positive `a` or `b` returns
+//! `qNaN + INVALID`; pfloat's current beta is positive-only per
+//! slice 4c). One new fuzz target (specials) dispatches across
+//! the six ops. Five new differential tests cover erf, gamma,
+//! lgamma, digamma, and beta. The beta oracle is the lgamma
+//! composition evaluated at higher working precision with 2 ULP
+//! slack to absorb compounded rounding.
+//!
 //! 6d: trig + inverse + hyperbolic verification. Thirteen new
 //! `src/verify/<op>.rs` files cover the circular and hyperbolic
 //! transcendentals. NaN propagation, sNaN INVALID, domain checks

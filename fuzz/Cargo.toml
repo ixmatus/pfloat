@@ -61,3 +61,10 @@ path = "fuzz_targets/hyperbolic.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "specials"
+path = "fuzz_targets/specials.rs"
+test = false
+doc = false
+bench = false
