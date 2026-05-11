@@ -217,6 +217,17 @@
 //! engineering memory; the fuzz and differential lanes are blocking.
 //! Slices 6b–6g extend the pattern across the rest of the surface.
 //!
+//! 6g: Phase 6 close. `fuzz/oss-fuzz/` ships the
+//! upstream-submission scaffold (`Dockerfile`, `build.sh`,
+//! `project.yaml`, `README.md`) for the OSS-Fuzz PR. ADR-0012,
+//! ADR-0013, and ADR-0014 move to `accepted (Phase 6 complete)`
+//! with status-update sections documenting what landed and what
+//! was deferred. Phase 6 final counts: 196 Kani harnesses across
+//! 38 op files, 7 fuzz targets, 22 differential test files.
+//! 744 tests pass under
+//! `--features=std,fmt,big,fixed,ops,exp-log,trig,specials`
+//! unchanged across all of Phase 6.
+//!
 //! 6f: classification, comparison, parse, and fmt verification.
 //! Four new `src/verify/<op>.rs` files cover the non-arithmetic
 //! surface: classification totality on the canonical set (every

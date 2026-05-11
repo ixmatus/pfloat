@@ -1,7 +1,29 @@
 # ADR-0012: Kani harness architecture and CI gating
 
-- **Status**: accepted
+- **Status**: accepted (Phase 6 complete)
 - **Date**: 2026-05-10
+
+## Status update (slice 6g, 2026-05-10)
+
+Phase 6 closed at 196 Kani harnesses across 38 op files in
+`src/verify/`. The advisory-CI decision held without modification
+across all seven Phase 6 slices. No proof regressions were
+observed locally during slice cadence (every slice ran clippy +
+rustfmt + thumbv6m + test). The `continue-on-error` flag on the
+CI lane remains the right gate; the trigger to revisit
+(reliable Kani completion inside GitHub Actions free-tier limits)
+has not yet fired.
+
+The eight-constant operand set held up across the surface; the
+bounded-normal generators (originally planned for slice 6b) were
+not needed in practice — every per-op file used the canonical
+eight-value selector for non-deterministic harnesses, and the
+remaining harnesses operate on concrete constants. Slice 6b's
+`#[kani::unwind(N)]` rounding-direction harnesses also did not
+land: special-case-dispatch coverage at the canonical operand
+set turned out to be the right scope for arithmetic-core Kani,
+and rounding-direction correctness is covered by the MPFR
+differential lane.
 
 ## Context
 
