@@ -196,6 +196,11 @@ name = "differential_beta"
 path = "tests/differential_beta.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "differential_parse"
+path = "tests/differential_parse.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
