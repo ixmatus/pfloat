@@ -321,6 +321,25 @@ fn decimal_to_bigfloat(
 /// Build the multi-precision integer `m` from digits, then convert
 /// `m × 10^exponent` to a [`BigFloat`] at `precision`, rounding
 /// under `mode`.
+/// Decimal-exponent magnitude beyond which `finite_to_bigfloat`
+/// short-circuits to overflow or underflow. The bound exists to
+/// stop `pow5(|exponent|)` from allocating gigabyte-scale
+/// intermediate storage on fuzz inputs like `600e333331144`.
+///
+/// At target precisions up to `2^32 - 1`, the result of
+/// `digits × 10^exponent` rounds to ±∞ (overflow) for
+/// `exponent > MAX_DECIMAL_EXPONENT` and to ±0 (underflow) for
+/// `exponent < -MAX_DECIMAL_EXPONENT`, since pfloat's binary
+/// exponent is an `i64` and `10^MAX_DECIMAL_EXPONENT ≈ 2^3.32M`
+/// is already well below `2^63 / 2`. The chosen bound also caps
+/// `pow5` storage at ~3 MB.
+///
+/// Phase 7 follow-up: replace the explicit `pow5` build with a
+/// logarithm-based dispatch so this cap can move from
+/// "computational feasibility" to "exponent fits the binary
+/// exponent type" only.
+const MAX_DECIMAL_EXPONENT: i32 = 1_000_000;
+
 fn finite_to_bigfloat(
     digits: &[u8],
     exponent: i32,
@@ -328,6 +347,29 @@ fn finite_to_bigfloat(
     precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
+    // Short-circuit absurdly-large exponents to overflow or
+    // underflow before allocating the `pow5` intermediate. The
+    // explicit threshold avoids OOM on fuzz inputs like
+    // `600e333331144`.
+    if exponent > MAX_DECIMAL_EXPONENT {
+        // Positive exponent: digits × 10^exponent overflows past
+        // pfloat's binary-exponent range, so the rounded result
+        // is ±∞ with OVERFLOW + INEXACT raised.
+        let inf = BigFloat::try_new_infinity(sign, precision).expect("precision >= 1");
+        let status = Status::OVERFLOW | Status::INEXACT;
+        auto_raise(status);
+        return (inf, status);
+    }
+    if exponent < -MAX_DECIMAL_EXPONENT {
+        // Negative exponent: digits × 10^exponent underflows past
+        // pfloat's binary-exponent range, so the rounded result
+        // is ±0 with UNDERFLOW + INEXACT raised.
+        let z = BigFloat::try_new_zero(sign, precision).expect("precision >= 1");
+        let status = Status::UNDERFLOW | Status::INEXACT;
+        auto_raise(status);
+        return (z, status);
+    }
+
     // 1. Build m as a multi-precision integer (little-endian limbs).
     let m = digits_to_int(digits);
 
@@ -742,6 +784,40 @@ mod tests {
         // 10^18 fits in u64.
         let big = digits_to_int(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(big, vec![1_000_000_000_000_000_000u64]);
+    }
+
+    #[test]
+    fn parse_huge_positive_exponent_overflows_without_allocating() {
+        // Regression for the libFuzzer OOM repro
+        // `600e333331144`: the parser used to allocate `pow5(3.3M)`
+        // ≈ 100 MB of intermediate storage. The short-circuit
+        // path in `finite_to_bigfloat` produces ±∞ + OVERFLOW +
+        // INEXACT directly.
+        let (v, status) =
+            BigFloat::parse_str("600e333331144", 113, RoundingMode::NearestEven).unwrap();
+        assert!(v.is_infinite());
+        assert!(v.is_sign_positive());
+        assert!(status.overflow());
+        assert!(status.inexact());
+    }
+
+    #[test]
+    fn parse_huge_negative_exponent_underflows_without_allocating() {
+        let (v, status) =
+            BigFloat::parse_str("600e-333331144", 113, RoundingMode::NearestEven).unwrap();
+        assert!(v.is_zero());
+        assert!(v.is_sign_positive());
+        assert!(status.underflow());
+        assert!(status.inexact());
+    }
+
+    #[test]
+    fn parse_negative_sign_huge_exponent_propagates_sign() {
+        let (v, status) =
+            BigFloat::parse_str("-600e333331144", 113, RoundingMode::NearestEven).unwrap();
+        assert!(v.is_infinite());
+        assert!(v.is_sign_negative());
+        assert!(status.overflow());
     }
 
     #[cfg(feature = "fixed")]

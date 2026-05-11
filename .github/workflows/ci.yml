@@ -97,7 +97,13 @@ jobs:
         with:
           toolchain: ${{ env.PFLOAT_NIGHTLY }}
       - uses: model-checking/kani-github-action@v1.1
-      - run: cargo kani
+      # `cargo kani` needs every feature whose verify file appears
+      # in src/verify/: specials (transitively pulls in trig +
+      # exp-log) for the transcendental harnesses; fixed + ops for
+      # the const-generic and operator-overload paths. We omit
+      # `differential-mpfr` because it would pull in the MPFR
+      # system dependency.
+      - run: cargo kani --features=std,fmt,big,fixed,ops,exp-log,trig,specials
 
   # ---------- libFuzzer smoke ----------
   # ADR-0013 records the layout. Each target gets a 60-second smoke

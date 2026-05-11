@@ -33,7 +33,7 @@ fn add_inf_minus_inf_is_nan_with_invalid() {
     let (r, status) = a.add(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// Same-sign infinities produce that signed infinity with no flag.
@@ -44,7 +44,7 @@ fn add_inf_plus_inf_same_sign_is_inf() {
     let (r, status) = a.add(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// NaN propagates through `add` for any second operand drawn from
@@ -66,7 +66,7 @@ fn add_signaling_nan_raises_invalid() {
     let (r, status) = a.add(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(+0) + (−0)` is `+0` under every mode except `TowardNegative`,
@@ -78,7 +78,7 @@ fn add_pos_zero_plus_neg_zero_sign_rule() {
     let mode = nondet_rounding_mode();
     let (r, status) = a.add(&b, mode);
     assert!(r.is_zero());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
     if matches!(mode, RoundingMode::TowardNegative) {
         assert!(r.is_sign_negative());
     } else {
@@ -95,5 +95,5 @@ fn add_neg_zero_plus_neg_zero_is_neg_zero() {
     let (r, status) = a.add(&b, mode);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

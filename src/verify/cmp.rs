@@ -35,7 +35,7 @@ fn partial_cmp_quiet_nan_returns_none_no_flag() {
     assert!(ord.is_none());
     // Quiet NaN: per IEEE 754-2019 §5.11, the unordered relation
     // does not signal INVALID.
-    assert!(!status.contains(Status::INVALID));
+    assert!(!status.invalid());
 }
 
 /// `partial_cmp` raises `INVALID` when either operand is signaling.
@@ -45,7 +45,7 @@ fn partial_cmp_signaling_nan_raises_invalid() {
     let other = canonical_at(6, 53); // +1
     let (ord, status) = snan.partial_cmp(&other);
     assert!(ord.is_none());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `min(a, a)` is `a` for any canonical value; the status flag is

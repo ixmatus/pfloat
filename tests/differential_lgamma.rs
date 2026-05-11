@@ -5,22 +5,9 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, rug_from_i64, sweep_size, ALL_ROUNDING_MODES,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
+    ALL_ROUNDING_MODES,
 };
-
-fn next_u64(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn next_i64_in(state: &mut u64, lo: i64, hi: i64) -> i64 {
-    debug_assert!(lo <= hi);
-    let span = (hi - lo) as u64 + 1;
-    lo + (next_u64(state) % span) as i64
-}
 
 #[test]
 fn lgamma_matches_mpfr_on_positive_integers() {

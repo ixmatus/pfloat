@@ -21,7 +21,7 @@ fn log1p_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.log1p(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -30,7 +30,7 @@ fn log1p_pos_inf_is_pos_inf() {
     let (r, status) = a.log1p(RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 #[kani::proof]
@@ -38,5 +38,5 @@ fn log1p_neg_inf_is_nan_invalid() {
     let a = BigFloat::try_new_infinity(Sign::Negative, 53).expect("precision >= 1");
     let (r, status) = a.log1p(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }

@@ -20,7 +20,7 @@ fn tan_signaling_nan_raises_invalid() {
     let a = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).expect("precision >= 1");
     let (r, status) = a.tan(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -28,7 +28,7 @@ fn tan_pos_inf_is_nan_invalid() {
     let a = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.tan(RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 #[kani::proof]
@@ -37,5 +37,5 @@ fn tan_pos_zero_is_pos_zero() {
     let (r, status) = a.tan(RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

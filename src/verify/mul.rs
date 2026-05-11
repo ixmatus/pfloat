@@ -29,7 +29,7 @@ fn mul_signaling_nan_raises_invalid() {
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
     assert!(!r.is_signaling_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(+0) × (+∞)` raises `INVALID` and returns a quiet NaN.
@@ -39,7 +39,7 @@ fn mul_pos_zero_times_pos_inf_is_nan_invalid() {
     let b = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(−0) × (+∞)` raises `INVALID` and returns a quiet NaN (sign of
@@ -50,7 +50,7 @@ fn mul_neg_zero_times_pos_inf_is_nan_invalid() {
     let b = BigFloat::try_new_infinity(Sign::Positive, 53).expect("precision >= 1");
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `(+∞) × (+∞)` is `+∞` (no flag).
@@ -61,7 +61,7 @@ fn mul_pos_inf_times_pos_inf_is_pos_inf() {
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `(+∞) × (−∞)` is `−∞`. Sign-of-product rule on infinities.
@@ -72,7 +72,7 @@ fn mul_pos_inf_times_neg_inf_is_neg_inf() {
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `(+0) × (−0)` is `−0`. Product-sign rule even at zero.
@@ -83,5 +83,5 @@ fn mul_pos_zero_times_neg_zero_is_neg_zero() {
     let (r, status) = a.mul(&b, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }

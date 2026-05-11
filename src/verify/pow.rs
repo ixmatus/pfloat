@@ -23,7 +23,7 @@ fn pow_nan_zero_is_one() {
     let one = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (cmp, _) = r.partial_cmp(&one);
     assert_eq!(cmp, Some(core::cmp::Ordering::Equal));
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `pow(+1, NaN) = 1`. The "one to anything is one" rule trumps
@@ -37,7 +37,7 @@ fn pow_one_nan_is_one() {
     let one = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (cmp, _) = r.partial_cmp(&one);
     assert_eq!(cmp, Some(core::cmp::Ordering::Equal));
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `pow(+1, +∞) = 1` per §9.2.1.
@@ -49,7 +49,7 @@ fn pow_one_inf_is_one() {
     let one = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
     let (cmp, _) = r.partial_cmp(&one);
     assert_eq!(cmp, Some(core::cmp::Ordering::Equal));
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// Signaling NaN in either operand raises `INVALID`.
@@ -59,7 +59,7 @@ fn pow_signaling_nan_raises_invalid() {
     let y = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_nan());
-    assert!(status.contains(Status::INVALID));
+    assert!(status.invalid());
 }
 
 /// `pow(+0, −1) = +∞ + DIV_BY_ZERO`.
@@ -70,7 +70,7 @@ fn pow_pos_zero_neg_finite_is_pos_inf_div_by_zero() {
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 /// `pow(−0, −1) = −∞ + DIV_BY_ZERO` (odd-integer exponent
@@ -82,7 +82,7 @@ fn pow_neg_zero_neg_one_is_neg_inf_div_by_zero() {
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_negative());
-    assert!(status.contains(Status::DIV_BY_ZERO));
+    assert!(status.div_by_zero());
 }
 
 /// `pow(+0, +2) = +0`.
@@ -93,7 +93,7 @@ fn pow_pos_zero_pos_finite_is_pos_zero() {
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `pow(+∞, −1) = +0`.
@@ -104,7 +104,7 @@ fn pow_pos_inf_neg_finite_is_pos_zero() {
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_zero());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
 
 /// `pow(+∞, +1) = +∞`.
@@ -115,5 +115,5 @@ fn pow_pos_inf_pos_finite_is_pos_inf() {
     let (r, status) = x.pow(&y, RoundingMode::NearestEven);
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
-    assert!(status.is_empty());
+    assert!(status.is_ok());
 }
