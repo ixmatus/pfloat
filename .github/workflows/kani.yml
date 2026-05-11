@@ -1,0 +1,33 @@
+name: Kani
+
+# Runs only when manually triggered from the Actions tab. ADR-0012's
+# status update (slice 6k) records why: every-push runs were costly
+# (~10 minutes per run) without delivering completed proofs on the
+# transcendental-heavy surface. The harnesses live in
+# `src/verify/` and can be invoked locally with `cargo kani`; this
+# workflow is the on-demand variant for evidence runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      features:
+        description: 'Feature set passed to cargo kani'
+        required: false
+        default: 'std,fmt,big,fixed,ops,exp-log,trig,specials'
+
+env:
+  CARGO_TERM_COLOR: always
+  PFLOAT_NIGHTLY: nightly-2026-05-10
+
+jobs:
+  kani:
+    name: kani harnesses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+      - uses: model-checking/kani-github-action@v1.1
+        with:
+          args: --features=${{ inputs.features }}
