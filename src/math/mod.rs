@@ -581,21 +581,29 @@ pub(crate) const TWO_OVER_SQRT_PI_LIMBS_1024: [u64; 16] = [
 #[allow(dead_code)]
 pub(crate) fn two_over_sqrt_pi_at(prec: u32) -> BigFloat {
     if prec <= 1024 {
-        let stored = BigFloat {
-            class: Class::Normal {
-                sign: Sign::Positive,
-                exponent: 0,
-                mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
-            },
-            precision: 1024,
-        };
-        stored
-            .round_to_precision(prec, RoundingMode::NearestEven)
-            .expect("precision >= 1")
-            .0
+        two_over_sqrt_pi_via_table(prec)
     } else {
         agm_constants::two_over_sqrt_pi_via_agm(prec)
     }
+}
+
+/// Returns the rounded hardcoded `2/√π` constant. Internal: the public
+/// dispatcher [`two_over_sqrt_pi_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn two_over_sqrt_pi_via_table(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
 }
 
 /// Hardcoded `ln(2π)` mantissa at 1024-bit precision.
@@ -639,19 +647,27 @@ pub(crate) const LN_2PI_LIMBS_1024: [u64; 16] = [
 #[allow(dead_code)]
 pub(crate) fn ln_2pi_at(prec: u32) -> BigFloat {
     if prec <= 1024 {
-        let stored = BigFloat {
-            class: Class::Normal {
-                sign: Sign::Positive,
-                exponent: 0,
-                mantissa: LN_2PI_LIMBS_1024.to_vec(),
-            },
-            precision: 1024,
-        };
-        stored
-            .round_to_precision(prec, RoundingMode::NearestEven)
-            .expect("precision >= 1")
-            .0
+        ln_2pi_via_table(prec)
     } else {
         agm_constants::ln_2pi_via_agm(prec)
     }
+}
+
+/// Returns the rounded hardcoded `ln(2π)` constant. Internal: the
+/// public dispatcher [`ln_2pi_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn ln_2pi_via_table(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: LN_2PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
 }
