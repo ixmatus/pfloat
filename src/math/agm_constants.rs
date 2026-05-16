@@ -378,6 +378,37 @@ fn ln_2pi_compute(prec: u32) -> BigFloat {
 mod tests {
     use super::*;
 
+    /// Pins the regenerated `LN2_LIMBS_1024` table (slice 7b2) to two
+    /// independent primary derivations of the correctly-rounded
+    /// 1024-bit `ln(2)`: the authoritative 1100-digit decimal
+    /// `LN2_REFERENCE` parsed by the bit-exact decimal parser, and
+    /// the in-repo AGM atanh series computed at 2048 bits and rounded
+    /// down to 1024. All three must agree bit-for-bit. Any future
+    /// edit to the table, the parser, or the AGM kernel that disturbs
+    /// the 1024-bit value fails here.
+    #[test]
+    fn ln_2_table_is_correctly_rounded_at_p1024() {
+        use core::cmp::Ordering;
+        let table = super::super::ln_2_via_table(1024);
+        let reference = BigFloat::parse_str(LN2_REFERENCE, 1024, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        let agm_hi = ln_2_via_atanh(2048)
+            .round_to_precision(1024, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        assert_eq!(
+            table.partial_cmp(&reference).0,
+            Some(Ordering::Equal),
+            "regenerated table must equal the authoritative decimal at p=1024:\n  table={table}\n  ref  ={reference}"
+        );
+        assert_eq!(
+            table.partial_cmp(&agm_hi).0,
+            Some(Ordering::Equal),
+            "regenerated table must equal the independent AGM derivation at p=1024:\n  table={table}\n  agm  ={agm_hi}"
+        );
+    }
+
     fn close_within(a: &BigFloat, b: &BigFloat, bits: u32) -> bool {
         use core::cmp::Ordering;
         let (diff, _) = a.sub(b, RoundingMode::NearestEven);
@@ -500,12 +531,15 @@ mod tests {
 
     #[test]
     fn ln_2_table_matches_agm_at_cap_precision() {
-        // Regression guard: the LN2_LIMBS_1024 hardcoded table is
-        // known to diverge from the mathematical value past
-        // bit ~450. `LN2_TABLE_PRECISION_CAP` sits safely below
-        // that boundary, but the bound is approximate; this test
-        // forces a bit-exact comparison so any future change to
-        // either the table or the cap must keep them consistent.
+        // Seamless-boundary guard: at `prec = LN2_TABLE_PRECISION_CAP`
+        // (1024 post slice 7b2) the rounded table value and the AGM
+        // atanh series must be bit-identical, so `ln_2_at` has no
+        // discontinuity at the table/AGM dispatch boundary. Pre-7b2
+        // this held only because the cap sat below the table's faulty
+        // ~450-bit range; post-7b2 the table is correctly rounded to
+        // the full 1024 bits, so the equality holds at the boundary
+        // itself. Any future change to the table, the cap, or the AGM
+        // kernel that reintroduces a boundary discontinuity fails here.
         let cap = super::super::LN2_TABLE_PRECISION_CAP;
         let table = super::super::ln_2_via_table(cap);
         let agm = ln_2_via_atanh(cap);

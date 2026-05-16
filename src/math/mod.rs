@@ -143,23 +143,30 @@ pub(crate) mod lgamma;
 /// equals `floor(ln(2) × 2^1024)`. Combined with `precision = 1024`
 /// and `exponent = -1`, this represents `ln(2)`.
 ///
-/// Source: the mathematical value of `ln(2)` truncated to 1024
-/// bits. Cross checked against MPFR and `mpmath` reference values
-/// at this precision; the limbs are a mathematical fact, not
-/// adapted from any specific implementation's source. Verified via
-/// the inline test (top byte `0xB1`, matching
-/// `ln(2) ≈ 0.1011000101110010…`).
+/// Source: the correctly-rounded 1024-bit value of `ln(2)`. Slice
+/// 7b2 regenerated these limbs after slice 7b's diagnostic found the
+/// original encoding faithful only through the first ~450 bits (the
+/// low nine limbs were wrong; the seven most-significant limbs here
+/// are unchanged from the original, matching that boundary). The
+/// limbs are the mantissa of `BigFloat::parse_str` applied to the
+/// authoritative 1100-digit decimal in the `agm_constants` test
+/// module's `LN2_REFERENCE`, independently cross-checked bit-for-bit
+/// against the in-repo AGM atanh-series derivation rounded down from
+/// 2048 bits. They are a mathematical fact derived from primary
+/// sources, not adapted from any implementation's source. The
+/// `ln_2_table_is_correctly_rounded_at_p1024` regression test pins
+/// both derivations so any future drift fails CI.
 #[allow(dead_code)] // referenced by exp and ln; treat as logically pub(super) for the cluster.
 pub(crate) const LN2_LIMBS_1024: [u64; 16] = [
-    0x4DC7_2A88_F1F1_1A0F,
-    0x0C3B_36F2_5FF2_1D85,
-    0x8BCB_17A7_7B11_D2B4,
-    0xB72C_E87B_19D4_540F,
-    0xB256_FA0E_C765_7F74,
-    0xEB9E_A9BC_3B13_6603,
-    0x51AC_BDA1_1317_C387,
-    0x53E9_6CA1_6224_AE8C,
-    0x0275_73B2_9116_9B82,
+    0xDA2D_97C5_0F3F_D5C6,
+    0x655F_A187_2F20_E3A2,
+    0xF5DF_A6BD_3830_3248,
+    0x72CE_87B1_9D65_48CA,
+    0x256F_A0EC_7657_F74B,
+    0xB9EA_9BC3_B136_603B,
+    0x1ACB_DA11_317C_387E,
+    0x3E96_CA16_224A_E8C5,
+    0x2757_3B29_1169_B825,
     0xED2E_AE35_C138_2144,
     0x5595_52FB_4AFA_1B10,
     0xE7B8_7620_6DEB_AC98,
@@ -170,29 +177,26 @@ pub(crate) const LN2_LIMBS_1024: [u64; 16] = [
 ];
 
 /// Threshold below which [`ln_2_at`] returns the rounded hardcoded
-/// `LN2_LIMBS_1024` constant. Slice 7b's diagnostic discovered that
-/// the original 1024-bit table is faithful only through about the
-/// first ~450 bits; beyond that, the encoded mantissa diverges from
-/// the mathematical value (the slice-6h status update in ADR-0014
-/// observed this as "constants run out of bits" without identifying
-/// the underlying encoding defect). The threshold sits conservatively
-/// below the 450-bit boundary so the fast path stays correct for the
-/// common transcendental working precisions (target + 64-bit guard at
-/// p=256 → 320 bits of working precision, comfortably inside the
-/// table's correct range). Precisions above the cap route through the
-/// AGM-based atanh series, which is correct at any precision.
-/// ADR-0017 records the design and the path to regenerating the
-/// hardcoded table after slice 7b stabilizes.
+/// `LN2_LIMBS_1024` constant. Slice 7b capped this at 448 because the
+/// original table was faithful only through ~450 bits. Slice 7b2
+/// regenerated the table to the correctly-rounded 1024-bit value, so
+/// the cap is restored to the full table width, mirroring `pi_at`'s
+/// `prec <= 1024` fast path. At `prec = 1024` the rounded table value
+/// and the AGM atanh series are bit-identical (both equal the
+/// correctly-rounded 1024-bit `ln(2)`), so the dispatch boundary is
+/// seamless; the `ln_2_table_matches_agm_at_cap_precision` regression
+/// test pins that equality. Precisions above 1024 route through the
+/// AGM series, which is correct at any precision. ADR-0017 records
+/// the design and the slice 7b2 regeneration.
 #[cfg(feature = "exp-log")]
-pub(crate) const LN2_TABLE_PRECISION_CAP: u32 = 448;
+pub(crate) const LN2_TABLE_PRECISION_CAP: u32 = 1024;
 
 /// Returns `ln(2)` rounded to the requested precision.
 ///
-/// For `prec <= LN2_TABLE_PRECISION_CAP` the rounded value comes
-/// from the hardcoded 1024-bit table (correct to ~450 bits, so the
-/// 256-bit cap leaves a generous margin). For larger precisions
-/// slice 7b computes the value on the fly via the AGM-based atanh
-/// series in [`agm_constants::ln_2_via_atanh`].
+/// For `prec <= LN2_TABLE_PRECISION_CAP` (1024 post slice 7b2) the
+/// rounded value comes from the correctly-rounded hardcoded table.
+/// For larger precisions the value is computed on the fly via the
+/// AGM-based atanh series in [`agm_constants::ln_2_via_atanh`].
 #[cfg(feature = "exp-log")]
 #[allow(dead_code)]
 pub(crate) fn ln_2_at(prec: u32) -> BigFloat {

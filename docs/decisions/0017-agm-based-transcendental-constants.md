@@ -64,7 +64,7 @@ the slice.
 
    | Accessor | Table cap | Above the cap |
    | --- | --- | --- |
-   | `ln_2_at` | 256 (per `LN2_TABLE_PRECISION_CAP`) | `ln_2_via_atanh` |
+   | `ln_2_at` | 1024 (per `LN2_TABLE_PRECISION_CAP`, post 7b2; see addendum) | `ln_2_via_atanh` |
    | `pi_at` | 1024 | `pi_via_agm` |
    | `pi_over_2_at` | 1024 (exponent shift on the table) | `pi_via_agm`, then exponent decrement |
    | `two_over_pi_at` | 4096 | `two_over_pi_via_agm` |
@@ -126,6 +126,35 @@ the slice.
   exp-log` get the AGM kernel even if they would not have opted
   in directly; the AGM module is small (under 300 lines of
   source) and adds negligible binary footprint.
+
+## Status addendum (slices 7b1, 7b2)
+
+The Decision and Consequences above are the slice-7b record and are
+left intact. Two drafting points were resolved by the follow-ups:
+
+- **Cap value.** The Decision text drafted `LN2_TABLE_PRECISION_CAP`
+  at 256; slice 7b actually shipped it at 448 (still conservatively
+  below the ~450-bit boundary). The narrative number above is the
+  draft; 448 is what 7b merged.
+- **Slice 7b1 (memoization).** Landed the `thread_local!`
+  memoization the Consequences anticipated, keyed by
+  `(kind, precision)` with a `no_std` passthrough. With recompute
+  cost amortized, `TRANSCENDENTAL_PRECISIONS` was lifted to
+  `[53, 113, 256, 1024]`, matching `SWEEP_PRECISIONS`. The full
+  differential-mpfr suite is bit-exact at p=1024.
+- **Slice 7b2 (table regeneration).** Regenerated
+  `LN2_LIMBS_1024` to the correctly-rounded 1024-bit value. The
+  diagnostic confirmed the original table's seven most-significant
+  limbs (448 bits) were already correct and only the low nine were
+  faulty, matching the 7b boundary. The new limbs are the mantissa
+  of the bit-exact decimal parse of the authoritative reference,
+  cross-checked bit-for-bit against the AGM atanh derivation
+  computed at 2048 bits and rounded to 1024. `LN2_TABLE_PRECISION_CAP`
+  is restored to 1024, mirroring `pi_at`; at the boundary the table
+  and AGM are bit-identical. Two regression tests
+  (`ln_2_table_is_correctly_rounded_at_p1024`,
+  `ln_2_table_matches_agm_at_cap_precision`) pin the value and the
+  seamless boundary.
 
 ## References
 
