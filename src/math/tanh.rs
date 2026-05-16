@@ -98,7 +98,7 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
     let sign = x.sign();
     let abs_x = x.abs();
     let abs_x_w = abs_x

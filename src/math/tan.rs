@@ -100,7 +100,7 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
 
     let Some(Reduction { quadrant, r }) = reduce(x, working_prec) else {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])

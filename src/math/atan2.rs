@@ -206,7 +206,7 @@ fn atan2_kernel(
 
     // Both finite and nonzero. Compute atan(y/x) and adjust by π
     // for the second/third quadrant.
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
     let y_w = y
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")

@@ -119,6 +119,9 @@ pub(crate) mod trig_reduce;
 #[cfg(feature = "agm")]
 pub(crate) mod agm;
 
+#[cfg(feature = "exp-log")]
+pub(crate) mod agm_constants;
+
 #[cfg(feature = "specials")]
 pub(crate) mod beta;
 #[cfg(feature = "specials")]
@@ -166,11 +169,45 @@ pub(crate) const LN2_LIMBS_1024: [u64; 16] = [
     0xB172_17F7_D1CF_79AB,
 ];
 
-/// Returns `ln(2)` rounded to the requested precision (up to 1024
-/// bits faithfully; higher precisions are a slight under-
-/// approximation truncated at the 1024-bit boundary).
+/// Threshold below which [`ln_2_at`] returns the rounded hardcoded
+/// `LN2_LIMBS_1024` constant. Slice 7b's diagnostic discovered that
+/// the original 1024-bit table is faithful only through about the
+/// first ~450 bits; beyond that, the encoded mantissa diverges from
+/// the mathematical value (the slice-6h status update in ADR-0014
+/// observed this as "constants run out of bits" without identifying
+/// the underlying encoding defect). The threshold sits conservatively
+/// below the 450-bit boundary so the fast path stays correct for the
+/// common transcendental working precisions (target + 64-bit guard at
+/// p=256 → 320 bits of working precision, comfortably inside the
+/// table's correct range). Precisions above the cap route through the
+/// AGM-based atanh series, which is correct at any precision.
+/// ADR-0017 records the design and the path to regenerating the
+/// hardcoded table after slice 7b stabilizes.
+#[cfg(feature = "exp-log")]
+pub(crate) const LN2_TABLE_PRECISION_CAP: u32 = 448;
+
+/// Returns `ln(2)` rounded to the requested precision.
+///
+/// For `prec <= LN2_TABLE_PRECISION_CAP` the rounded value comes
+/// from the hardcoded 1024-bit table (correct to ~450 bits, so the
+/// 256-bit cap leaves a generous margin). For larger precisions
+/// slice 7b computes the value on the fly via the AGM-based atanh
+/// series in [`agm_constants::ln_2_via_atanh`].
+#[cfg(feature = "exp-log")]
 #[allow(dead_code)]
 pub(crate) fn ln_2_at(prec: u32) -> BigFloat {
+    if prec <= LN2_TABLE_PRECISION_CAP {
+        ln_2_via_table(prec)
+    } else {
+        agm_constants::ln_2_via_atanh(prec)
+    }
+}
+
+/// Returns the rounded hardcoded `ln(2)` constant. Internal: the
+/// public dispatcher [`ln_2_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "exp-log")]
+#[allow(dead_code)]
+pub(crate) fn ln_2_via_table(prec: u32) -> BigFloat {
     let stored = BigFloat {
         class: Class::Normal {
             sign: Sign::Positive,
@@ -187,19 +224,16 @@ pub(crate) fn ln_2_at(prec: u32) -> BigFloat {
 
 /// Returns `ln(10)` rounded to the requested precision.
 ///
-/// Computed at call time as `ln(10)` via the existing `BigFloat::ln`
-/// kernel. Slice 3d takes the runtime cost: every `exp10` and
-/// `log10` invocation incurs one Taylor evaluation of `ln(10)` on
-/// top of its own. A hardcoded 1024-bit `LN10` constant analogous to
-/// [`LN2_LIMBS_1024`] is a frugal future optimization; the current
-/// shape keeps the slice scope narrow and lets the next iteration
-/// of `ln` improvements (Ziv strategy, Lefèvre–Muller tables) carry
-/// `ln(10)` forward without divergence.
+/// Computed on the fly via
+/// [`agm_constants::ln_10_via_atanh`] (the identity
+/// `ln(10) = 3·ln(2) + 2·atanh(1/9)`). The atanh(1/9) series
+/// converges roughly `log₂(81) ≈ 6.34` bits per term, faster than
+/// routing through the full `BigFloat::ln` kernel which would
+/// duplicate the same factorization.
 #[cfg(feature = "exp-log")]
 #[allow(dead_code)]
 pub(crate) fn ln_10_at(prec: u32) -> BigFloat {
-    let ten = BigFloat::try_from_i64_exact(10, prec).expect("precision >= 1");
-    ten.ln(RoundingMode::NearestEven).0
+    agm_constants::ln_10_via_atanh(prec)
 }
 
 /// Hardcoded `π` mantissa at 1024-bit precision.
@@ -319,11 +353,27 @@ pub(crate) const TWO_OVER_PI_LIMBS_4096: [u64; 64] = [
     0xA2F9836E4E441529,
 ];
 
-/// Returns `π` rounded to the requested precision (up to 1024 bits
-/// faithfully).
+/// Returns `π` rounded to the requested precision.
+///
+/// For `prec <= 1024` the rounded value comes from
+/// [`PI_LIMBS_1024`]. For `prec > 1024` slice 7b computes the
+/// value via the Brent–Salamin iteration in
+/// [`agm_constants::pi_via_agm`].
 #[cfg(feature = "trig")]
 #[allow(dead_code)]
 pub(crate) fn pi_at(prec: u32) -> BigFloat {
+    if prec <= 1024 {
+        pi_via_table(prec)
+    } else {
+        agm_constants::pi_via_agm(prec)
+    }
+}
+
+/// Returns the rounded hardcoded `π` constant. Internal: the public
+/// dispatcher [`pi_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_via_table(prec: u32) -> BigFloat {
     let stored = BigFloat {
         class: Class::Normal {
             sign: Sign::Positive,
@@ -338,43 +388,70 @@ pub(crate) fn pi_at(prec: u32) -> BigFloat {
         .0
 }
 
-/// Returns `π/2` rounded to the requested precision (up to 1024
-/// bits faithfully). Constructed from [`PI_LIMBS_1024`] with a
-/// single decremented exponent so no division is required.
+/// Returns `π/2` rounded to the requested precision. Composes
+/// `pi_at(prec)` with an exponent shift for the `/2`. The shift is
+/// exact (multiplication by `2^-1`).
 #[cfg(feature = "trig")]
 #[allow(dead_code)]
 pub(crate) fn pi_over_2_at(prec: u32) -> BigFloat {
-    let stored = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: 0,
-            mantissa: PI_LIMBS_1024.to_vec(),
+    if prec <= 1024 {
+        let stored = BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: 0,
+                mantissa: PI_LIMBS_1024.to_vec(),
+            },
+            precision: 1024,
+        };
+        return stored
+            .round_to_precision(prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+    }
+    let pi = agm_constants::pi_via_agm(prec);
+    // Exact /2 via an exponent decrement on the Normal variant.
+    match pi.class {
+        Class::Normal {
+            sign,
+            exponent,
+            mantissa,
+        } => BigFloat {
+            class: Class::Normal {
+                sign,
+                exponent: exponent - 1,
+                mantissa,
+            },
+            precision: pi.precision,
         },
-        precision: 1024,
-    };
-    stored
-        .round_to_precision(prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0
+        _ => unreachable!("pi_via_agm returns a Normal"),
+    }
 }
 
-/// Returns `2/π` rounded to the requested precision (up to 4096
-/// bits faithfully).
+/// Returns `2/π` rounded to the requested precision.
+///
+/// For `prec <= 4096` the rounded value comes from the 4096-bit
+/// [`TWO_OVER_PI_LIMBS_4096`] table that drives the Payne-Hanek
+/// trig argument reduction. For `prec > 4096` slice 7b computes
+/// the value via [`agm_constants::two_over_pi_via_agm`].
 #[cfg(feature = "trig")]
 #[allow(dead_code)]
 pub(crate) fn two_over_pi_at(prec: u32) -> BigFloat {
-    let stored = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: -1,
-            mantissa: TWO_OVER_PI_LIMBS_4096.to_vec(),
-        },
-        precision: 4096,
-    };
-    stored
-        .round_to_precision(prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0
+    if prec <= 4096 {
+        let stored = BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: -1,
+                mantissa: TWO_OVER_PI_LIMBS_4096.to_vec(),
+            },
+            precision: 4096,
+        };
+        stored
+            .round_to_precision(prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0
+    } else {
+        agm_constants::two_over_pi_via_agm(prec)
+    }
 }
 
 /// Hardcoded `2/sqrt(π)` mantissa at 1024-bit precision.
@@ -407,23 +484,31 @@ pub(crate) const TWO_OVER_SQRT_PI_LIMBS_1024: [u64; 16] = [
     0x906EBA8214DB688D,
 ];
 
-/// Returns `2/sqrt(π)` rounded to the requested precision (up to
-/// 1024 bits faithfully).
+/// Returns `2/sqrt(π)` rounded to the requested precision.
+///
+/// For `prec <= 1024` the rounded value comes from
+/// [`TWO_OVER_SQRT_PI_LIMBS_1024`]. For `prec > 1024` slice 7b
+/// computes the value via
+/// [`agm_constants::two_over_sqrt_pi_via_agm`].
 #[cfg(feature = "specials")]
 #[allow(dead_code)]
 pub(crate) fn two_over_sqrt_pi_at(prec: u32) -> BigFloat {
-    let stored = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: 0,
-            mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
-        },
-        precision: 1024,
-    };
-    stored
-        .round_to_precision(prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0
+    if prec <= 1024 {
+        let stored = BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: 0,
+                mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
+            },
+            precision: 1024,
+        };
+        stored
+            .round_to_precision(prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0
+    } else {
+        agm_constants::two_over_sqrt_pi_via_agm(prec)
+    }
 }
 
 /// Hardcoded `ln(2π)` mantissa at 1024-bit precision.
@@ -456,21 +541,30 @@ pub(crate) const LN_2PI_LIMBS_1024: [u64; 16] = [
     0xEB3F8E4325F5A534,
 ];
 
-/// Returns `ln(2π)` rounded to the requested precision (up to 1024
-/// bits faithfully).
+/// Returns `ln(2π)` rounded to the requested precision.
+///
+/// For `prec <= 1024` the rounded value comes from
+/// [`LN_2PI_LIMBS_1024`]. For `prec > 1024` slice 7b computes
+/// the value via [`agm_constants::ln_2pi_via_agm`] (the identity
+/// `ln(2π) = ln(2) + ln(π)`, with the atanh series carrying both
+/// terms).
 #[cfg(feature = "specials")]
 #[allow(dead_code)]
 pub(crate) fn ln_2pi_at(prec: u32) -> BigFloat {
-    let stored = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: 0,
-            mantissa: LN_2PI_LIMBS_1024.to_vec(),
-        },
-        precision: 1024,
-    };
-    stored
-        .round_to_precision(prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0
+    if prec <= 1024 {
+        let stored = BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: 0,
+                mantissa: LN_2PI_LIMBS_1024.to_vec(),
+            },
+            precision: 1024,
+        };
+        stored
+            .round_to_precision(prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0
+    } else {
+        agm_constants::ln_2pi_via_agm(prec)
+    }
 }

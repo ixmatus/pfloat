@@ -139,7 +139,7 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
     }
 
     // x is finite positive normal.
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")

@@ -98,7 +98,7 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
     let result = atan_finite_unsigned(&x.abs(), working_prec);
 
     let result_signed = if matches!(x.sign(), Sign::Negative) {
