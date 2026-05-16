@@ -226,6 +226,80 @@ pub(crate) fn ln_2_via_table(prec: u32) -> BigFloat {
         .0
 }
 
+/// Hardcoded Euler–Mascheroni `γ` mantissa at 1024-bit precision.
+///
+/// Layout: little-endian limbs, top-bit-set. With `precision = 1024`,
+/// `exponent = -1`, and a positive sign this represents
+/// `γ ≈ 0.5772156649…`.
+///
+/// Source: the correctly-rounded 1024-bit value of γ (slice 6m0).
+/// The limbs are the mantissa of `BigFloat::parse_str` applied to the
+/// authoritative OEIS A001620 decimal (`EULER_GAMMA_REFERENCE` in the
+/// `agm_constants` test module), independently cross-checked
+/// bit-for-bit against the in-repo Brent–McMillan derivation rounded
+/// down from 2048 bits. They are a mathematical fact derived from
+/// primary sources, not adapted from any implementation. The
+/// `euler_gamma_table_is_correctly_rounded_at_p1024` regression test
+/// pins both derivations. ADR-0018 records the design.
+#[cfg(feature = "exp-log")]
+#[allow(dead_code)] // referenced by the integral specials cluster
+pub(crate) const EULER_GAMMA_LIMBS_1024: [u64; 16] = [
+    0x9615_42A3_CE3B_EA5E,
+    0x5E6A_C2F0_BD61_C746,
+    0x3EC7_C271_8279_7722,
+    0xD2A1_EA1D_E62F_F864,
+    0x0C09_D4C8_B6B7_B86F,
+    0x8A96_D156_7899_AAAE,
+    0xDBE7_BF38_154B_36CF,
+    0x58DE_B878_CC86_D733,
+    0xE43B_4673_D74B_AFEA,
+    0x1056_AE91_3213_5A08,
+    0xD064_9CCB_6210_57D1,
+    0x8E4B_59FA_03A9_F0EE,
+    0x0C03_DF34_709A_FFBD,
+    0xA1CE_CC3A_F65C_C019,
+    0xD1BE_3F81_0152_CB56,
+    0x93C4_67E3_7DB0_C7A4,
+];
+
+/// Returns the Euler–Mascheroni constant `γ` rounded to the
+/// requested precision.
+///
+/// For `prec <= 1024` the rounded value comes from the
+/// correctly-rounded hardcoded [`EULER_GAMMA_LIMBS_1024`] table; for
+/// larger precisions it is computed on the fly via the Brent–McMillan
+/// algorithm in [`agm_constants::euler_gamma_via_bm`]. There is no
+/// precision cap (γ is correct at any precision), mirroring `ln_2_at`
+/// and `pi_at`.
+#[cfg(feature = "exp-log")]
+#[allow(dead_code)] // referenced by the integral specials cluster
+pub(crate) fn euler_gamma_at(prec: u32) -> BigFloat {
+    if prec <= 1024 {
+        euler_gamma_via_table(prec)
+    } else {
+        agm_constants::euler_gamma_via_bm(prec)
+    }
+}
+
+/// Returns the rounded hardcoded `γ` constant. Internal: the public
+/// dispatcher [`euler_gamma_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "exp-log")]
+#[allow(dead_code)]
+pub(crate) fn euler_gamma_via_table(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: -1,
+            mantissa: EULER_GAMMA_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
 /// Returns `ln(10)` rounded to the requested precision.
 ///
 /// Computed on the fly via

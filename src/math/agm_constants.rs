@@ -45,6 +45,7 @@
 use crate::big::BigFloat;
 use crate::class::Class;
 use crate::rounding::RoundingMode;
+use crate::sign::Sign;
 
 /// Internal-precision guard above the caller's requested precision.
 /// The Brent–Salamin loop and the atanh series each accumulate at
@@ -64,6 +65,7 @@ enum Kind {
     TwoOverPi,
     TwoOverSqrtPi,
     Ln2Pi,
+    EulerGamma,
 }
 
 /// Thread-local memoization of the AGM-computed constants.
@@ -374,6 +376,98 @@ fn ln_2pi_compute(prec: u32) -> BigFloat {
         .0
 }
 
+/// Compute the Euler–Mascheroni constant `γ` at the requested
+/// precision via the Brent–McMillan algorithm B1.
+///
+/// Identity (Brent–McMillan 1980, algorithm B1): with
+/// `t_k = (nᵏ / k!)²`, `H_k = Σ_{j=1}^{k} 1/j` (and `H_0 = 0`),
+///
+/// ```text
+/// I(n) = Σ_{k≥0} t_k
+/// S(n) = Σ_{k≥0} t_k · H_k
+/// γ    = S(n)/I(n) − ln(n) + O(π·e^{−4n})
+/// ```
+///
+/// The truncation error decays like `e^{−4n}`, so `n` is chosen so
+/// `4n ≥ (working + slack)·ln 2`. Using the integer ratio
+/// `7/40 > (ln 2)/4` keeps the choice no_std-clean and conservative.
+/// The inner sums peak near `k = n` and then decay super-geometrically;
+/// the loop runs until a term is negligible relative to the running
+/// `I(n)` (and past the peak), with a hard cap so the loop stays
+/// bounded for pathological inputs. This is a derivation from the
+/// published identity, not a port of any implementation.
+pub(super) fn euler_gamma_via_bm(prec: u32) -> BigFloat {
+    cache::memoized(Kind::EulerGamma, prec, || euler_gamma_compute(prec))
+}
+
+fn euler_gamma_compute(prec: u32) -> BigFloat {
+    let working = prec.saturating_add(GUARD_BITS);
+
+    // n with 4n ≥ working·ln2: 7/40 = 0.175 > (ln2)/4 ≈ 0.17329.
+    let n: i64 = i64::from((working.saturating_mul(7) / 40).saturating_add(3));
+
+    let n_big = BigFloat::try_from_i64_exact(n, working).expect("precision >= 1");
+    let (n_sq, _) = n_big.mul(&n_big, RoundingMode::NearestEven);
+
+    // k = 0: t_0 = 1, H_0 = 0 ⇒ I starts at 1, S starts at 0.
+    let mut term = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let mut harmonic = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+    let mut i_sum = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let mut s_sum = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+
+    // Negligible once a term sits `working + 8` bits below the running
+    // I(n); the `k > n` guard keeps the rising prefix from stopping
+    // early. The cap bounds the loop irrespective of convergence.
+    let max_iter: i64 = n.saturating_mul(8).saturating_add(64);
+    for k in 1..=max_iter {
+        let k_big = BigFloat::try_from_i64_exact(k, working).expect("precision >= 1");
+        let (k_sq, _) = k_big.mul(&k_big, RoundingMode::NearestEven);
+
+        // t_k = t_{k-1} · n² / k².
+        let (t_n2, _) = term.mul(&n_sq, RoundingMode::NearestEven);
+        let (t_next, _) = t_n2.div(&k_sq, RoundingMode::NearestEven);
+        term = t_next;
+
+        // H_k = H_{k-1} + 1/k.
+        let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+        let (inv_k, _) = one.div(&k_big, RoundingMode::NearestEven);
+        let (h_next, _) = harmonic.add(&inv_k, RoundingMode::NearestEven);
+        harmonic = h_next;
+
+        let (i_next, _) = i_sum.add(&term, RoundingMode::NearestEven);
+        i_sum = i_next;
+        let (t_h, _) = term.mul(&harmonic, RoundingMode::NearestEven);
+        let (s_next, _) = s_sum.add(&t_h, RoundingMode::NearestEven);
+        s_sum = s_next;
+
+        if k > n {
+            let negligible = match (&term.class, &i_sum.class) {
+                (Class::Zero { .. }, _) => true,
+                (
+                    Class::Normal {
+                        exponent: t_exp, ..
+                    },
+                    Class::Normal {
+                        exponent: i_exp, ..
+                    },
+                ) => *t_exp < *i_exp - i64::from(working) - 8,
+                _ => false,
+            };
+            if negligible {
+                break;
+            }
+        }
+    }
+
+    let (ratio, _) = s_sum.div(&i_sum, RoundingMode::NearestEven);
+    let (ln_n, _) = n_big.ln(RoundingMode::NearestEven);
+    let (gamma, _) = ratio.sub(&ln_n, RoundingMode::NearestEven);
+    gamma
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +541,76 @@ mod tests {
          920028324859014194977100138908915636011340902091881879477441960541933027880181437834884330\
          420106892098524138420296010060672085522859500336916517706660608854020525717637145872236018\
          9396977000179565457814057";
+
+    /// Authoritative high-precision Euler–Mascheroni γ decimal
+    /// (1102 fractional digits) for pinning `EULER_GAMMA_LIMBS_1024`
+    /// and cross-checking the Brent–McMillan implementation. Source:
+    /// OEIS A001620, generated by its published recipe
+    /// `sympy.S.EulerGamma.n(d)` (mpmath backend); treated as a
+    /// mathematical fact, the `LN2_REFERENCE` pattern.
+    const EULER_GAMMA_REFERENCE: &str =
+        "0.5772156649015328606065120900824024310421593359399235988057672348848677267776646709369470\
+         632917467495146314472498070824809605040144865428362241739976449235362535003337429373377376\
+         739427925952582470949160087352039481656708532331517766115286211995015079847937450857057400\
+         299213547861466940296043254215190587755352673313992540129674205137541395491116851028079842\
+         348775872050384310939973613725530608893312676001724795378367592713515772261027349291394079\
+         843010341777177808815495706610750101619166334015227893586796549725203621287922655595366962\
+         817638879272680132431010476505963703947394957638906572967929601009015125195950922243501409\
+         349871228247949747195646976318506676129063811051824197444867836380861749455169892792301877\
+         391072945781554316005002182844096053772434203285478367015177394398700302370339518328690001\
+         558193988042707411542227819716523011073565833967348717650491941812300040654693142999297779\
+         569303100503086303418569803231083691640025892970890985486825777364288253954925873629596133\
+         298574739302373438847070370284412920166417850248733379080562754998434590761643167103146710\
+         722370021810745044418664";
+
+    /// Pins `EULER_GAMMA_LIMBS_1024` (slice 6m0) to two independent
+    /// primary derivations of the correctly-rounded 1024-bit γ: the
+    /// authoritative OEIS A001620 decimal parsed by the bit-exact
+    /// parser, and the in-repo Brent–McMillan computation at 2048
+    /// bits rounded down to 1024. All three must agree bit-for-bit.
+    /// Because Brent–McMillan is an independent code path, a
+    /// transcription error in the reference cannot pass here.
+    #[test]
+    fn euler_gamma_table_is_correctly_rounded_at_p1024() {
+        use core::cmp::Ordering;
+        let table = super::super::euler_gamma_via_table(1024);
+        let reference = BigFloat::parse_str(EULER_GAMMA_REFERENCE, 1024, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        let bm_hi = euler_gamma_via_bm(2048)
+            .round_to_precision(1024, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        assert_eq!(
+            table.partial_cmp(&reference).0,
+            Some(Ordering::Equal),
+            "γ table must equal the OEIS A001620 reference at p=1024:\n  table={table}\n  ref  ={reference}"
+        );
+        assert_eq!(
+            table.partial_cmp(&bm_hi).0,
+            Some(Ordering::Equal),
+            "γ table must equal the independent Brent–McMillan derivation at p=1024:\n  table={table}\n  bm   ={bm_hi}"
+        );
+    }
+
+    /// Computing γ at 2048 bits and rounding to 512 must match a
+    /// direct 512-bit computation: isolates any bug to the
+    /// round-to-precision step or earlier (the
+    /// `ln_2_via_atanh_self_consistent` pattern).
+    #[test]
+    fn euler_gamma_via_bm_self_consistent() {
+        use core::cmp::Ordering;
+        let high = euler_gamma_via_bm(2048)
+            .round_to_precision(512, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        let direct = euler_gamma_via_bm(512);
+        assert_eq!(
+            high.partial_cmp(&direct).0,
+            Some(Ordering::Equal),
+            "γ self-consistency at p=512:\n  rounded from p=2048: {high}\n  direct at p=512:     {direct}"
+        );
+    }
 
     #[test]
     fn ln_2_via_atanh_matches_reference_at_p1024() {
