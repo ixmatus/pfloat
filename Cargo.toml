@@ -78,6 +78,14 @@ specials = ["trig"]
 # is genuinely standalone.
 agm = ["big"]
 
+# Integral special functions: Ei (exponential integral), Si (sine
+# integral), Ci (cosine integral), li (logarithmic integral). Slice
+# 6m. Implies `specials`: the kernels reuse the erf-style asymptotic
+# dispatch, the `auto_raise` flag pipeline, and the working-precision
+# convention, and Ei/Ci/li need the Euler-Mascheroni constant landed
+# in slice 6m0. ADR-0019 records the design.
+integrals = ["specials"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -88,8 +96,9 @@ kani = []
 # dev-dependencies to be `optional`, so the `rug` build itself runs
 # unconditionally on Unix. Implies `specials` so every math op the
 # differential tests call (ln, sinh, gamma, ...) is available, plus
-# `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`.
-differential-mpfr = ["std", "fmt", "big", "specials", "agm"]
+# `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`,
+# and `integrals` for slice 6m's `differential_{ei,si,ci,li}.rs`.
+differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
@@ -217,6 +226,26 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "differential_agm"
 path = "tests/differential_agm.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_ei"
+path = "tests/differential_ei.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_li"
+path = "tests/differential_li.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_si"
+path = "tests/differential_si.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_ci"
+path = "tests/differential_ci.rs"
 required-features = ["differential-mpfr"]
 
 [lints.rust]

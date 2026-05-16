@@ -73,3 +73,12 @@ mod sqrt;
 mod sub;
 mod tan;
 mod tanh;
+
+#[cfg(feature = "integrals")]
+mod ci;
+#[cfg(feature = "integrals")]
+mod ei;
+#[cfg(feature = "integrals")]
+mod li;
+#[cfg(feature = "integrals")]
+mod si;
