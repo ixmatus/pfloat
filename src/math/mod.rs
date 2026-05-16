@@ -137,6 +137,15 @@ pub(crate) mod gamma_stirling;
 #[cfg(feature = "specials")]
 pub(crate) mod lgamma;
 
+#[cfg(feature = "integrals")]
+pub(crate) mod ci;
+#[cfg(feature = "integrals")]
+pub(crate) mod ei;
+#[cfg(feature = "integrals")]
+pub(crate) mod li;
+#[cfg(feature = "integrals")]
+pub(crate) mod si;
+
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
 /// Layout: little-endian limbs, top-bit-set. The mantissa-as-integer

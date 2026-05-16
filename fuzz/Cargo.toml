@@ -19,7 +19,7 @@ arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.pfloat]
 path = ".."
-features = ["std", "fmt", "big", "ops", "exp-log", "trig", "specials", "agm"]
+features = ["std", "fmt", "big", "ops", "exp-log", "trig", "specials", "agm", "integrals"]
 
 # Each fuzz target is a separate binary. cargo-fuzz expects them
 # under `fuzz_targets/`; explicit `[[bin]]` entries pin

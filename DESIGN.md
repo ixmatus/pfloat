@@ -329,8 +329,21 @@ Each family dispatches by argument region.
   region; the functional equation reflects negative arguments.
   Complex arguments deferred (Riemann-Siegel out of scope for 1.0).
 - Exponential integral `Ei`, sine and cosine integrals `Si`, `Ci`,
-  logarithmic integral `li`. Power series, asymptotic, continued
-  fraction. Standard.
+  logarithmic integral `li` (slice 6m, `integrals` feature). Each
+  dispatches on the binary exponent of the argument like `erf`:
+  convergent power series (DLMF 6.6.2/6.6.5/6.6.6) for small
+  argument, divergent asymptotic summed to its smallest term
+  (DLMF 6.12) for large. `Si`/`Ci` share the asymptotic auxiliaries
+  `f`, `g`. `Ei`/`Ci`/`li` use the Euler-Mascheroni constant γ
+  (slice 6m0, Brent-McMillan; ADR-0018). `li(x) = Ei(ln x)`.
+  Real-only domain conventions: `Ei` for all `x ≠ 0` with
+  `Ei(0) = −∞`; `Si` entire and odd; `Ci` and `li` require `x > 0`
+  (`Ci(x<0)` and `li(x<0)` are complex, returning NaN + INVALID),
+  with poles `Ci(0) = −∞` and `li(1) = −∞` and `li(0) = 0`. MPFR
+  has only `eint`, so `Ei` differentials against MPFR directly,
+  `li` via `eint(ln x)` for `x > 1`, and `Si`/`Ci` against a
+  checked-in authoritative reference table plus self-consistency.
+  ADR-0019 records the design.
 - Airy `Ai`, `Bi`. Power series for small argument; asymptotic for
   large; the Wronskian relation provides a cross-check.
 - Arithmetic-geometric mean. Plain iteration; quadratic convergence.
