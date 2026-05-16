@@ -120,7 +120,7 @@ fn erfc_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // at most one bit because erfc(|x|) ≤ 2.
     if matches!(x.sign(), Sign::Negative) {
         let abs_x = x.abs();
-        let working_prec = target_precision.saturating_add(8).min(1024);
+        let working_prec = target_precision.saturating_add(8);
         let (erfc_abs, _) = abs_x
             .erfc_round(working_prec, RoundingMode::NearestEven)
             .expect("precision >= 1");

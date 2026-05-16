@@ -48,8 +48,11 @@ ops = ["big"]
 
 # Elementary transcendentals: exp, expm1, exp2, exp10, ln, log1p,
 # log2, log10. Slice 3a ships `exp`; subsequent slices fill in the
-# rest. Implies `big`.
-exp-log = ["big"]
+# rest. Implies `big` and `agm`: slice 7b uses AGM-based on-the-fly
+# computation of `π` and `ln(2)` to lift the 1024-bit hardcoded
+# constant ceiling that previously capped transcendental working
+# precision (ADR-0017).
+exp-log = ["big", "agm"]
 
 # Trig cluster: forward and inverse circular trigonometric functions
 # (sin, cos, tan, asin, acos, atan, atan2). Slice 3f ships the

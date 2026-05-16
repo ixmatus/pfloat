@@ -166,17 +166,25 @@ pub fn sweep_size() -> u32 {
 pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 
 /// Precisions used by transcendental and tier-1 special function
-/// differential tests. Capped at 256 bits per slice-6h limitation
-/// #2: pfloat's elementary transcendentals (exp, ln, pow, sin, cos,
-/// tan, atan2, sinh, cosh, asinh, erf) all use hardcoded 1024-bit
-/// constants (`ln(2)`, `2/π`, `2/sqrt(π)`, etc.) for argument
-/// reduction or the leading coefficient. A 64-bit guard above
-/// target precision means target precisions above 960 bits exceed
-/// the constants' reach and produce divergence from MPFR.
+/// differential tests.
 ///
-/// Slice 7b lifts this restriction by computing the constants
-/// on-the-fly via AGM. Until then the transcendental lane stays at
-/// or below 256 bits target precision.
+/// Slice 6h originally capped this at 256 bits because pfloat's
+/// transcendentals used hardcoded 1024-bit constants (`ln(2)`,
+/// `π`, `2/π`, etc.) for argument reduction and ADR-0014 attributed
+/// p>256 divergence to the 64-bit guard exhausting the constant's
+/// reach. Slice 7b (ADR-0017) discovered the underlying problem was
+/// a faulty 1024-bit `LN2_LIMBS_1024` encoding (correct only to
+/// ~450 bits) and replaced it with AGM-based on-the-fly computation
+/// (Brent–Salamin for π, atanh series for ln(2)). The kernels can
+/// now correctly compute transcendentals at any target precision.
+///
+/// The differential lane still caps at 256 in this slice because
+/// AGM-based constant computation is recomputed on every call,
+/// making p=1024 differential sweeps prohibitively expensive
+/// (~hour-scale for 10⁴ iterations). A follow-up slice will add
+/// thread-local memoization of `ln(2)`, `π`, etc. at common
+/// precisions, after which this constant can lift to include 1024
+/// without the runtime penalty.
 pub const TRANSCENDENTAL_PRECISIONS: &[u32] = &[53, 113, 256];
 
 /// All five IEEE 754-2019 rounding modes. Used by the differential

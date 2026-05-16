@@ -121,7 +121,7 @@ pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
     // quadrant = q mod 4 (signed mod, taken into [0, 4)).
     let quadrant = mod_4(&q_int);
 
-    let pi_over_2 = pi_over_2_at(working_prec.saturating_add(64).min(1024));
+    let pi_over_2 = pi_over_2_at(working_prec.saturating_add(64));
     let (r_scaled, _) = r_unscaled.mul(&pi_over_2, RoundingMode::NearestEven);
     let (r, _) = r_scaled
         .round_to_precision(working_prec, RoundingMode::NearestEven)

@@ -60,7 +60,7 @@ where
 }
 
 fn log10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
-    let working_prec = target_precision.saturating_add(64).min(1024);
+    let working_prec = target_precision.saturating_add(64);
     let (ln_x, ln_status) = x
         .ln_round(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1");
