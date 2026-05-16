@@ -178,14 +178,14 @@ pub const SWEEP_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 /// (Brent–Salamin for π, atanh series for ln(2)). The kernels can
 /// now correctly compute transcendentals at any target precision.
 ///
-/// The differential lane still caps at 256 in this slice because
-/// AGM-based constant computation is recomputed on every call,
-/// making p=1024 differential sweeps prohibitively expensive
-/// (~hour-scale for 10⁴ iterations). A follow-up slice will add
-/// thread-local memoization of `ln(2)`, `π`, etc. at common
-/// precisions, after which this constant can lift to include 1024
-/// without the runtime penalty.
-pub const TRANSCENDENTAL_PRECISIONS: &[u32] = &[53, 113, 256];
+/// Slice 7b deferred the p=1024 lane because AGM-based constants were
+/// recomputed on every call, making the sweep hour-scale. That
+/// follow-up has landed: `math::agm_constants` now memoizes `π`,
+/// `ln(2)`, etc. per `(kind, precision)` in a thread-local table, so
+/// each distinct working precision is computed once per sweep rather
+/// than per iteration. The lane is restored to include 1024, matching
+/// `SWEEP_PRECISIONS`.
+pub const TRANSCENDENTAL_PRECISIONS: &[u32] = &[53, 113, 256, 1024];
 
 /// All five IEEE 754-2019 rounding modes. Used by the differential
 /// tests for operations whose pfloat kernel is bit-exact correctly

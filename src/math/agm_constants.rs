@@ -52,8 +52,115 @@ use crate::rounding::RoundingMode;
 /// error at the precisions pfloat supports.
 const GUARD_BITS: u32 = 64;
 
+/// Identifies which constant a cache entry holds, so distinct
+/// constants requested at the same precision do not collide on the
+/// `(kind, prec)` key.
+#[allow(dead_code)] // some variants are unused under narrow feature combos
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Pi,
+    Ln2,
+    Ln10,
+    TwoOverPi,
+    TwoOverSqrtPi,
+    Ln2Pi,
+}
+
+/// Thread-local memoization of the AGM-computed constants.
+///
+/// Every transcendental kernel that needs `π`/`ln(2)`/… recomputes it
+/// from scratch per call; the Brent–Salamin and atanh series are
+/// `O(p)`–`O(p log p)` and dominate a high-precision differential
+/// sweep (the `~10⁴ iterations` p=1024 lane was hour-scale). The
+/// kernels request a small, stable set of working precisions, so a
+/// per-thread `(kind, prec) → value` table collapses that cost to one
+/// computation per distinct precision.
+///
+/// Keying by the *exact* requested precision is what makes this a
+/// pure optimization: each `*_compute` returns the value already
+/// rounded to `prec`, so a hit hands back the bit-identical `BigFloat`
+/// the uncached path would have produced. There is no double rounding
+/// because nothing is re-rounded on the hit path.
+///
+/// Under `no_std` there is no thread-local storage, so [`memoized`]
+/// degrades to a transparent passthrough: identical results, only the
+/// recompute cost returns.
+#[cfg(feature = "std")]
+mod cache {
+    use super::{BigFloat, Kind};
+    use std::cell::RefCell;
+
+    /// Soft bound on retained `(kind, prec)` entries per thread. The
+    /// kernels touch only a handful of distinct precisions, so this
+    /// never bites in normal use; it caps memory under a caller that
+    /// sweeps unboundedly many distinct precisions, degrading
+    /// gracefully to recompute-on-miss rather than growing without
+    /// limit (the relevant unbounded-input concern here).
+    const CACHE_CAP: usize = 64;
+
+    std::thread_local! {
+        static CACHE: RefCell<Vec<(Kind, u32, BigFloat)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    /// Returns the cached constant for `(kind, prec)`, or computes it
+    /// via `compute` and inserts it on a miss. The lookup borrow is
+    /// released before `compute` runs, so a recursive constant
+    /// (`ln(10)` calling `ln(2)`, `2/π` calling `π`) cannot trip a
+    /// `RefCell` double borrow.
+    pub(super) fn memoized(kind: Kind, prec: u32, compute: impl FnOnce() -> BigFloat) -> BigFloat {
+        if let Some(hit) = CACHE.with(|c| {
+            c.borrow()
+                .iter()
+                .find(|(k, p, _)| *k == kind && *p == prec)
+                .map(|(_, _, v)| v.clone())
+        }) {
+            return hit;
+        }
+        let value = compute();
+        CACHE.with(|c| {
+            let mut entries = c.borrow_mut();
+            if entries.len() < CACHE_CAP {
+                entries.push((kind, prec, value.clone()));
+            }
+        });
+        value
+    }
+
+    #[cfg(test)]
+    pub(super) fn entry_count() -> usize {
+        CACHE.with(|c| c.borrow().len())
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset() {
+        CACHE.with(|c| c.borrow_mut().clear());
+    }
+}
+
+#[cfg(not(feature = "std"))]
+mod cache {
+    use super::{BigFloat, Kind};
+
+    /// No thread-local storage without `std`: transparent
+    /// passthrough. Correctness is identical to the cached path; only
+    /// the per-call recompute cost differs.
+    #[inline]
+    pub(super) fn memoized(
+        _kind: Kind,
+        _prec: u32,
+        compute: impl FnOnce() -> BigFloat,
+    ) -> BigFloat {
+        compute()
+    }
+}
+
 /// Compute `π` at the requested precision via Brent–Salamin.
 pub(super) fn pi_via_agm(prec: u32) -> BigFloat {
+    cache::memoized(Kind::Pi, prec, || pi_compute(prec))
+}
+
+fn pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
 
     let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
@@ -113,6 +220,10 @@ pub(super) fn pi_via_agm(prec: u32) -> BigFloat {
 /// Compute `ln(2)` at the requested precision via the atanh series
 /// `ln(2) = 2 · atanh(1/3)`.
 pub(super) fn ln_2_via_atanh(prec: u32) -> BigFloat {
+    cache::memoized(Kind::Ln2, prec, || ln_2_compute(prec))
+}
+
+fn ln_2_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let atanh_third = atanh_one_over(3, working);
     let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
@@ -125,6 +236,10 @@ pub(super) fn ln_2_via_atanh(prec: u32) -> BigFloat {
 /// Compute `ln(10)` at the requested precision via
 /// `ln(10) = 3·ln(2) + 2·atanh(1/9)`.
 pub(super) fn ln_10_via_atanh(prec: u32) -> BigFloat {
+    cache::memoized(Kind::Ln10, prec, || ln_10_compute(prec))
+}
+
+fn ln_10_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let ln_2 = ln_2_via_atanh(working);
     let three = BigFloat::try_from_i64_exact(3, working).expect("precision >= 1");
@@ -177,6 +292,10 @@ fn atanh_one_over(n: i64, working_prec: u32) -> BigFloat {
 /// `pi_via_agm(prec)` then `2/pi`. Returns a fresh `BigFloat` at
 /// `prec` rounded under `NearestEven`.
 pub(super) fn two_over_pi_via_agm(prec: u32) -> BigFloat {
+    cache::memoized(Kind::TwoOverPi, prec, || two_over_pi_compute(prec))
+}
+
+fn two_over_pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let pi = pi_via_agm(working);
     let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
@@ -190,6 +309,10 @@ pub(super) fn two_over_pi_via_agm(prec: u32) -> BigFloat {
 /// Compute `2/√π` at the requested precision via
 /// `2 / sqrt(π)` at working precision.
 pub(super) fn two_over_sqrt_pi_via_agm(prec: u32) -> BigFloat {
+    cache::memoized(Kind::TwoOverSqrtPi, prec, || two_over_sqrt_pi_compute(prec))
+}
+
+fn two_over_sqrt_pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let pi = pi_via_agm(working);
     let (sqrt_pi, _) = pi.sqrt(RoundingMode::NearestEven);
@@ -207,6 +330,10 @@ pub(super) fn two_over_sqrt_pi_via_agm(prec: u32) -> BigFloat {
 /// precision; the convergence factor `((π−1)/(π+1))² ≈ 0.267`
 /// gives roughly `log₂(1/0.267) ≈ 1.9` bits per term.
 pub(super) fn ln_2pi_via_agm(prec: u32) -> BigFloat {
+    cache::memoized(Kind::Ln2Pi, prec, || ln_2pi_compute(prec))
+}
+
+fn ln_2pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let ln_2 = ln_2_via_atanh(working);
     let ln_pi = {
@@ -453,6 +580,65 @@ mod tests {
                 Some(Ordering::Less | Ordering::Equal)
             ),
             "ln(10) at p=128: abs={abs}, bound={bound}"
+        );
+    }
+
+    /// A second request at the same precision must be a cache hit:
+    /// the entry count does not grow and the returned value is
+    /// bit-identical to the first. `π` has no recursive constant, so
+    /// one call yields exactly one entry.
+    #[cfg(feature = "std")]
+    #[test]
+    fn memoization_hit_is_bit_identical_and_adds_no_entry() {
+        cache::reset();
+        assert_eq!(cache::entry_count(), 0);
+
+        let first = pi_via_agm(256);
+        assert_eq!(cache::entry_count(), 1, "miss should insert one entry");
+
+        let second = pi_via_agm(256);
+        assert_eq!(
+            cache::entry_count(),
+            1,
+            "hit must not insert a duplicate entry"
+        );
+
+        use core::cmp::Ordering;
+        assert_eq!(
+            first.partial_cmp(&second).0,
+            Some(Ordering::Equal),
+            "cached π must be bit-identical to the freshly computed one"
+        );
+    }
+
+    /// Recursive constants populate every level: `ln(2π)` at p=128
+    /// computes `π` and `ln(2)` at the 192-bit working precision plus
+    /// the p=128 result itself — three distinct `(kind, prec)`
+    /// entries. A repeat call adds none and the lookup borrow
+    /// releasing before recompute is what keeps this from a `RefCell`
+    /// double borrow.
+    #[cfg(feature = "std")]
+    #[test]
+    fn memoization_caches_recursive_constants() {
+        cache::reset();
+        let first = ln_2pi_via_agm(128);
+        assert_eq!(
+            cache::entry_count(),
+            3,
+            "ln(2π)@128 should cache Ln2Pi@128, Ln2@192, Pi@192"
+        );
+
+        let second = ln_2pi_via_agm(128);
+        assert_eq!(
+            cache::entry_count(),
+            3,
+            "repeat call must hit every level, adding no entries"
+        );
+        use core::cmp::Ordering;
+        assert_eq!(
+            first.partial_cmp(&second).0,
+            Some(Ordering::Equal),
+            "cached ln(2π) must be bit-identical to the first result"
         );
     }
 }
