@@ -28,6 +28,7 @@
 //!   limit; the conservative total result is `+0`, `Status::OK`.
 //! - `Jₙ(NaN) = NaN`; `sNaN` raises `INVALID`.
 
+use super::{pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -419,10 +420,121 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     j_m
 }
 
-/// `J_m(ax)` for `m ≥ 0`, `ax > 0`, normal. Interim two-regime
-/// dispatch for slice 6o.2 (tiny Maclaurin / Miller recurrence); the
-/// large-`|x|` Hankel asymptotic and the final three-regime selector
-/// land in slices 6o.3 / 6o.4. Returns the unrounded
+/// Binary-exponent boundary at/above which the DLMF 10.17.3 Hankel
+/// asymptotic is used instead of Miller recurrence.
+///
+/// The optimally-truncated Bessel-`J` asymptotic has error of order
+/// `e^{−2|x|}`, so reaching `target+64` bits needs
+/// `2|x|·log₂e ≥ target+64`, i.e. `|x| ≳ (target+64)·ln2/2 ≈
+/// 0.347·(target+64)`. Requiring `2^{e_x} ≥ target+64` is strictly
+/// more than enough: a deliberately conservative cut (Miller, always
+/// correct if slower, carries everything below it; the crossover is
+/// not perf-tuned without a bench, CLAUDE.md). Returns the smallest
+/// such `e_x` (the [`super::erf::asymptotic_threshold_exponent`]
+/// integer-loop idiom).
+pub(super) fn bessel_j_threshold(target_precision: u32) -> i64 {
+    let need: u64 = u64::from(target_precision) + 64;
+    let mut e: i64 = 0;
+    let mut pow_2: u64 = 1;
+    while pow_2 < need && e < 90 {
+        e += 1;
+        pow_2 = pow_2.saturating_mul(2);
+    }
+    e
+}
+
+/// `J_m(ax)` for `m ≥ 0`, large `ax > 0`, via the DLMF 10.17.3
+/// Hankel-form asymptotic
+///
+/// ```text
+/// J_m(x) ∼ √(2/(πx))·[cos ω · Σ_{k≥0} (−1)^k a_{2k}(m)/x^{2k}
+///                    − sin ω · Σ_{k≥0} (−1)^k a_{2k+1}(m)/x^{2k+1}]
+/// ω = x − m·π/2 − π/4
+/// ```
+///
+/// summed to its smallest term (the [`super::si`] / [`super::airy`]
+/// `if mag > prev_mag break` optimal-truncation idiom). The
+/// coefficients (DLMF 10.17.1) are **derived from the spec, not
+/// recalled**: `a_0(m)=1`,
+/// `a_k(m) = a_{k−1}(m)·(4m²−(2k−1)²)/(8k)`. The `8k` divisor was
+/// cross-checked two independent ways against the primary source
+/// (user-authorized `WebFetch` of DLMF §10.17): the closed-form ratio
+/// `[(4m²−1²)…(4m²−(2k−1)²)]/(k!·8^k)` and the Pochhammer form
+/// `(½−m)_k(½+m)_k/((−2)^k k!)`, agreeing at `k=1,2`
+/// (`a_1=(4m²−1)/8`, `a_2=(4m²−1)(4m²−9)/128`) — the 6n Airy
+/// `(2k−1)`-divisor defect is the precedent. Folding the explicit
+/// `(−1)^k` into the trig assignment, the per-`j` factor on
+/// `a_j(m)/x^j` is the period-4 cycle `[+cosω, −sinω, −cosω, +sinω]`
+/// for `j ≡ 0,1,2,3 (mod 4)`. Returns the unrounded
+/// working-precision value.
+fn bessel_j_asymptotic(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision
+        .saturating_add(64)
+        .min(target_precision.saturating_add(512));
+    let x = ax
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // ω = x − m·(π/2) − π/4.
+    let half_pi = pi_over_2_at(working);
+    let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
+    let (quarter_pi, _) = half_pi.div(&two, RoundingMode::NearestEven);
+    let m_big = BigFloat::try_from_i64_exact(i64::from(m), working).expect("precision >= 1");
+    let (m_half_pi, _) = m_big.mul(&half_pi, RoundingMode::NearestEven);
+    let (w0, _) = x.sub(&m_half_pi, RoundingMode::NearestEven);
+    let (omega, _) = w0.sub(&quarter_pi, RoundingMode::NearestEven);
+    let (cw, _) = omega.cos(RoundingMode::NearestEven);
+    let (sw, _) = omega.sin(RoundingMode::NearestEven);
+
+    // prefactor √(2/(πx)).
+    let pi = pi_at(working);
+    let (pi_x, _) = pi.mul(&x, RoundingMode::NearestEven);
+    let (ratio, _) = two.div(&pi_x, RoundingMode::NearestEven);
+    let (prefac, _) = ratio.sqrt(RoundingMode::NearestEven);
+
+    let (inv_x, _) = BigFloat::try_from_i64_exact(1, working)
+        .expect("precision >= 1")
+        .div(&x, RoundingMode::NearestEven);
+    let four_m2: i64 = 4 * i64::from(m) * i64::from(m);
+
+    // j = 0: g_0 = a_0/x^0 = 1, factor +cos ω.
+    let mut g = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let (mut bracket, _) = cw.mul(&g, RoundingMode::NearestEven);
+    let mut prev_mag = magnitude(&g);
+    let max_iter: i64 = 1 << 22;
+    for j in 1..=max_iter {
+        // a_j/a_{j−1} = (4m²−(2j−1)²)/(8j); g_j = g_{j−1}·that·(1/x).
+        let odd = 2 * j - 1;
+        let num = four_m2 - odd * odd;
+        let num_b = BigFloat::try_from_i64_exact(num, working).expect("precision >= 1");
+        let den = BigFloat::try_from_i64_exact(8 * j, working).expect("precision >= 1");
+        let (t1, _) = g.mul(&num_b, RoundingMode::NearestEven);
+        let (t2, _) = t1.div(&den, RoundingMode::NearestEven);
+        let (cand, _) = t2.mul(&inv_x, RoundingMode::NearestEven);
+        let mag = magnitude(&cand);
+        if mag > prev_mag {
+            break; // smallest term passed: optimal truncation.
+        }
+        prev_mag = mag;
+        g = cand;
+        // Period-4 trig/sign cycle on a_j/x^j.
+        let contribution = match j % 4 {
+            0 => cw.mul(&g, RoundingMode::NearestEven).0,
+            1 => sw.mul(&g, RoundingMode::NearestEven).0.negated(),
+            2 => cw.mul(&g, RoundingMode::NearestEven).0.negated(),
+            _ => sw.mul(&g, RoundingMode::NearestEven).0,
+        };
+        let (b, _) = bracket.add(&contribution, RoundingMode::NearestEven);
+        bracket = b;
+    }
+    let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
+    result
+}
+
+/// `J_m(ax)` for `m ≥ 0`, `ax > 0`, normal: the three-regime
+/// dispatch (tiny Maclaurin / Miller recurrence / Hankel asymptotic)
+/// on the binary exponent of `|x|`. Returns the unrounded
 /// working-precision value; [`bessel_j_kernel`] does the final round.
 fn bessel_j_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     let e_x = match &ax.class {
@@ -431,6 +543,8 @@ fn bessel_j_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloa
     };
     if e_x <= bessel_j_tiny_threshold() {
         bessel_j_tiny(m, ax, target_precision)
+    } else if e_x >= bessel_j_threshold(target_precision) {
+        bessel_j_asymptotic(m, ax, target_precision)
     } else {
         bessel_j_miller(m, ax, target_precision)
     }
@@ -667,5 +781,72 @@ mod tests {
         let m1 = bessel_j_miller(1, &x, p);
         assert!(close_at(&t1, &m1, p - 12), "tiny vs Miller J_1(1)");
         assert!(close_at(&m1, &pj(J1_1, p), p - 12), "Miller J_1(1)");
+    }
+
+    // mpmath besselj at large |x| (dps = 80).
+    const J0_200: &str =
+        "-0.015437439930565091591922847231344148600368768593123568900377309762820573076602530";
+    const J1_200: &str =
+        "-0.054304538182378222710670201774468780511705017574432993608494780629064889112381269";
+    const J2_200: &str =
+        "0.014894394548741309364816145213599460795251718417379238964292361956529924185478717";
+    const J3_200: &str =
+        "0.054602426073353048897966524678740769727610051942780578387780627868195487596090844";
+    const J5_200: &str =
+        "-0.055132678944014677613881610657670259235746988617144411252286985593014849978394683";
+    const J0_1000: &str =
+        "0.024786686152420174561330731115693708786166447133246548414806950013548862444082810";
+    const J1_1000: &str =
+        "0.0047283119070895239175760719012169162854180242020596368687197215361298685307353971";
+    const J2_1000: &str =
+        "-0.024777229528605995513495578971891274953595611084842429141069510570476602707021339";
+    const J0_256: &str =
+        "-0.036653498061713559638146695174670452074468458220974407801753415821915716847265129";
+    const J1_256: &str =
+        "-0.033884554799704389311128643638197027591868524189466937113016174597544122979420909";
+
+    /// Asymptotic regime (DLMF 10.17.3 path): `J_n` at `x = 200`
+    /// (`p = 53`) and `x = 1000` (`p = 113`) vs mpmath. Large enough
+    /// that the second and later `a_k(m)` terms materially
+    /// contribute, so a recalled coefficient would fail here.
+    #[test]
+    fn asymptotic_regime_matches_mpmath() {
+        let p = 53;
+        let x = at(200, 1, p);
+        for (n, want) in [
+            (0i32, J0_200),
+            (1, J1_200),
+            (2, J2_200),
+            (3, J3_200),
+            (5, J5_200),
+        ] {
+            let (r, _) = x.jn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &pj(want, p), p - 8), "J_{n}(200)");
+        }
+        let p = 113;
+        let x = at(1000, 1, p);
+        for (n, want) in [(0i32, J0_1000), (1, J1_1000), (2, J2_1000)] {
+            let (r, _) = x.jn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &pj(want, p), p - 12), "J_{n}(1000)");
+        }
+    }
+
+    /// Cross-regime continuity: at `x = 256` the Hankel asymptotic
+    /// and Miller recurrence (called directly) agree and both match
+    /// mpmath. Pins the `bessel_j_threshold` crossover and the
+    /// derived `a_k(m)` recurrence against an independent path.
+    #[test]
+    fn asymptotic_miller_continuity() {
+        let p = 113;
+        let x = at(256, 1, p);
+        let a0 = bessel_j_asymptotic(0, &x, p);
+        let mi0 = bessel_j_miller(0, &x, p);
+        assert!(close_at(&a0, &mi0, p - 12), "asymp vs Miller J_0(256)");
+        assert!(close_at(&a0, &pj(J0_256, p), p - 12), "asymp J_0(256)");
+        assert!(close_at(&mi0, &pj(J0_256, p), p - 12), "Miller J_0(256)");
+        let a1 = bessel_j_asymptotic(1, &x, p);
+        let mi1 = bessel_j_miller(1, &x, p);
+        assert!(close_at(&a1, &mi1, p - 12), "asymp vs Miller J_1(256)");
+        assert!(close_at(&a1, &pj(J1_256, p), p - 12), "asymp J_1(256)");
     }
 }
