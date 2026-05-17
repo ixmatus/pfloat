@@ -171,4 +171,67 @@ proptest! {
             "pow({n}, {k}) = {via_pow}, repeated = {via_mul}",
         );
     }
+
+    /// Slice 7c integer fast path: when xᵏ is exactly representable
+    /// at the working precision the square-and-multiply result must
+    /// equal repeated multiplication **bit-for-bit**, under every
+    /// rounding mode (exactness leaves no room for the mode to
+    /// matter). n ≤ 20, k ≤ 8 ⇒ xᵏ < 2³⁵, exact at p=113.
+    #[test]
+    fn pow_int_equals_repeated_mul_exactly(n in 2i64..=20, k in 1i64..=8) {
+        let p = 113u32;
+        let x = BigFloat::try_from_i64_exact(n, p).unwrap();
+        let y = BigFloat::try_from_i64_exact(k, p).unwrap();
+        let mut via_mul = BigFloat::try_from_i64_exact(1, p).unwrap();
+        for _ in 0..k {
+            via_mul = via_mul.mul(&x, RoundingMode::NearestEven).0;
+        }
+        for mode in [
+            RoundingMode::NearestEven,
+            RoundingMode::NearestAway,
+            RoundingMode::TowardZero,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+        ] {
+            let (via_pow, _) = x.pow(&y, mode);
+            prop_assert_eq!(
+                via_pow.partial_cmp(&via_mul).0,
+                Some(Ordering::Equal),
+                "pow({}, {}) under {:?} = {}, repeated = {}",
+                n, k, mode, via_pow, via_mul
+            );
+        }
+    }
+
+    /// Slice 7c Ziv self-consistency on the general (non-integer)
+    /// path: a correctly-rounded pow at precision p must agree with
+    /// the same call at p+96 rounded back to p. y = 1/3 forces the
+    /// exp·ln branch (no integer fast path). Agreement to p-2 catches
+    /// a Ziv driver that under-resolves the rounding boundary.
+    #[test]
+    fn pow_ziv_self_consistent_non_integer(n in 2i64..=50) {
+        let p = 113u32;
+        let third_lo = {
+            let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+            let three = BigFloat::try_from_i64_exact(3, p).unwrap();
+            one.div(&three, RoundingMode::NearestEven).0
+        };
+        let third_hi = {
+            let one = BigFloat::try_from_i64_exact(1, p + 96).unwrap();
+            let three = BigFloat::try_from_i64_exact(3, p + 96).unwrap();
+            one.div(&three, RoundingMode::NearestEven).0
+        };
+        let x_lo = BigFloat::try_from_i64_exact(n, p).unwrap();
+        let x_hi = BigFloat::try_from_i64_exact(n, p + 96).unwrap();
+        let (lo, _) = x_lo.pow(&third_lo, RoundingMode::NearestEven);
+        let (hi_full, _) = x_hi.pow(&third_hi, RoundingMode::NearestEven);
+        let hi = hi_full
+            .round_to_precision(p, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        prop_assert!(
+            close_within(&lo, &hi, p.saturating_sub(2)),
+            "pow({n}, 1/3): p={lo}, p+96->p={hi}",
+        );
+    }
 }
