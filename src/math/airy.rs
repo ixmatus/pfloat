@@ -204,7 +204,8 @@ fn airy_kernel(
         }
         Class::Zero { .. } => {
             // f(±0) = the exact boundary constant (finite, normal).
-            let value = airy_zero_value(which, target_precision);
+            let working = target_precision.saturating_add(64);
+            let value = airy_zero_value(which, working);
             let (rounded, status) = value
                 .round_to_precision(target_precision, mode)
                 .expect("precision >= 1");
@@ -249,10 +250,78 @@ fn airy_at_infinity(which: AiryFn, sign: Sign, target_precision: u32) -> BigFloa
     }
 }
 
-/// The boundary constant `f(0)` for `f ∈ {Ai, Bi, Ai′, Bi′}` (DLMF
-/// 9.2.3–9.2.6). Implemented in beads issue pf-w8l.
-fn airy_zero_value(_which: AiryFn, _working_prec: u32) -> BigFloat {
-    unimplemented!("slice-6n: boundary constants — beads pf-w8l")
+/// `Γ(num/den)` at `working` precision via the in-crate gamma
+/// kernel. `num`, `den` are small integers (1, 2, 3) so the rational
+/// is formed exactly enough at working precision; gamma carries its
+/// own internal guard.
+fn gamma_of_ratio(num: i64, den: i64, working: u32) -> BigFloat {
+    let n = BigFloat::try_from_i64_exact(num, working).expect("precision >= 1");
+    let d = BigFloat::try_from_i64_exact(den, working).expect("precision >= 1");
+    let (ratio, _) = n.div(&d, RoundingMode::NearestEven);
+    let (g, _) = ratio.gamma(RoundingMode::NearestEven);
+    g
+}
+
+/// `3^(num/den) = exp((num/den)·ln 3)` at `working` precision.
+/// Built from `ln`/`exp` directly rather than `pow`: `pow` composes
+/// the same exp/ln and slice 7c (not yet shipped) is what tightens
+/// it to 1 ULP, so the direct form keeps the error budget explicit
+/// (ADR-0021, risk 2).
+fn three_pow_ratio(num: i64, den: i64, working: u32) -> BigFloat {
+    let three = BigFloat::try_from_i64_exact(3, working).expect("precision >= 1");
+    let (ln3, _) = three.ln(RoundingMode::NearestEven);
+    let n = BigFloat::try_from_i64_exact(num, working).expect("precision >= 1");
+    let d = BigFloat::try_from_i64_exact(den, working).expect("precision >= 1");
+    let (a, _) = ln3.mul(&n, RoundingMode::NearestEven);
+    let (b, _) = a.div(&d, RoundingMode::NearestEven);
+    let (r, _) = b.exp(RoundingMode::NearestEven);
+    r
+}
+
+/// The boundary constant `f(0)` for `f ∈ {Ai, Bi, Ai′, Bi′}`,
+/// DLMF 9.2.3–9.2.6:
+///
+/// ```text
+/// Ai(0)  =  1 / (3^(2/3)·Γ(2/3))
+/// Ai′(0) = −1 / (3^(1/3)·Γ(1/3))
+/// Bi(0)  =  1 / (3^(1/6)·Γ(2/3))
+/// Bi′(0) =  3^(1/6) / Γ(1/3)
+/// ```
+///
+/// Composed at `working` precision from the in-crate gamma kernel and
+/// `exp`/`ln`; no hardcoded table (ADR-0021). Memoization is
+/// deferred pending a bench.
+fn airy_zero_value(which: AiryFn, working_prec: u32) -> BigFloat {
+    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
+    match which {
+        AiryFn::Ai => {
+            let p = three_pow_ratio(2, 3, working_prec);
+            let g = gamma_of_ratio(2, 3, working_prec);
+            let (denom, _) = p.mul(&g, RoundingMode::NearestEven);
+            let (r, _) = one.div(&denom, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::AiPrime => {
+            let p = three_pow_ratio(1, 3, working_prec);
+            let g = gamma_of_ratio(1, 3, working_prec);
+            let (denom, _) = p.mul(&g, RoundingMode::NearestEven);
+            let (r, _) = one.div(&denom, RoundingMode::NearestEven);
+            r.negated()
+        }
+        AiryFn::Bi => {
+            let p = three_pow_ratio(1, 6, working_prec);
+            let g = gamma_of_ratio(2, 3, working_prec);
+            let (denom, _) = p.mul(&g, RoundingMode::NearestEven);
+            let (r, _) = one.div(&denom, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::BiPrime => {
+            let p = three_pow_ratio(1, 6, working_prec);
+            let g = gamma_of_ratio(1, 3, working_prec);
+            let (r, _) = p.div(&g, RoundingMode::NearestEven);
+            r
+        }
+    }
 }
 
 /// Evaluate an Airy function at a finite non-zero argument via the
@@ -266,6 +335,99 @@ fn airy_eval_normal(_which: AiryFn, _x: &BigFloat, _target_precision: u32) -> Bi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cmp::Ordering;
+
+    /// `|v − expected| ≤ 2^(−bits)·|expected|` (the erf.rs test
+    /// helper). Source of the reference decimals: `mpmath`
+    /// `airyai/airybi(0[,1])` at 60 digits; treated as a fact.
+    fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
+        let (diff, _) = v.sub(expected, RoundingMode::NearestEven);
+        let abs_diff = diff.abs();
+        if abs_diff.is_zero() {
+            return true;
+        }
+        let p = v.precision().max(expected.precision());
+        let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+        let two = BigFloat::try_from_i64_exact(2, p).unwrap();
+        let abs_b = expected.abs();
+        let mut bound = if abs_b.is_zero() { one } else { abs_b };
+        for _ in 0..bits {
+            bound = bound.div(&two, RoundingMode::NearestEven).0;
+        }
+        matches!(
+            abs_diff.partial_cmp(&bound).0,
+            Some(Ordering::Less | Ordering::Equal)
+        )
+    }
+
+    fn zero_at(p: u32) -> BigFloat {
+        BigFloat::try_new_zero(Sign::Positive, p).unwrap()
+    }
+
+    #[test]
+    fn ai_zero_boundary_constant() {
+        // Ai(0) = 1/(3^(2/3)·Γ(2/3)) ≈ 0.3550280538878172392600631860…
+        let (r, _) = zero_at(160).ai(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.355028053887817239260063186004183176397979174199177240583327",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 12));
+    }
+
+    #[test]
+    fn ai_prime_zero_boundary_constant() {
+        // Ai′(0) = −1/(3^(1/3)·Γ(1/3)) ≈ −0.2588194037928067984051835…
+        let (r, _) = zero_at(160).ai_prime(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "-0.258819403792806798405183560189203963479091138354934582210002",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 12));
+    }
+
+    #[test]
+    fn bi_zero_boundary_constant() {
+        // Bi(0) = 1/(3^(1/6)·Γ(2/3)) ≈ 0.6149266274460007351509223690…
+        let (r, _) = zero_at(160).bi(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.614926627446000735150922369093613553594728188648596505040879",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 12));
+    }
+
+    #[test]
+    fn bi_prime_zero_boundary_constant() {
+        // Bi′(0) = 3^(1/6)/Γ(1/3) ≈ 0.4482883573538263579148237103…
+        let (r, _) = zero_at(160).bi_prime(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.448288357353826357914823710398828390866226799212262061082809",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 12));
+    }
+
+    #[test]
+    fn airy_negative_zero_same_as_positive_zero() {
+        // Airy functions are entire: f(−0) = f(+0) = f(0).
+        let neg0 = BigFloat::try_new_zero(Sign::Negative, 113).unwrap();
+        let (a, _) = neg0.ai(RoundingMode::NearestEven);
+        let (b, _) = zero_at(113).ai(RoundingMode::NearestEven);
+        assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
+    }
 
     #[test]
     fn airy_nan_propagates() {
