@@ -95,6 +95,12 @@ integrals = ["specials"]
 # rather than on `integrals`. ADR-0021 records the design.
 airy = ["specials"]
 
+# Bessel functions of the first kind J0, J1, Jn (ordinary, integer
+# order, real argument). Tier-2 special; depends on `specials` for
+# the in-crate transcendental constants. ADR-0023 records the
+# Miller-recurrence design. Slice 6o.
+bessel = ["specials"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -107,7 +113,7 @@ kani = []
 # differential tests call (ln, sinh, gamma, ...) is available, plus
 # `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`,
 # and `integrals` for slice 6m's `differential_{ei,si,ci,li}.rs`.
-differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy"]
+differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy", "bessel"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
