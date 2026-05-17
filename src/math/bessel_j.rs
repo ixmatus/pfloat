@@ -7,17 +7,21 @@
 //! 10.4.1), so the kernel evaluates `J_m(|x|)` for `m = |n| ≥ 0`
 //! and applies one parity sign.
 //!
-//! Three regimes, dispatched on the binary exponent of `|x|` (the
-//! [`super::airy`] / [`super::si`] integer-exponent selector idiom);
-//! the regime evaluators land in slices 6o.2 and 6o.3:
+//! Three regimes dispatch on the binary exponent of `|x|` (the
+//! [`super::airy`] / [`super::si`] integer exponent selector idiom):
 //!
-//! - Tiny `|x|`: the leading Maclaurin terms (DLMF 10.2.2). Keeps
-//!   the `2k/x` recurrence away from `x → 0`.
+//! - Tiny `|x| < 1`: the convergent Maclaurin series (DLMF 10.2.2),
+//!   the small argument backstop that keeps the `2k/x` recurrence
+//!   away from `x → 0`.
 //! - Moderate `|x|`: Miller backward recurrence
-//!   `f_{k−1} = (2k/x)·f_k − f_{k+1}` normalised by the sum rule
-//!   `J₀ + 2·Σ J_{2k} = 1` (DLMF 10.6.1, 10.12.4). ADR-0023.
-//! - Large `|x|`: the Hankel-form asymptotic (DLMF 10.17.3) summed
-//!   to its smallest term.
+//!   `f_{k−1} = (2k/x)·f_k − f_{k+1}` from a seed index derived from
+//!   the DLMF 10.19.1 large order decay, normalised by the sum rule
+//!   `J₀ + 2·Σ J_{2k} = 1` (DLMF 10.6.1, 10.12.4).
+//! - Large `|x|`: the Hankel asymptotic (DLMF 10.17.3) summed to
+//!   its smallest term, with coefficients `a_k(m)` derived from
+//!   DLMF 10.17.1 (cross checked against the Pochhammer form).
+//!
+//! ADR-0023 records the design and the coefficient provenance.
 //!
 //! Special cases:
 //!
