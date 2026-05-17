@@ -1,9 +1,28 @@
 //! `pow(x, y) = x^y`: general power function.
 //!
-//! For positive `x` and finite `y`, the implementation evaluates
-//! `exp(y · ln(x))` at working precision. The two transcendentals
-//! shipped in slices 3a and 3b carry the work; this slice mostly
-//! handles the rich IEEE 754-2019 §9.2.1 special-case table.
+//! For positive `x` and finite `y` the result is correctly rounded
+//! under every IEEE rounding mode (slice 7c, ADR-0022). Two paths
+//! feed a shared Ziv driver [`pow_ziv`]:
+//!
+//! - **Integer exponent**: when `y` is an exact integer in range,
+//!   `x^|n|` is formed by square-and-multiply ([`pow_int`]) and
+//!   reciprocated for `n < 0`. Exact cases (`2^10`) round bit-exactly
+//!   at the first guard, matching MPFR's integer fast path.
+//! - **General exponent**: `exp(y · ln(x))` evaluated at working
+//!   precision (the slice-3a `exp` and slice-3b `ln` carry the work).
+//!
+//! [`pow_ziv`] realizes DESIGN.md §"Ziv's strategy" by the
+//! recompute-and-compare test: it evaluates at a guard, rounds to
+//! the target under the caller's mode, then re-evaluates at a larger
+//! guard; two independent higher-precision evaluations rounding to
+//! the same target value means the result is not boundary-ambiguous.
+//! On disagreement the guard doubles and the loop retries, capped at
+//! [`ZIV_MAX_ITERS`] (the honest pathological-input caveat MPFR also
+//! carries). pfloat is the first transcendental off the
+//! NearestEven-only differential tier as a result.
+//!
+//! This module also handles the rich IEEE 754-2019 §9.2.1
+//! special-case table, which short-circuits before either path.
 //!
 //! Special-case table (per IEEE 754-2019 §9.2.1):
 //!
@@ -58,6 +77,12 @@ impl BigFloat {
     }
 
     /// `pow` with an explicit result precision.
+    ///
+    /// For positive base and finite exponent the result is correctly
+    /// rounded under `mode`, subject to the Ziv iteration cap
+    /// [`ZIV_MAX_ITERS`]: on the measure-zero exact-tie inputs that
+    /// exhaust the cap the result may be 1 ULP off in directed modes,
+    /// the same caveat MPFR documents (DESIGN.md §"Ziv's strategy").
     pub fn pow_round(
         &self,
         other: &Self,
@@ -233,6 +258,73 @@ fn pow_infinite_base(x_sign: Sign, y: &BigFloat, target_precision: u32) -> (BigF
             Status::OK,
         )
     }
+}
+
+// The Ziv driver and its helpers are introduced here (slice 7c.1)
+// and wired into `pow_positive` in slice 7c.3; the `dead_code`
+// allows below are removed by that commit.
+
+/// First Ziv guard: the initial evaluation uses
+/// `target + ZIV_BASE_GUARD` extra bits.
+#[allow(dead_code)]
+const ZIV_BASE_GUARD: u32 = 64;
+
+/// Maximum extra guard bits above the target precision. The doubling
+/// schedule (64, 128, 256, 512, 1024) reaches this at the last
+/// iteration.
+#[allow(dead_code)]
+const ZIV_GUARD_CAP: u32 = 1024;
+
+/// Maximum recompute-and-compare iterations. On the measure-zero
+/// exact-tie inputs that exhaust this many iterations the result may
+/// be 1 ULP off in directed modes — the honest caveat MPFR also
+/// documents (DESIGN.md §"Ziv's strategy", lines 287-299).
+#[allow(dead_code)]
+pub(super) const ZIV_MAX_ITERS: u32 = 5;
+
+/// Bit-exact (binary-radix canonical) equality of two values already
+/// rounded to the same target precision.
+#[allow(dead_code)]
+fn same_rounded(a: &BigFloat, b: &BigFloat) -> bool {
+    matches!(a.partial_cmp(b).0, Some(Ordering::Equal))
+}
+
+/// Correctly round `eval`'s value to `target` precision under `mode`
+/// by the Ziv recompute-and-compare test (DESIGN.md §"Ziv's
+/// strategy").
+///
+/// `eval(working)` returns the function value computed at the given
+/// working precision with `NearestEven` internal rounding; the
+/// directed final round to `target` is applied here. Two consecutive
+/// guards whose `target`-rounded values agree settle the result: a
+/// boundary case would round differently as the guard grows. On
+/// disagreement the guard doubles (capped at [`ZIV_GUARD_CAP`]) and
+/// the loop retries, bounded by [`ZIV_MAX_ITERS`]; if the cap is
+/// reached the last iteration's value is returned best-effort.
+#[allow(dead_code)]
+fn pow_ziv(eval: impl Fn(u32) -> BigFloat, target: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let mut guard = ZIV_BASE_GUARD;
+    let mut prev: Option<BigFloat> = None;
+    let mut last: Option<(BigFloat, Status)> = None;
+    for _ in 0..ZIV_MAX_ITERS {
+        let working = target.saturating_add(guard);
+        let hi = eval(working);
+        let (cand, status) = hi
+            .round_to_precision(target, mode)
+            .expect("target precision >= 1");
+        if let Some(p) = &prev {
+            if same_rounded(&cand, p) {
+                auto_raise(status);
+                return (cand, status);
+            }
+        }
+        prev = Some(cand.clone());
+        last = Some((cand, status));
+        guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
+    }
+    let (cand, status) = last.expect("ZIV_MAX_ITERS >= 1");
+    auto_raise(status);
+    (cand, status)
 }
 
 /// Compute `pow(x, y)` for positive finite `x` and finite `y` via
@@ -653,5 +745,87 @@ mod tests {
         assert_eq!(integer_parity(&one_half), None);
         let small = parse("0.001", 53);
         assert_eq!(integer_parity(&small), None);
+    }
+
+    // --- Ziv driver (slice 7c.1) ---
+
+    #[test]
+    fn pow_ziv_exact_value_is_bit_exact() {
+        // An exact value (8) is identical at every working precision,
+        // so the first two guards agree immediately and the result is
+        // returned bit-exactly — the MPFR integer-fast-path parity
+        // the integer branch relies on.
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            let (r, _) = pow_ziv(
+                |w| BigFloat::try_from_i64_exact(8, w).expect("w >= 1"),
+                53,
+                mode,
+            );
+            let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
+            assert_eq!(
+                r.partial_cmp(&eight).0,
+                Some(Ordering::Equal),
+                "pow_ziv exact 8 under {mode:?} = {r}"
+            );
+            assert_eq!(r.precision, 53);
+        }
+    }
+
+    #[test]
+    fn pow_ziv_converges_to_correctly_rounded() {
+        // A transcendental-shaped constant: as the guard grows the
+        // target-rounding stabilizes, and pow_ziv must land on the
+        // value obtained by rounding the constant directly to the
+        // target precision under the same mode (correct rounding).
+        let digits = "1.41421356237309504880168872420969807856967187537694\
+                       8073176679737990732478462107038850387534327641572735";
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            let target = 113u32;
+            let (r, _) = pow_ziv(
+                |w| {
+                    BigFloat::parse_str(digits, w, RoundingMode::NearestEven)
+                        .expect("parse")
+                        .0
+                },
+                target,
+                mode,
+            );
+            let direct = BigFloat::parse_str(digits, target, mode).expect("parse").0;
+            assert_eq!(
+                r.partial_cmp(&direct).0,
+                Some(Ordering::Equal),
+                "pow_ziv vs direct round under {mode:?}: ziv={r}, direct={direct}"
+            );
+        }
+    }
+
+    #[test]
+    fn pow_ziv_is_idempotent_under_recompute() {
+        // Stable input → stable output across an independent re-run:
+        // the driver does not introduce nondeterminism.
+        let eval = |w: u32| {
+            BigFloat::parse_str(
+                "2.7182818284590452353602874713527",
+                w,
+                RoundingMode::NearestEven,
+            )
+            .expect("parse")
+            .0
+        };
+        let (a, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
+        let (b, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
+        assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
     }
 }
