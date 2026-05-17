@@ -3,6 +3,23 @@
 - **Status**: accepted (Phase 5 complete)
 - **Date**: 2026-05-10
 
+## Status update (slice 7c, 2026-05-16)
+
+Limitation #3 below is closed. Slice 7c (ADR-0022) routes `pow`
+through a Ziv interval-test driver plus a square-and-multiply
+integer-exponent fast path, so `pow` is correctly rounded under
+every IEEE rounding mode (subject to the documented Ziv iteration
+cap). `tests/differential_pow.rs` now asserts bit-exact equality
+against MPFR across all five rounding modes, replacing the 2 ULP /
+NearestEven-only posture, and `pow` is the first transcendental off
+the NearestEven-only differential tier. Limitations #1 and #2 were
+already resolved by slices 7a (ADR-0016, the bit-exact converter)
+and 7b (ADR-0017, AGM-based constants); `TRANSCENDENTAL_PRECISIONS`
+now includes 1024. A latent `mpfr_round_of` mapping that sends
+NearestAway to MPFR's directed round-away (never exercised, since
+every other lane is NearestEven only) was found while tightening the
+`pow` lane and is tracked as separate cleanup.
+
 ## Status update (slice 6h, 2026-05-10)
 
 First full local MPFR sweep surfaced three structural limitations

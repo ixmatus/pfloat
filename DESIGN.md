@@ -446,11 +446,18 @@ sections that read against the renumbered phase plan.
 ## Caveats and open questions
 
 - Ziv's strategy at unbounded precision is unproven to terminate
-  in pathological cases. MPFR has the same caveat. Document the
-  iteration cap explicitly in the public API.
-- `pow(x, y)` for non-integer `y` rests on `exp(y · ln(x))`, which
-  needs extra precision in the intermediate. Standard MPFR strategy;
-  not novel.
+  in pathological cases. MPFR has the same caveat. Slice 7c
+  (ADR-0022) implements the strategy for `pow` via the interval
+  test, with the iteration cap fixed at 5 and stated in the
+  `pow_round` doc comment; on the measure-zero exact-tie inputs that
+  exhaust the cap the result may be 1 ULP off in directed modes.
+  Kernels still on the fixed 64-bit guard (`exp`, `ln`, `sin`, …)
+  carry the original caveat until a later slice extends the driver.
+- `pow(x, y)` is correctly rounded under every IEEE rounding mode
+  (subject to the Ziv cap above): an exact integer `y` takes a
+  square-and-multiply fast path, every other case evaluates
+  `exp(y · ln(x))` at working precision. It is the first
+  transcendental off the NearestEven-only differential tier.
 - Performance vs MPFR will not fully close in 1.0. MPFR carries
   decades of hand-tuned assembly via GMP. The target is "documented
   gap, never absurd"; principles forbid reaching for FFI to close

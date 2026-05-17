@@ -204,19 +204,20 @@ pub const BIT_EXACT_ROUNDING_MODES: &[RoundingMode] = &[
 
 /// Rounding modes exercised by differential tests for operations
 /// whose pfloat kernel is correctly rounded only under NearestEven:
-/// all transcendentals (exp, ln, pow, sin, cos, tan, atan2, sinh,
-/// cosh, asinh), all tier-1 specials (erf, erfc, gamma, lgamma,
-/// digamma, beta), and AGM.
+/// all transcendentals (exp, ln, sin, cos, tan, atan2, sinh, cosh,
+/// asinh), all tier-1 specials (erf, erfc, gamma, lgamma, digamma,
+/// beta), and AGM.
 ///
 /// These kernels compute at working precision `target + 64` under
 /// `NearestEven` and apply the user's mode only at the final round
 /// to target precision. The fixed 64-bit guard is not Ziv-strategy
 /// retry: at tie cases the final round under non-NearestEven modes
 /// can diverge from MPFR's correctly-rounded result by up to 1 ULP.
-/// Slice 7c (Ziv retry on `pow`) and follow-ups will lift this
-/// restriction; until then the differential lane gates these kernels
-/// under NearestEven only, the same correctness floor that ships
-/// today.
+/// Slice 7c (ADR-0022) shipped the Ziv recompute-and-compare driver
+/// for `pow`, which is therefore the first kernel off this tier and
+/// uses [`BIT_EXACT_ROUNDING_MODES`]; the rest stay under
+/// NearestEven only until later slices extend the driver, the same
+/// correctness floor that ships today.
 pub const NEAREST_EVEN_ROUNDING_MODES: &[RoundingMode] = &[RoundingMode::NearestEven];
 
 /// Back-compat alias preserved during the slice 7a rollout. New

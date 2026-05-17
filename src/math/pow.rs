@@ -1,9 +1,29 @@
 //! `pow(x, y) = x^y`: general power function.
 //!
-//! For positive `x` and finite `y`, the implementation evaluates
-//! `exp(y · ln(x))` at working precision. The two transcendentals
-//! shipped in slices 3a and 3b carry the work; this slice mostly
-//! handles the rich IEEE 754-2019 §9.2.1 special-case table.
+//! For positive `x` and finite `y` the result is correctly rounded
+//! under every IEEE rounding mode (slice 7c, ADR-0022). Two paths
+//! feed a shared Ziv driver [`pow_ziv`]:
+//!
+//! - **Integer exponent**: when `y` is an exact integer in range,
+//!   `x^|n|` is formed by square-and-multiply ([`pow_int`]) and
+//!   reciprocated for `n < 0`. Exact cases (`2^10`) round bit-exactly
+//!   at the first guard, matching MPFR's integer fast path.
+//! - **General exponent**: `exp(y · ln(x))` evaluated at working
+//!   precision (the slice-3a `exp` and slice-3b `ln` carry the work).
+//!
+//! [`pow_ziv`] realizes DESIGN.md §"Ziv's strategy" by the interval
+//! test: it evaluates at a guard and rounds to the target under the
+//! caller's mode, then checks whether both ends of the bounded
+//! evaluation-error interval round to that same target value. If
+//! they do, the true value rounds there too and the result is
+//! correctly rounded; otherwise a rounding boundary lies inside the
+//! uncertainty, the guard doubles, and the loop retries, capped at
+//! [`ZIV_MAX_ITERS`] (the honest pathological-input caveat MPFR also
+//! carries). pfloat is the first transcendental off the
+//! NearestEven-only differential tier as a result.
+//!
+//! This module also handles the rich IEEE 754-2019 §9.2.1
+//! special-case table, which short-circuits before either path.
 //!
 //! Special-case table (per IEEE 754-2019 §9.2.1):
 //!
@@ -37,7 +57,7 @@ use core::cmp::Ordering;
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
-use crate::ops::limbs::extract_as_integer;
+use crate::ops::limbs::{extract_as_integer, top_set_bit};
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
@@ -58,6 +78,12 @@ impl BigFloat {
     }
 
     /// `pow` with an explicit result precision.
+    ///
+    /// For positive base and finite exponent the result is correctly
+    /// rounded under `mode`, subject to the Ziv iteration cap
+    /// [`ZIV_MAX_ITERS`]: on the measure-zero exact-tie inputs that
+    /// exhaust the cap the result may be 1 ULP off in directed modes,
+    /// the same caveat MPFR documents (DESIGN.md §"Ziv's strategy").
     pub fn pow_round(
         &self,
         other: &Self,
@@ -235,33 +261,185 @@ fn pow_infinite_base(x_sign: Sign, y: &BigFloat, target_precision: u32) -> (BigF
     }
 }
 
-/// Compute `pow(x, y)` for positive finite `x` and finite `y` via
-/// `exp(y · ln(x))` at working precision.
+/// First Ziv guard: the initial evaluation uses
+/// `target + ZIV_BASE_GUARD` extra bits.
+const ZIV_BASE_GUARD: u32 = 64;
+
+/// Maximum extra guard bits above the target precision. The doubling
+/// schedule (64, 128, 256, 512, 1024) reaches this at the last
+/// iteration.
+const ZIV_GUARD_CAP: u32 = 1024;
+
+/// Maximum guard-doubling iterations. On the measure-zero exact-tie
+/// inputs that exhaust this many iterations the result may be 1 ULP
+/// off in directed modes — the honest caveat MPFR also documents
+/// (DESIGN.md §"Ziv's strategy", lines 287-299).
+pub(super) const ZIV_MAX_ITERS: u32 = 5;
+
+/// Slack, in bits below the working precision, charged to `eval`'s
+/// accumulated `NearestEven` rounding error. `pow_int`'s
+/// square-and-multiply uses ≤ 64 multiplies (≤ 2⁶ ULP) and the
+/// `exp·ln` path a handful of operations, all far under 2²⁴ ULP, so
+/// the half-width `|y|·2^-(w-24)` is a sound upper bound on
+/// `|eval(w) − xʸ|` for the domain this kernel serves.
+const ZIV_ERROR_GUARD: u32 = 24;
+
+/// `|y| · 2^-shift`, formed by decrementing the binary exponent (the
+/// exact power-of-two scaling used elsewhere in the crate, e.g.
+/// `math::mod::pi_over_2_at`). Non-normal `y` has no boundary
+/// uncertainty, so a zero half-width is returned.
+fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
+    match &y.class {
+        Class::Normal {
+            exponent, mantissa, ..
+        } => BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: exponent - shift,
+                mantissa: mantissa.clone(),
+            },
+            precision: y.precision,
+        },
+        _ => BigFloat::try_new_zero(Sign::Positive, y.precision).expect("precision >= 1"),
+    }
+}
+
+/// Correctly round `eval`'s value to `target` precision under `mode`
+/// by the Ziv interval test (DESIGN.md §"Ziv's strategy").
+///
+/// `eval(working)` returns `xʸ` computed at the working precision
+/// with `NearestEven` internal rounding; its error against the true
+/// value is bounded by the half-width `|y|·2^-(working −
+/// ZIV_ERROR_GUARD)`. If both ends of that uncertainty interval
+/// round to the same `target`-precision value under `mode`, every
+/// point in the interval — including the true value — rounds there
+/// too, so that value is correctly rounded. Otherwise a rounding
+/// boundary lies within the uncertainty: the guard doubles (capped
+/// at [`ZIV_GUARD_CAP`]) and the loop retries, bounded by
+/// [`ZIV_MAX_ITERS`]. Comparing two *adjacent* guards would falsely
+/// converge on a hard-to-round input (both insufficient guards agree
+/// on the wrong value); the interval test does not.
+fn pow_ziv(eval: impl Fn(u32) -> BigFloat, target: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let mut guard = ZIV_BASE_GUARD;
+    let mut fallback: Option<(BigFloat, Status)> = None;
+    for _ in 0..ZIV_MAX_ITERS {
+        let working = target.saturating_add(guard);
+        let y = eval(working);
+        let (cand, status) = y
+            .round_to_precision(target, mode)
+            .expect("target precision >= 1");
+
+        let shift = i64::from(working) - i64::from(ZIV_ERROR_GUARD);
+        let d = half_width(&y, shift);
+        let lo = y.sub(&d, RoundingMode::NearestEven).0;
+        let hi = y.add(&d, RoundingMode::NearestEven).0;
+        let lo_r = lo.round_to_precision(target, mode).expect("target >= 1").0;
+        let hi_r = hi.round_to_precision(target, mode).expect("target >= 1").0;
+        if matches!(lo_r.partial_cmp(&hi_r).0, Some(Ordering::Equal)) {
+            // The whole uncertainty interval rounds to one value:
+            // correct rounding is settled.
+            auto_raise(status);
+            return (cand, status);
+        }
+
+        fallback = Some((cand, status));
+        guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
+    }
+    // Cap reached on a pathologically hard input: best effort.
+    let (cand, status) = fallback.expect("ZIV_MAX_ITERS >= 1");
+    auto_raise(status);
+    (cand, status)
+}
+
+/// Conservative upper bound on the integer fast path's result binary
+/// exponent. Beyond this the `exp·ln` path runs instead: it carries
+/// the correct OVERFLOW/UNDERFLOW status and avoids a pathological
+/// square-and-multiply on an astronomically out-of-range result.
+/// Generous: any realistic correctly-rounded use stays far below it.
+const POW_INT_RESULT_EXPONENT_CAP: i128 = 1 << 24;
+
+/// Compute `pow(x, y)` for positive finite `x` and finite `y`,
+/// correctly rounded under `mode` via the shared [`pow_ziv`] driver.
+///
+/// An exact integer exponent in range takes the square-and-multiply
+/// path ([`pow_int`]); everything else evaluates `exp(y · ln(x))`.
+/// Both feed [`pow_ziv`] for the directed final round.
 fn pow_positive(
     x: &BigFloat,
     y: &BigFloat,
     target_precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let y_w = y
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
+    if let Some(n) = integer_exponent(y) {
+        if let Some(result) = pow_int_path(x, n, target_precision, mode) {
+            return result;
+        }
+        // Out of the feasible result-exponent range: fall through to
+        // `exp·ln`, which produces the correct ±∞/±0 + OVERFLOW /
+        // UNDERFLOW status for the extreme case.
+    }
 
-    let (ln_x, _) = x_w.ln(RoundingMode::NearestEven);
-    let (product, _) = y_w.mul(&ln_x, RoundingMode::NearestEven);
-    let (result, _) = product.exp(RoundingMode::NearestEven);
+    pow_ziv(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("w >= 1")
+                .0;
+            let y_w = y
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("w >= 1")
+                .0;
+            let (ln_x, _) = x_w.ln(RoundingMode::NearestEven);
+            let (product, _) = y_w.mul(&ln_x, RoundingMode::NearestEven);
+            let (result, _) = product.exp(RoundingMode::NearestEven);
+            result
+        },
+        target_precision,
+        mode,
+    )
+}
 
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+/// Integer-exponent fast path: `x^n` by square-and-multiply through
+/// [`pow_ziv`]. Returns `None` (deferring to `exp·ln`) when the
+/// predicted result exponent is past [`POW_INT_RESULT_EXPONENT_CAP`]
+/// or the computed value overflowed/underflowed (so the `exp·ln`
+/// path can raise the correct status).
+fn pow_int_path(
+    x: &BigFloat,
+    n: i64,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> Option<(BigFloat, Status)> {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => return None,
+    };
+    // |x|^n has binary exponent ≈ n·log₂|x|; bound it above by
+    // |n|·(|eₓ|+1) before doing any work.
+    let est = i128::from(n).saturating_mul(i128::from(e_x.unsigned_abs()) + 1);
+    if est.unsigned_abs() > POW_INT_RESULT_EXPONENT_CAP.unsigned_abs() {
+        return None;
+    }
+    let n_abs = n.unsigned_abs();
+    let (bf, status) = pow_ziv(
+        |w| {
+            let p = pow_int(x, n_abs, w);
+            if n < 0 {
+                let one = BigFloat::try_from_i64_exact(1, w).expect("w >= 1");
+                one.div(&p, RoundingMode::NearestEven).0
+            } else {
+                p
+            }
+        },
+        target_precision,
+        mode,
+    );
+    if bf.is_infinite() || bf.is_zero() {
+        // Over/underflowed; let `exp·ln` produce the IEEE status.
+        None
+    } else {
+        Some((bf, status))
+    }
 }
 
 /// Returns `true` iff `v == +1.0`. Cross-precision tolerant.
@@ -333,6 +511,93 @@ fn integer_parity(y: &BigFloat) -> Option<Parity> {
         }
         _ => None,
     }
+}
+
+/// Returns `Some(n)` if `y` is an exact finite integer whose value
+/// fits in `i64`, else `None`.
+///
+/// Sibling of [`integer_parity`]: same `scale` decomposition
+/// (`exponent − precision + 1`), but it reconstructs the signed
+/// value rather than just the parity bit. `None` covers a fractional
+/// part, a non-finite `y`, and a magnitude past `i64::MAX`. The
+/// result-exponent (`n·eₓ`) feasibility guard lives at the dispatch
+/// site (it needs the base); this extractor only decides integrality
+/// and `i64` range, so an out-of-range integer falls back to the
+/// `exp·ln` path (which handles overflow/underflow via `exp`).
+fn integer_exponent(y: &BigFloat) -> Option<i64> {
+    match &y.class {
+        Class::Zero { .. } => Some(0),
+        Class::Normal {
+            exponent, mantissa, ..
+        } => {
+            let scale = exponent - i64::from(y.precision) + 1;
+            let m_int = extract_as_integer(mantissa, y.precision);
+            // `m_int` is normalized (top bit set) so `top_set_bit`
+            // is `Some`; `lsb` is the lowest set bit.
+            let msb = top_set_bit(&m_int)? as i64;
+            let lsb = lowest_set_bit(&m_int)? as i64;
+            // y = m_int · 2^scale. Integer iff no set bit lands below
+            // the binary point, i.e. lsb + scale ≥ 0.
+            if lsb + scale < 0 {
+                return None;
+            }
+            // Exponent of the integer's most significant bit. Keep it
+            // below 63 so the reconstructed magnitude fits i64.
+            let top = msb + scale;
+            if top > 62 {
+                return None;
+            }
+            let mut mag: i128 = 0;
+            for i in lsb..=msb {
+                let bit = (m_int[(i / 64) as usize] >> (i % 64)) & 1;
+                if bit == 1 {
+                    mag |= 1i128 << (i + scale);
+                }
+            }
+            let signed = i64::try_from(mag).ok()?;
+            Some(if y.is_sign_negative() {
+                -signed
+            } else {
+                signed
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Lowest set bit index of a little-endian limb buffer, or `None`
+/// if every limb is zero.
+fn lowest_set_bit(buffer: &[u64]) -> Option<usize> {
+    for (i, &limb) in buffer.iter().enumerate() {
+        if limb != 0 {
+            return Some(i * 64 + limb.trailing_zeros() as usize);
+        }
+    }
+    None
+}
+
+/// `x^n_abs` for a non-negative integer exponent by
+/// square-and-multiply at working precision `w` (`NearestEven`
+/// internal rounding). The caller reciprocates for negative `n` and
+/// feeds the result through [`pow_ziv`] for the directed final
+/// round, so exact powers settle bit-exactly at the first guard.
+fn pow_int(x: &BigFloat, n_abs: u64, w: u32) -> BigFloat {
+    let mut result = BigFloat::try_from_i64_exact(1, w).expect("w >= 1");
+    let mut base = x
+        .round_to_precision(w, RoundingMode::NearestEven)
+        .expect("w >= 1")
+        .0;
+    let mut e = n_abs;
+    while e > 0 {
+        if e & 1 == 1 {
+            result = result.mul(&base, RoundingMode::NearestEven).0;
+        }
+        e >>= 1;
+        if e > 0 {
+            base = base.mul(&base, RoundingMode::NearestEven).0;
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -653,5 +918,200 @@ mod tests {
         assert_eq!(integer_parity(&one_half), None);
         let small = parse("0.001", 53);
         assert_eq!(integer_parity(&small), None);
+    }
+
+    // --- Ziv driver (slice 7c.1) ---
+
+    #[test]
+    fn pow_ziv_exact_value_is_bit_exact() {
+        // An exact value (8) is identical at every working precision,
+        // so the first two guards agree immediately and the result is
+        // returned bit-exactly — the MPFR integer-fast-path parity
+        // the integer branch relies on.
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            let (r, _) = pow_ziv(
+                |w| BigFloat::try_from_i64_exact(8, w).expect("w >= 1"),
+                53,
+                mode,
+            );
+            let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
+            assert_eq!(
+                r.partial_cmp(&eight).0,
+                Some(Ordering::Equal),
+                "pow_ziv exact 8 under {mode:?} = {r}"
+            );
+            assert_eq!(r.precision, 53);
+        }
+    }
+
+    #[test]
+    fn pow_ziv_converges_to_correctly_rounded() {
+        // A transcendental-shaped constant: as the guard grows the
+        // target-rounding stabilizes, and pow_ziv must land on the
+        // value obtained by rounding the constant directly to the
+        // target precision under the same mode (correct rounding).
+        let digits = "1.41421356237309504880168872420969807856967187537694\
+                       8073176679737990732478462107038850387534327641572735";
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            let target = 113u32;
+            let (r, _) = pow_ziv(
+                |w| {
+                    BigFloat::parse_str(digits, w, RoundingMode::NearestEven)
+                        .expect("parse")
+                        .0
+                },
+                target,
+                mode,
+            );
+            let direct = BigFloat::parse_str(digits, target, mode).expect("parse").0;
+            assert_eq!(
+                r.partial_cmp(&direct).0,
+                Some(Ordering::Equal),
+                "pow_ziv vs direct round under {mode:?}: ziv={r}, direct={direct}"
+            );
+        }
+    }
+
+    #[test]
+    fn pow_ziv_is_idempotent_under_recompute() {
+        // Stable input → stable output across an independent re-run:
+        // the driver does not introduce nondeterminism.
+        let eval = |w: u32| {
+            BigFloat::parse_str(
+                "2.7182818284590452353602874713527",
+                w,
+                RoundingMode::NearestEven,
+            )
+            .expect("parse")
+            .0
+        };
+        let (a, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
+        let (b, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
+        assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
+    }
+
+    // --- Integer exponent extractor + pow_int (slice 7c.2) ---
+
+    #[test]
+    fn integer_exponent_detects_across_precisions() {
+        // The trailing-zero mantissa of a small integer grows with
+        // precision; the extractor must still recover the value at
+        // every precision the differential sweep exercises.
+        for &p in &[53u32, 113, 256, 1024] {
+            for n in [0i64, 1, -1, 7, -7, 42, 1024, -1023] {
+                let v = BigFloat::try_from_i64_exact(n, p).unwrap();
+                assert_eq!(integer_exponent(&v), Some(n), "n={n} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn integer_exponent_rejects_non_integers() {
+        for s in ["0.5", "1.5", "0.001", "-3.25"] {
+            assert_eq!(integer_exponent(&parse(s, 53)), None, "{s}");
+        }
+    }
+
+    #[test]
+    fn integer_exponent_rejects_out_of_i64_range() {
+        // 2^62 fits i64; 2^63 does not (top bit exponent 63 > 62).
+        let two_62 = parse("4611686018427387904", 80);
+        assert_eq!(integer_exponent(&two_62), Some(1i64 << 62));
+        let two_63 = parse("9223372036854775808", 80);
+        assert_eq!(integer_exponent(&two_63), None);
+    }
+
+    #[test]
+    fn pow_int_equals_repeated_mul() {
+        // Exactly-representable integer powers: square-and-multiply
+        // must equal the closed-form integer bit-for-bit.
+        for (x, n, expect) in [(3i64, 10u64, 59049i64), (2, 20, 1_048_576), (7, 3, 343)] {
+            let xb = BigFloat::try_from_i64_exact(x, 113).unwrap();
+            let r = pow_int(&xb, n, 113 + 64);
+            let (rr, _) = r
+                .round_to_precision(113, RoundingMode::NearestEven)
+                .unwrap();
+            let want = BigFloat::try_from_i64_exact(expect, 113).unwrap();
+            assert_eq!(
+                rr.partial_cmp(&want).0,
+                Some(Ordering::Equal),
+                "{x}^{n} = {rr}, want {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn pow_int_zero_exponent_is_one() {
+        let x = BigFloat::try_from_i64_exact(5, 53).unwrap();
+        let r = pow_int(&x, 0, 53);
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        assert_eq!(r.partial_cmp(&one).0, Some(Ordering::Equal));
+    }
+
+    // --- Integer-path correct rounding under directed modes ---
+
+    #[test]
+    fn pow_directed_modes_integer_exponent() {
+        // ADR-0014's witness: pow(63, 9) at p=53 differed from MPFR
+        // by 1 ULP under the old single-shot path. 63^9 ≈ 2^53.8 so
+        // it is not representable at p=53 and must round. Build the
+        // exact value by an independent naive repeated multiply at
+        // ample precision, then check the public pow equals that
+        // value rounded to 53 bits under each mode (correct
+        // rounding, no MPFR needed).
+        let sixty_three = BigFloat::try_from_i64_exact(63, 128).unwrap();
+        let mut exact = BigFloat::try_from_i64_exact(1, 128).unwrap();
+        for _ in 0..9 {
+            exact = exact.mul(&sixty_three, RoundingMode::NearestEven).0;
+        }
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::NearestAway,
+            RoundingMode::TowardZero,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+        ] {
+            let want = exact.round_to_precision(53, mode).unwrap().0;
+            let base = BigFloat::try_from_i64_exact(63, 53).unwrap();
+            let expn = BigFloat::try_from_i64_exact(9, 53).unwrap();
+            let (got, _) = base.pow(&expn, mode);
+            assert_eq!(
+                got.partial_cmp(&want).0,
+                Some(Ordering::Equal),
+                "pow(63,9) under {mode:?}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn pow_negative_base_integer_uses_fast_path() {
+        // (-63)^9 routes through pow_positive(|x|,…) then negates;
+        // it must equal -(63^9 rounded to p), odd exponent.
+        let s = BigFloat::try_from_i64_exact(63, 128).unwrap();
+        let mut exact = BigFloat::try_from_i64_exact(1, 128).unwrap();
+        for _ in 0..9 {
+            exact = exact.mul(&s, RoundingMode::NearestEven).0;
+        }
+        let want = exact
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0
+            .negated();
+        let base = BigFloat::try_from_i64_exact(-63, 53).unwrap();
+        let expn = BigFloat::try_from_i64_exact(9, 53).unwrap();
+        let (got, _) = base.pow(&expn, RoundingMode::NearestEven);
+        assert_eq!(got.partial_cmp(&want).0, Some(Ordering::Equal));
     }
 }
