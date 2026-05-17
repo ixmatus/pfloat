@@ -146,6 +146,9 @@ pub(crate) mod li;
 #[cfg(feature = "integrals")]
 pub(crate) mod si;
 
+#[cfg(feature = "airy")]
+pub(crate) mod airy;
+
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
 /// Layout: little-endian limbs, top-bit-set. The mantissa-as-integer

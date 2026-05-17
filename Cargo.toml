@@ -86,6 +86,15 @@ agm = ["big"]
 # in slice 6m0. ADR-0019 records the design.
 integrals = ["specials"]
 
+# Airy functions Ai, Bi and their derivatives Ai′, Bi′. Slice 6n.
+# Implies `specials`: the kernel reuses the erf/si asymptotic-plus-
+# Taylor dispatch, the `auto_raise` flag pipeline, the
+# working-precision convention, and composes the boundary constants
+# from the in-crate `gamma` kernel. Airy is a tier-2 special
+# function, not an integral, so it depends on `specials` directly
+# rather than on `integrals`. ADR-0021 records the design.
+airy = ["specials"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
