@@ -14,7 +14,7 @@
 //!   term.
 //! - Large negative `x`: the oscillatory asymptotic (DLMF
 //!   9.7.9–9.7.12) in `ζ = (2/3)·|x|^{3/2}` with the phase
-//!   `ξ = ζ + π/4`.
+//!   `φ = ζ − π/4`.
 //!
 //! Special cases:
 //!
@@ -39,6 +39,8 @@ use crate::status::{auto_raise, Status};
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
+
+use super::pi_at;
 
 /// Which Airy function a kernel invocation evaluates. The four share
 /// the boundary constants, the `f`/`g` Maclaurin series, the
@@ -324,14 +326,336 @@ fn airy_zero_value(which: AiryFn, working_prec: u32) -> BigFloat {
     }
 }
 
-/// Evaluate an Airy function at a finite non-zero argument. The
-/// three-regime sign-aware dispatch (Maclaurin / exponential
-/// asymptotic / oscillatory asymptotic) lands in beads pf-nfb; until
-/// then every finite argument routes through the convergent
-/// Maclaurin series, which is valid for all `z` (the entire
-/// solutions `f`, `g`).
+/// Evaluate an Airy function at a finite non-zero argument via the
+/// three-regime sign-aware dispatch: large positive `x` → the
+/// exponential asymptotic (DLMF 9.7.5–9.7.8); large negative `x` →
+/// the oscillatory asymptotic (DLMF 9.7.9–9.7.12); otherwise the
+/// convergent Maclaurin series (valid for all `z`).
 fn airy_eval_normal(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
-    airy_series(which, x, target_precision)
+    let e_x = match &x.abs().class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let threshold = airy_threshold_exponent(target_precision);
+    if e_x >= threshold {
+        if matches!(x.sign(), Sign::Negative) {
+            airy_asymptotic_neg(which, &x.abs(), target_precision)
+        } else {
+            airy_asymptotic_pos(which, x, target_precision)
+        }
+    } else {
+        airy_series(which, x, target_precision)
+    }
+}
+
+/// Smallest binary exponent of `|x|` at which the Airy asymptotic
+/// expansions already give `target_precision + 32` bits.
+///
+/// The Airy coefficient ratio is `u_k/u_{k−1} ≈ k²` for large `k`,
+/// so the asymptotic series `Σ u_k/ζ^k` minimises near `k ≈ √ζ` and
+/// its optimally-truncated error is `≈ e^{−2√ζ}` (NOT `e^{−2ζ}`;
+/// the smallest term, not the late tail). The requirement is
+/// therefore `2√ζ·log₂e ≥ p+32` with `ζ = (2/3)|x|^{3/2}`, i.e.
+///
+/// ```text
+/// |x|³ ≥ (9/4)·((p+32)/(2·log₂e))⁴
+/// ```
+///
+/// Solved in integer arithmetic on the cube of the `|x|` lower
+/// bound `2^{e_x}` (so the helper stays no_std-clean), with the
+/// conservative rational `log₂e ≈ 23/16`. The fourth-power growth
+/// means the asymptotic only takes over for genuinely large `|x|`;
+/// everything below routes through the (uncapped-guard) Maclaurin
+/// series, which is correct at any precision. ADR-0021 records the
+/// `e^{−2√ζ}` accuracy law and this regime boundary.
+pub(super) fn airy_threshold_exponent(target_precision: u32) -> i64 {
+    let bits: u128 = u128::from(target_precision) + 32;
+    // K = (p+32)/(2·log₂e) ≈ (p+32)·8/23.
+    // need = ⌈(9/4)·K⁴⌉ = ⌈9·bits⁴·8⁴ / (4·23⁴)⌉.
+    let bits2 = bits.saturating_mul(bits);
+    let bits4 = bits2.saturating_mul(bits2);
+    let need: u128 = bits4.saturating_mul(9 * 4096).div_ceil(4 * 279_841);
+    let mut e: i64 = 1;
+    let mut pow_8: u128 = 8; // 8^1 = 2^{3·1}, the lower bound on |x|³
+    while pow_8 < need && e < 90 {
+        e += 1;
+        pow_8 = pow_8.saturating_mul(8);
+    }
+    e
+}
+
+/// Accumulate the asymptotic coefficient sums. `u_k` follows the
+/// DLMF 9.7.2 recurrence `u_k = (6k−5)(6k−3)(6k−1)/(216k)·u_{k−1}`,
+/// `u_0 = 1`; `v_k = −(6k+1)/(6k−1)·u_k`. With `inv_zeta = 1/ζ`, the
+/// running term is `t_k = u_k/ζ^k`. Returns, summed to the smallest
+/// term (optimal truncation, the [`super::si::si_ci_f`] idiom):
+///
+/// - `s_u_alt = Σ (−1)^k u_k/ζ^k`, `s_u = Σ u_k/ζ^k`
+/// - `s_v_alt = Σ (−1)^k v_k/ζ^k`, `s_v = Σ v_k/ζ^k`
+fn airy_uv_sums(inv_zeta: &BigFloat, working: u32) -> (BigFloat, BigFloat, BigFloat, BigFloat) {
+    let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let mut t_u = one.clone(); // u_0/ζ^0
+    let mut s_u = one.clone();
+    let mut s_u_alt = one.clone();
+    let mut s_v = one.clone(); // v_0 = 1
+    let mut s_v_alt = one.clone();
+    let mut prev_mag = series_magnitude(&t_u);
+    let max_iter: i64 = 1 << 20;
+    for k in 1..=max_iter {
+        // DLMF 9.7.2: u_k = (6k−5)(6k−3)(6k−1) / [(2k−1)·216·k] · u_{k−1}.
+        let num1 = BigFloat::try_from_i64_exact(6 * k - 5, working).expect("precision >= 1");
+        let num2 = BigFloat::try_from_i64_exact(6 * k - 3, working).expect("precision >= 1");
+        let num3 = BigFloat::try_from_i64_exact(6 * k - 1, working).expect("precision >= 1");
+        let den1 = BigFloat::try_from_i64_exact(216 * k, working).expect("precision >= 1");
+        let den2 = BigFloat::try_from_i64_exact(2 * k - 1, working).expect("precision >= 1");
+        let (a, _) = t_u.mul(&num1, RoundingMode::NearestEven);
+        let (a, _) = a.mul(&num2, RoundingMode::NearestEven);
+        let (a, _) = a.mul(&num3, RoundingMode::NearestEven);
+        let (a, _) = a.div(&den1, RoundingMode::NearestEven);
+        let (a, _) = a.div(&den2, RoundingMode::NearestEven);
+        let (cand, _) = a.mul(inv_zeta, RoundingMode::NearestEven);
+        let mag = series_magnitude(&cand);
+        if mag > prev_mag {
+            break; // smallest term passed: optimal truncation.
+        }
+        prev_mag = mag;
+        t_u = cand;
+
+        // v_k/ζ^k = (t_u) · −(6k+1)/(6k−1).
+        let vn = BigFloat::try_from_i64_exact(6 * k + 1, working).expect("precision >= 1");
+        let vd = BigFloat::try_from_i64_exact(6 * k - 1, working).expect("precision >= 1");
+        let (tv, _) = t_u.mul(&vn, RoundingMode::NearestEven);
+        let (tv, _) = tv.div(&vd, RoundingMode::NearestEven);
+        let t_v = tv.negated();
+
+        let (s, _) = s_u.add(&t_u, RoundingMode::NearestEven);
+        s_u = s;
+        let (s, _) = s_v.add(&t_v, RoundingMode::NearestEven);
+        s_v = s;
+        if k % 2 == 0 {
+            let (s, _) = s_u_alt.add(&t_u, RoundingMode::NearestEven);
+            s_u_alt = s;
+            let (s, _) = s_v_alt.add(&t_v, RoundingMode::NearestEven);
+            s_v_alt = s;
+        } else {
+            let (s, _) = s_u_alt.sub(&t_u, RoundingMode::NearestEven);
+            s_u_alt = s;
+            let (s, _) = s_v_alt.sub(&t_v, RoundingMode::NearestEven);
+            s_v_alt = s;
+        }
+    }
+    (s_u_alt, s_u, s_v_alt, s_v)
+}
+
+/// `x^{3/2} = x·√x` and `x^{1/4} = √√x` at `working` precision,
+/// built from `sqrt` (never `pow`; ADR-0021 risk 2).
+fn x_three_halves_and_quarter(xw: &BigFloat) -> (BigFloat, BigFloat) {
+    let (sqrt_x, _) = xw.sqrt(RoundingMode::NearestEven);
+    let (x32, _) = xw.mul(&sqrt_x, RoundingMode::NearestEven);
+    let (x_q, _) = sqrt_x.sqrt(RoundingMode::NearestEven);
+    (x32, x_q)
+}
+
+fn two_thirds(v: &BigFloat, working: u32) -> BigFloat {
+    let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
+    let three = BigFloat::try_from_i64_exact(3, working).expect("precision >= 1");
+    let (a, _) = v.mul(&two, RoundingMode::NearestEven);
+    let (b, _) = a.div(&three, RoundingMode::NearestEven);
+    b
+}
+
+/// Large positive `x`: the exponential asymptotic, DLMF 9.7.5–9.7.8,
+/// with `ζ = (2/3)x^{3/2}`:
+///
+/// ```text
+/// Ai (x) ~  e^{−ζ}/(2√π x^{1/4}) · Σ (−1)^k u_k/ζ^k
+/// Bi (x) ~  e^{+ζ}/( √π x^{1/4}) · Σ        u_k/ζ^k
+/// Ai′(x) ~ −x^{1/4} e^{−ζ}/(2√π) · Σ (−1)^k v_k/ζ^k
+/// Bi′(x) ~  x^{1/4} e^{+ζ}/( √π) · Σ        v_k/ζ^k
+/// ```
+fn airy_asymptotic_pos(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision.saturating_add(64);
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let (x32, x_q) = x_three_halves_and_quarter(&xw);
+    let zeta = two_thirds(&x32, working);
+    let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let (inv_zeta, _) = one.div(&zeta, RoundingMode::NearestEven);
+    let (s_u_alt, s_u, s_v_alt, s_v) = airy_uv_sums(&inv_zeta, working);
+
+    let (sqrt_pi, _) = pi_at(working).sqrt(RoundingMode::NearestEven);
+    let two_sqrt_pi = {
+        let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
+        two.mul(&sqrt_pi, RoundingMode::NearestEven).0
+    };
+    let (e_pos, _) = zeta.exp(RoundingMode::NearestEven);
+    let (e_neg, _) = zeta.negated().exp(RoundingMode::NearestEven);
+
+    match which {
+        AiryFn::Ai => {
+            // e^{−ζ}·s_u_alt / (2√π·x^{1/4})
+            let (n, _) = e_neg.mul(&s_u_alt, RoundingMode::NearestEven);
+            let (d, _) = two_sqrt_pi.mul(&x_q, RoundingMode::NearestEven);
+            n.div(&d, RoundingMode::NearestEven).0
+        }
+        AiryFn::Bi => {
+            let (n, _) = e_pos.mul(&s_u, RoundingMode::NearestEven);
+            let (d, _) = sqrt_pi.mul(&x_q, RoundingMode::NearestEven);
+            n.div(&d, RoundingMode::NearestEven).0
+        }
+        AiryFn::AiPrime => {
+            // −x^{1/4} e^{−ζ} s_v_alt / (2√π)
+            let (n, _) = x_q.mul(&e_neg, RoundingMode::NearestEven);
+            let (n, _) = n.mul(&s_v_alt, RoundingMode::NearestEven);
+            let (r, _) = n.div(&two_sqrt_pi, RoundingMode::NearestEven);
+            r.negated()
+        }
+        AiryFn::BiPrime => {
+            let (n, _) = x_q.mul(&e_pos, RoundingMode::NearestEven);
+            let (n, _) = n.mul(&s_v, RoundingMode::NearestEven);
+            n.div(&sqrt_pi, RoundingMode::NearestEven).0
+        }
+    }
+}
+
+/// Large negative `x` (`t = |x| > 0`): the oscillatory asymptotic,
+/// DLMF 9.7.9–9.7.12, with `ζ = (2/3)t^{3/2}` and phase
+/// `φ = ζ − π/4`. With the even/odd index splits
+/// `Pu = Σ (−1)^k u_{2k}/ζ^{2k}`, `Qu = Σ (−1)^k u_{2k+1}/ζ^{2k+1}`
+/// and `Pv`, `Qv` the `v` analogues:
+///
+/// ```text
+/// Ai (−t) =  π^{−1/2} t^{−1/4} ( cos φ · Pu + sin φ · Qu )
+/// Bi (−t) =  π^{−1/2} t^{−1/4} (−sin φ · Pu + cos φ · Qu )
+/// Ai′(−t) =  π^{−1/2} t^{ 1/4} ( sin φ · Pv − cos φ · Qv )
+/// Bi′(−t) =  π^{−1/2} t^{ 1/4} ( cos φ · Pv + sin φ · Qv )
+/// ```
+fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision.saturating_add(64);
+    let tw = t
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let (t32, t_q) = x_three_halves_and_quarter(&tw);
+    let zeta = two_thirds(&t32, working);
+    let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let (inv_zeta, _) = one.div(&zeta, RoundingMode::NearestEven);
+
+    let (pu, qu, pv, qv) = airy_uv_sums_split(&inv_zeta, working);
+
+    // Phase φ = ζ − π/4. sin/cos range-reduce internally.
+    let pi_over_4 = {
+        let four = BigFloat::try_from_i64_exact(4, working).expect("precision >= 1");
+        pi_at(working).div(&four, RoundingMode::NearestEven).0
+    };
+    let (phi, _) = zeta.sub(&pi_over_4, RoundingMode::NearestEven);
+    let (cos_phi, _) = phi.cos(RoundingMode::NearestEven);
+    let (sin_phi, _) = phi.sin(RoundingMode::NearestEven);
+
+    let (sqrt_pi, _) = pi_at(working).sqrt(RoundingMode::NearestEven);
+    let (inv_sqrt_pi, _) = one.div(&sqrt_pi, RoundingMode::NearestEven);
+
+    let mul = |a: &BigFloat, b: &BigFloat| a.mul(b, RoundingMode::NearestEven).0;
+    let add = |a: &BigFloat, b: &BigFloat| a.add(b, RoundingMode::NearestEven).0;
+    let sub = |a: &BigFloat, b: &BigFloat| a.sub(b, RoundingMode::NearestEven).0;
+
+    match which {
+        AiryFn::Ai => {
+            // π^{−1/2} t^{−1/4} ( cos φ·Pu + sin φ·Qu )
+            let inner = add(&mul(&cos_phi, &pu), &mul(&sin_phi, &qu));
+            let (r, _) = mul(&inv_sqrt_pi, &inner).div(&t_q, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::Bi => {
+            // π^{−1/2} t^{−1/4} ( −sin φ·Pu + cos φ·Qu )
+            let inner = sub(&mul(&cos_phi, &qu), &mul(&sin_phi, &pu));
+            let (r, _) = mul(&inv_sqrt_pi, &inner).div(&t_q, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::AiPrime => {
+            // DLMF 9.7.10: +π^{−1/2} t^{1/4} ( sin φ·Pv − cos φ·Qv )
+            let inner = sub(&mul(&sin_phi, &pv), &mul(&cos_phi, &qv));
+            mul(&mul(&inv_sqrt_pi, &t_q), &inner)
+        }
+        AiryFn::BiPrime => {
+            // π^{−1/2} t^{1/4} ( cos φ·Pv + sin φ·Qv )
+            let inner = add(&mul(&cos_phi, &pv), &mul(&sin_phi, &qv));
+            mul(&mul(&inv_sqrt_pi, &t_q), &inner)
+        }
+    }
+}
+
+/// The even/odd-index split of the u- and v-coefficient asymptotic
+/// series (DLMF 9.7.9–9.7.12), summed to the smallest term:
+///
+/// ```text
+/// Pu = Σ_{k≥0} (−1)^k u_{2k}  /ζ^{2k}     Qu = Σ (−1)^k u_{2k+1}/ζ^{2k+1}
+/// Pv = Σ_{k≥0} (−1)^k v_{2k}  /ζ^{2k}     Qv = Σ (−1)^k v_{2k+1}/ζ^{2k+1}
+/// ```
+///
+/// Iterating the single sequence `t_j = u_j/ζ^j` and routing term
+/// `j` by parity: `j = 2k → P` with sign `(−1)^k`, `j = 2k+1 → Q`
+/// with sign `(−1)^k`. `v_j = −(6j+1)/(6j−1)·u_j`.
+fn airy_uv_sums_split(
+    inv_zeta: &BigFloat,
+    working: u32,
+) -> (BigFloat, BigFloat, BigFloat, BigFloat) {
+    let zero = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+    let one = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
+    let mut t_u = one.clone(); // j = 0
+    let mut pu = one.clone();
+    let mut qu = zero.clone();
+    let mut pv = one.clone(); // v_0 = 1
+    let mut qv = zero;
+    let mut prev_mag = series_magnitude(&t_u);
+    let max_iter: i64 = 1 << 20;
+    for j in 1..=max_iter {
+        // DLMF 9.7.2: u_j = (6j−5)(6j−3)(6j−1) / [(2j−1)·216·j] · u_{j−1}.
+        let num1 = BigFloat::try_from_i64_exact(6 * j - 5, working).expect("precision >= 1");
+        let num2 = BigFloat::try_from_i64_exact(6 * j - 3, working).expect("precision >= 1");
+        let num3 = BigFloat::try_from_i64_exact(6 * j - 1, working).expect("precision >= 1");
+        let den1 = BigFloat::try_from_i64_exact(216 * j, working).expect("precision >= 1");
+        let den2 = BigFloat::try_from_i64_exact(2 * j - 1, working).expect("precision >= 1");
+        let (a, _) = t_u.mul(&num1, RoundingMode::NearestEven);
+        let (a, _) = a.mul(&num2, RoundingMode::NearestEven);
+        let (a, _) = a.mul(&num3, RoundingMode::NearestEven);
+        let (a, _) = a.div(&den1, RoundingMode::NearestEven);
+        let (a, _) = a.div(&den2, RoundingMode::NearestEven);
+        let (cand, _) = a.mul(inv_zeta, RoundingMode::NearestEven);
+        let mag = series_magnitude(&cand);
+        if mag > prev_mag {
+            break; // optimal truncation.
+        }
+        prev_mag = mag;
+        t_u = cand;
+
+        let vn = BigFloat::try_from_i64_exact(6 * j + 1, working).expect("precision >= 1");
+        let vd = BigFloat::try_from_i64_exact(6 * j - 1, working).expect("precision >= 1");
+        let (tv, _) = t_u.mul(&vn, RoundingMode::NearestEven);
+        let (tv, _) = tv.div(&vd, RoundingMode::NearestEven);
+        let t_v = tv.negated();
+
+        // Sign (−1)^{⌊j/2⌋}: negative when ⌊j/2⌋ is odd.
+        let negate = (j / 2) % 2 == 1;
+        if j % 2 == 0 {
+            if negate {
+                pu = pu.sub(&t_u, RoundingMode::NearestEven).0;
+                pv = pv.sub(&t_v, RoundingMode::NearestEven).0;
+            } else {
+                pu = pu.add(&t_u, RoundingMode::NearestEven).0;
+                pv = pv.add(&t_v, RoundingMode::NearestEven).0;
+            }
+        } else if negate {
+            qu = qu.sub(&t_u, RoundingMode::NearestEven).0;
+            qv = qv.sub(&t_v, RoundingMode::NearestEven).0;
+        } else {
+            qu = qu.add(&t_u, RoundingMode::NearestEven).0;
+            qv = qv.add(&t_v, RoundingMode::NearestEven).0;
+        }
+    }
+    (pu, qu, pv, qv)
 }
 
 fn series_magnitude(v: &BigFloat) -> i64 {
@@ -386,19 +710,26 @@ fn airy_series(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    let extra = if e_x <= 0 {
+    // The peak term of f/g sits near 3k ≈ |x|^{3/2}; the c1·f − c2·g
+    // combination then cancels down to an O(|x|^{−1/4}) result. The
+    // guard must absorb ≈ (2/3)|x|^{3/2}·log₂e bits. It is NOT
+    // capped: the Maclaurin path is the correctness backstop valid at
+    // any precision and any |x| (the library's no-caps ethos), and
+    // `airy_threshold_exponent` hands large |x| to the asymptotic, so
+    // the series is only ever used where this guard is bounded.
+    let extra: u32 = if e_x <= 0 {
         64
     } else {
-        // |x| < 2^{e_x+1} ⇒ (2/3)|x|^{3/2} < (2/3)·2^{(3/2)(e_x+1)};
-        // bound the shift and scale by log₂e ≈ 23/16.
-        let shift = ((3 * (e_x + 1)) / 2).min(20) as u32;
+        // |x| < 2^{e_x+1} ⇒ |x|^{3/2} < 2^{⌈(3/2)(e_x+1)⌉}; scale by
+        // (2/3)·log₂e ≈ 23/24. Saturate (a precision wider than u32
+        // is not representable; in practice the threshold keeps this
+        // far below that).
+        let shift = (((3 * (e_x + 1)) / 2) as u32).min(62);
         let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 24).min(4096) as u32
+        let bits = mag.saturating_mul(23) / 24;
+        u32::try_from(bits.saturating_add(64)).unwrap_or(u32::MAX)
     };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    let working_prec = target_precision.saturating_add(64).saturating_add(extra);
 
     let z = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
@@ -732,6 +1063,83 @@ mod tests {
                 "Wronskian at {n}/{d}: got {w}"
             );
         }
+    }
+
+    /// Exercises the asymptotic regime (DLMF 9.7.5–9.7.12) at
+    /// `|x| = 300`, where `ζ ≈ 3464` makes the optimally-truncated
+    /// asymptotic accurate well past `p = 150`. References: `mpmath`
+    /// `airyai/airybi(±300[,1])` at 45 digits; treated as a fact.
+    #[test]
+    fn asymptotic_large_argument() {
+        let p = 150u32;
+        let pos = [
+            (
+                AiryFn::Ai,
+                "2.45974362033695840226898797290286351741382337e-1506",
+            ),
+            (
+                AiryFn::Bi,
+                "3.73567997123772793952321696938542273282941398e+1503",
+            ),
+            (
+                AiryFn::AiPrime,
+                "-4.26060587800406700838701857147799339670857865e-1505",
+            ),
+            (
+                AiryFn::BiPrime,
+                "6.47007616688173094631461580802880020007629144e+1504",
+            ),
+        ];
+        let x = BigFloat::try_from_i64_exact(300, p).unwrap();
+        for (which, refstr) in pos {
+            let got = airy_asymptotic_pos(which, &x, p);
+            let want = BigFloat::parse_str(refstr, p, RoundingMode::NearestEven)
+                .unwrap()
+                .0;
+            assert!(close_at(&got, &want, 130), "asymptotic+ {which:?}: {got}");
+        }
+        let neg = [
+            (
+                AiryFn::Ai,
+                "0.0387263629051379071866597753986827190288953645",
+            ),
+            (
+                AiryFn::Bi,
+                "-0.12991496664041682548622062250765880525502632",
+            ),
+            (
+                AiryFn::AiPrime,
+                "2.25022551383809411125438701102366844058468647",
+            ),
+            (
+                AiryFn::BiPrime,
+                "0.670652022853768111569637871724183669881112175",
+            ),
+        ];
+        let t = BigFloat::try_from_i64_exact(300, p).unwrap();
+        for (which, refstr) in neg {
+            let got = airy_asymptotic_neg(which, &t, p);
+            let want = BigFloat::parse_str(refstr, p, RoundingMode::NearestEven)
+                .unwrap()
+                .0;
+            assert!(close_at(&got, &want, 130), "asymptotic− {which:?}: {got}");
+        }
+    }
+
+    /// `airy_threshold_exponent` only hands `|x|` to the asymptotic
+    /// once that path is accurate: the threshold grows with the
+    /// fourth power of the precision (the `e^{−2√ζ}` accuracy law),
+    /// so it is small at low precision and large at high precision.
+    #[test]
+    fn threshold_grows_with_precision() {
+        let t53 = airy_threshold_exponent(53);
+        let t1024 = airy_threshold_exponent(1024);
+        assert!(t53 >= 1, "threshold must be a positive exponent");
+        assert!(
+            t1024 > t53,
+            "higher precision needs larger |x| before the asymptotic \
+             is accurate: p=53 → e_x≥{t53}, p=1024 → e_x≥{t1024}"
+        );
     }
 
     #[test]
