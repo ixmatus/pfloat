@@ -11,12 +11,13 @@
 //! - **General exponent**: `exp(y · ln(x))` evaluated at working
 //!   precision (the slice-3a `exp` and slice-3b `ln` carry the work).
 //!
-//! [`pow_ziv`] realizes DESIGN.md §"Ziv's strategy" by the
-//! recompute-and-compare test: it evaluates at a guard, rounds to
-//! the target under the caller's mode, then re-evaluates at a larger
-//! guard; two independent higher-precision evaluations rounding to
-//! the same target value means the result is not boundary-ambiguous.
-//! On disagreement the guard doubles and the loop retries, capped at
+//! [`pow_ziv`] realizes DESIGN.md §"Ziv's strategy" by the interval
+//! test: it evaluates at a guard and rounds to the target under the
+//! caller's mode, then checks whether both ends of the bounded
+//! evaluation-error interval round to that same target value. If
+//! they do, the true value rounds there too and the result is
+//! correctly rounded; otherwise a rounding boundary lies inside the
+//! uncertainty, the guard doubles, and the loop retries, capped at
 //! [`ZIV_MAX_ITERS`] (the honest pathological-input caveat MPFR also
 //! carries). pfloat is the first transcendental off the
 //! NearestEven-only differential tier as a result.
@@ -269,51 +270,83 @@ const ZIV_BASE_GUARD: u32 = 64;
 /// iteration.
 const ZIV_GUARD_CAP: u32 = 1024;
 
-/// Maximum recompute-and-compare iterations. On the measure-zero
-/// exact-tie inputs that exhaust this many iterations the result may
-/// be 1 ULP off in directed modes — the honest caveat MPFR also
-/// documents (DESIGN.md §"Ziv's strategy", lines 287-299).
+/// Maximum guard-doubling iterations. On the measure-zero exact-tie
+/// inputs that exhaust this many iterations the result may be 1 ULP
+/// off in directed modes — the honest caveat MPFR also documents
+/// (DESIGN.md §"Ziv's strategy", lines 287-299).
 pub(super) const ZIV_MAX_ITERS: u32 = 5;
 
-/// Bit-exact (binary-radix canonical) equality of two values already
-/// rounded to the same target precision.
-fn same_rounded(a: &BigFloat, b: &BigFloat) -> bool {
-    matches!(a.partial_cmp(b).0, Some(Ordering::Equal))
+/// Slack, in bits below the working precision, charged to `eval`'s
+/// accumulated `NearestEven` rounding error. `pow_int`'s
+/// square-and-multiply uses ≤ 64 multiplies (≤ 2⁶ ULP) and the
+/// `exp·ln` path a handful of operations, all far under 2²⁴ ULP, so
+/// the half-width `|y|·2^-(w-24)` is a sound upper bound on
+/// `|eval(w) − xʸ|` for the domain this kernel serves.
+const ZIV_ERROR_GUARD: u32 = 24;
+
+/// `|y| · 2^-shift`, formed by decrementing the binary exponent (the
+/// exact power-of-two scaling used elsewhere in the crate, e.g.
+/// `math::mod::pi_over_2_at`). Non-normal `y` has no boundary
+/// uncertainty, so a zero half-width is returned.
+fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
+    match &y.class {
+        Class::Normal {
+            exponent, mantissa, ..
+        } => BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: exponent - shift,
+                mantissa: mantissa.clone(),
+            },
+            precision: y.precision,
+        },
+        _ => BigFloat::try_new_zero(Sign::Positive, y.precision).expect("precision >= 1"),
+    }
 }
 
 /// Correctly round `eval`'s value to `target` precision under `mode`
-/// by the Ziv recompute-and-compare test (DESIGN.md §"Ziv's
-/// strategy").
+/// by the Ziv interval test (DESIGN.md §"Ziv's strategy").
 ///
-/// `eval(working)` returns the function value computed at the given
-/// working precision with `NearestEven` internal rounding; the
-/// directed final round to `target` is applied here. Two consecutive
-/// guards whose `target`-rounded values agree settle the result: a
-/// boundary case would round differently as the guard grows. On
-/// disagreement the guard doubles (capped at [`ZIV_GUARD_CAP`]) and
-/// the loop retries, bounded by [`ZIV_MAX_ITERS`]; if the cap is
-/// reached the last iteration's value is returned best-effort.
+/// `eval(working)` returns `xʸ` computed at the working precision
+/// with `NearestEven` internal rounding; its error against the true
+/// value is bounded by the half-width `|y|·2^-(working −
+/// ZIV_ERROR_GUARD)`. If both ends of that uncertainty interval
+/// round to the same `target`-precision value under `mode`, every
+/// point in the interval — including the true value — rounds there
+/// too, so that value is correctly rounded. Otherwise a rounding
+/// boundary lies within the uncertainty: the guard doubles (capped
+/// at [`ZIV_GUARD_CAP`]) and the loop retries, bounded by
+/// [`ZIV_MAX_ITERS`]. Comparing two *adjacent* guards would falsely
+/// converge on a hard-to-round input (both insufficient guards agree
+/// on the wrong value); the interval test does not.
 fn pow_ziv(eval: impl Fn(u32) -> BigFloat, target: u32, mode: RoundingMode) -> (BigFloat, Status) {
     let mut guard = ZIV_BASE_GUARD;
-    let mut prev: Option<BigFloat> = None;
-    let mut last: Option<(BigFloat, Status)> = None;
+    let mut fallback: Option<(BigFloat, Status)> = None;
     for _ in 0..ZIV_MAX_ITERS {
         let working = target.saturating_add(guard);
-        let hi = eval(working);
-        let (cand, status) = hi
+        let y = eval(working);
+        let (cand, status) = y
             .round_to_precision(target, mode)
             .expect("target precision >= 1");
-        if let Some(p) = &prev {
-            if same_rounded(&cand, p) {
-                auto_raise(status);
-                return (cand, status);
-            }
+
+        let shift = i64::from(working) - i64::from(ZIV_ERROR_GUARD);
+        let d = half_width(&y, shift);
+        let lo = y.sub(&d, RoundingMode::NearestEven).0;
+        let hi = y.add(&d, RoundingMode::NearestEven).0;
+        let lo_r = lo.round_to_precision(target, mode).expect("target >= 1").0;
+        let hi_r = hi.round_to_precision(target, mode).expect("target >= 1").0;
+        if matches!(lo_r.partial_cmp(&hi_r).0, Some(Ordering::Equal)) {
+            // The whole uncertainty interval rounds to one value:
+            // correct rounding is settled.
+            auto_raise(status);
+            return (cand, status);
         }
-        prev = Some(cand.clone());
-        last = Some((cand, status));
+
+        fallback = Some((cand, status));
         guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
     }
-    let (cand, status) = last.expect("ZIV_MAX_ITERS >= 1");
+    // Cap reached on a pathologically hard input: best effort.
+    let (cand, status) = fallback.expect("ZIV_MAX_ITERS >= 1");
     auto_raise(status);
     (cand, status)
 }
