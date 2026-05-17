@@ -543,17 +543,25 @@ pub(crate) fn two_over_pi_at(prec: u32) -> BigFloat {
 
 /// Hardcoded `2/sqrt(π)` mantissa at 1024-bit precision.
 ///
-/// `floor((2/sqrt(π)) · 2^1023)` as 16 little-endian u64 limbs.
-/// Combined with `precision = 1024` and `exponent = 0`, this
-/// represents `2/sqrt(π) ≈ 1.1283791670955125…`, the leading
-/// coefficient of the Maclaurin series for `erf`.
+/// The correctly-rounded (round-to-nearest-even) 1024-bit value of
+/// `2/sqrt(π)` as 16 little-endian u64 limbs. Combined with
+/// `precision = 1024` and `exponent = 0`, this represents
+/// `2/sqrt(π) ≈ 1.1283791670955125…`, the leading coefficient of the
+/// Maclaurin series for `erf`.
 ///
-/// Source: `mpmath` (Python) at 5000-bit working precision,
-/// generated at slice-4a authoring time.
+/// Slice-4a generated this by truncation, leaving the
+/// least-significant limb 1 ULP low (`…6C03` for the correctly-rounded
+/// `…6C04`); the value was returned 1 ULP below correctly-rounded for
+/// precisions near 1024. Slice 6m-audit regenerated it from the
+/// authoritative `mpmath` decimal via the bit-exact decimal parser,
+/// cross-checked bit-for-bit against the independent in-repo
+/// `2 / sqrt(π)` AGM derivation at 2048 bits rounded to 1024.
+/// `two_over_sqrt_pi_table_is_correctly_rounded_at_p1024` pins this
+/// three-way equality so the defect cannot silently recur.
 #[cfg(feature = "specials")]
 #[allow(dead_code)]
 pub(crate) const TWO_OVER_SQRT_PI_LIMBS_1024: [u64; 16] = [
-    0x18D3E91ADCFF6C03,
+    0x18D3E91ADCFF6C04,
     0x50754B409E94D32D,
     0xAC2C88BBBA81B1C7,
     0xEB9FEB2436F2F272,
@@ -581,21 +589,29 @@ pub(crate) const TWO_OVER_SQRT_PI_LIMBS_1024: [u64; 16] = [
 #[allow(dead_code)]
 pub(crate) fn two_over_sqrt_pi_at(prec: u32) -> BigFloat {
     if prec <= 1024 {
-        let stored = BigFloat {
-            class: Class::Normal {
-                sign: Sign::Positive,
-                exponent: 0,
-                mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
-            },
-            precision: 1024,
-        };
-        stored
-            .round_to_precision(prec, RoundingMode::NearestEven)
-            .expect("precision >= 1")
-            .0
+        two_over_sqrt_pi_via_table(prec)
     } else {
         agm_constants::two_over_sqrt_pi_via_agm(prec)
     }
+}
+
+/// Returns the rounded hardcoded `2/√π` constant. Internal: the public
+/// dispatcher [`two_over_sqrt_pi_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn two_over_sqrt_pi_via_table(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: TWO_OVER_SQRT_PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
 }
 
 /// Hardcoded `ln(2π)` mantissa at 1024-bit precision.
@@ -639,19 +655,27 @@ pub(crate) const LN_2PI_LIMBS_1024: [u64; 16] = [
 #[allow(dead_code)]
 pub(crate) fn ln_2pi_at(prec: u32) -> BigFloat {
     if prec <= 1024 {
-        let stored = BigFloat {
-            class: Class::Normal {
-                sign: Sign::Positive,
-                exponent: 0,
-                mantissa: LN_2PI_LIMBS_1024.to_vec(),
-            },
-            precision: 1024,
-        };
-        stored
-            .round_to_precision(prec, RoundingMode::NearestEven)
-            .expect("precision >= 1")
-            .0
+        ln_2pi_via_table(prec)
     } else {
         agm_constants::ln_2pi_via_agm(prec)
     }
+}
+
+/// Returns the rounded hardcoded `ln(2π)` constant. Internal: the
+/// public dispatcher [`ln_2pi_at`] picks this for `prec <= 1024`.
+#[cfg(feature = "specials")]
+#[allow(dead_code)]
+pub(crate) fn ln_2pi_via_table(prec: u32) -> BigFloat {
+    let stored = BigFloat {
+        class: Class::Normal {
+            sign: Sign::Positive,
+            exponent: 0,
+            mantissa: LN_2PI_LIMBS_1024.to_vec(),
+        },
+        precision: 1024,
+    };
+    stored
+        .round_to_precision(prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
 }
