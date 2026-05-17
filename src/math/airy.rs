@@ -324,12 +324,194 @@ fn airy_zero_value(which: AiryFn, working_prec: u32) -> BigFloat {
     }
 }
 
-/// Evaluate an Airy function at a finite non-zero argument via the
+/// Evaluate an Airy function at a finite non-zero argument. The
 /// three-regime sign-aware dispatch (Maclaurin / exponential
-/// asymptotic / oscillatory asymptotic). Implemented in beads issues
-/// pf-85k (series) and pf-nfb (asymptotic).
-fn airy_eval_normal(_which: AiryFn, _x: &BigFloat, _target_precision: u32) -> BigFloat {
-    unimplemented!("slice-6n: three-regime dispatch — beads pf-85k / pf-nfb")
+/// asymptotic / oscillatory asymptotic) lands in beads pf-nfb; until
+/// then every finite argument routes through the convergent
+/// Maclaurin series, which is valid for all `z` (the entire
+/// solutions `f`, `g`).
+fn airy_eval_normal(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
+    airy_series(which, x, target_precision)
+}
+
+fn series_magnitude(v: &BigFloat) -> i64 {
+    match &v.class {
+        Class::Normal { exponent, .. } => *exponent,
+        Class::Zero { .. } => i64::MIN,
+        _ => i64::MAX,
+    }
+}
+
+/// `true` once `term` has fallen `working_prec + 8` bits below the
+/// running `sum`, so further terms cannot perturb the rounded
+/// result (the [`super::si`] `negligible` idiom).
+fn series_negligible(term: &BigFloat, sum: &BigFloat, working_prec: u32) -> bool {
+    match &term.class {
+        Class::Zero { .. } => true,
+        Class::Normal { exponent, .. } => {
+            *exponent < series_magnitude(sum) - i64::from(working_prec) - 8
+        }
+        _ => false,
+    }
+}
+
+/// Maclaurin series for an Airy function (DLMF 9.4.1–9.4.6),
+/// evaluated at the signed argument directly (Airy has no parity).
+///
+/// The two entire solutions and their derivatives, with
+/// `z3 = z³`:
+///
+/// ```text
+/// f (z) = Σ_{k≥0} c_k z^{3k},      c_0 = 1, c_k = c_{k-1}/((3k)(3k−1))
+/// g (z) = Σ_{k≥0} d_k z^{3k+1},    d_0 = 1, d_k = d_{k-1}/((3k+1)(3k))
+/// g′(z) = Σ_{k≥0} (3k+1) d_k z^{3k}   [term ratio z³/((3k−2)(3k))]
+/// f′(z) = Σ_{k≥1} 3k c_k z^{3k−1}     [first term z²/2,
+///                                      ratio z³/(3(k−1)(3k−1))]
+/// ```
+///
+/// combined with the boundary constants `c1 = Ai(0)`,
+/// `c2 = −Ai′(0)` and `√3` (DLMF 9.4):
+///
+/// ```text
+/// Ai  = c1·f  − c2·g       Bi  = √3·(c1·f  + c2·g)
+/// Ai′ = c1·f′ − c2·g′      Bi′ = √3·(c1·f′ + c2·g′)
+/// ```
+///
+/// Working precision is boosted by `≈ (2/3)|x|^{3/2}·log₂e` so the
+/// peak term and the `c1·f − c2·g` cancellation do not exhaust the
+/// budget (the [`super::erf::erf_maclaurin`] guard idiom scaled for
+/// the `z^{3/2}` growth of `f`, `g`).
+fn airy_series(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &x.abs().class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        // |x| < 2^{e_x+1} ⇒ (2/3)|x|^{3/2} < (2/3)·2^{(3/2)(e_x+1)};
+        // bound the shift and scale by log₂e ≈ 23/16.
+        let shift = ((3 * (e_x + 1)) / 2).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 24).min(4096) as u32
+    };
+    let working_prec = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+
+    let z = x
+        .round_to_precision(working_prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let (z2, _) = z.mul(&z, RoundingMode::NearestEven);
+    let (z3, _) = z2.mul(&z, RoundingMode::NearestEven);
+
+    // k = 0 contributions, and the k = 1 term of f′.
+    let mut tf = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
+    let mut sum_f = tf.clone();
+    let mut tg = z.clone();
+    let mut sum_g = z.clone();
+    let mut tgp = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
+    let mut sum_gp = tgp.clone();
+    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+    let (mut tfp, _) = z2.div(&two, RoundingMode::NearestEven); // z²/2 (k = 1)
+    let mut sum_fp = tfp.clone();
+
+    let max_iter: i64 = 1 << 22;
+    for k in 1..=max_iter {
+        let three_k = 3 * k;
+        let d_f1 = BigFloat::try_from_i64_exact(three_k, working_prec).expect("precision >= 1");
+        let d_f2 = BigFloat::try_from_i64_exact(three_k - 1, working_prec).expect("precision >= 1");
+        let (a, _) = tf.mul(&z3, RoundingMode::NearestEven);
+        let (a, _) = a.div(&d_f1, RoundingMode::NearestEven);
+        let (a, _) = a.div(&d_f2, RoundingMode::NearestEven);
+        tf = a;
+        let (s, _) = sum_f.add(&tf, RoundingMode::NearestEven);
+        sum_f = s;
+
+        let d_g1 = BigFloat::try_from_i64_exact(three_k + 1, working_prec).expect("precision >= 1");
+        let d_g2 = BigFloat::try_from_i64_exact(three_k, working_prec).expect("precision >= 1");
+        let (b, _) = tg.mul(&z3, RoundingMode::NearestEven);
+        let (b, _) = b.div(&d_g1, RoundingMode::NearestEven);
+        let (b, _) = b.div(&d_g2, RoundingMode::NearestEven);
+        tg = b;
+        let (s, _) = sum_g.add(&tg, RoundingMode::NearestEven);
+        sum_g = s;
+
+        let d_gp1 =
+            BigFloat::try_from_i64_exact(three_k - 2, working_prec).expect("precision >= 1");
+        let d_gp2 = BigFloat::try_from_i64_exact(three_k, working_prec).expect("precision >= 1");
+        let (c, _) = tgp.mul(&z3, RoundingMode::NearestEven);
+        let (c, _) = c.div(&d_gp1, RoundingMode::NearestEven);
+        let (c, _) = c.div(&d_gp2, RoundingMode::NearestEven);
+        tgp = c;
+        let (s, _) = sum_gp.add(&tgp, RoundingMode::NearestEven);
+        sum_gp = s;
+
+        if k >= 2 {
+            let d_fp1 =
+                BigFloat::try_from_i64_exact(3 * (k - 1), working_prec).expect("precision >= 1");
+            let d_fp2 =
+                BigFloat::try_from_i64_exact(three_k - 1, working_prec).expect("precision >= 1");
+            let (e, _) = tfp.mul(&z3, RoundingMode::NearestEven);
+            let (e, _) = e.div(&d_fp1, RoundingMode::NearestEven);
+            let (e, _) = e.div(&d_fp2, RoundingMode::NearestEven);
+            tfp = e;
+            let (s, _) = sum_fp.add(&tfp, RoundingMode::NearestEven);
+            sum_fp = s;
+        }
+
+        if k > (1i64 << e_x.max(0)).saturating_add(4)
+            && series_negligible(&tf, &sum_f, working_prec)
+            && series_negligible(&tg, &sum_g, working_prec)
+            && series_negligible(&tgp, &sum_gp, working_prec)
+            && series_negligible(&tfp, &sum_fp, working_prec)
+        {
+            break;
+        }
+    }
+
+    let c1 = airy_zero_value(AiryFn::Ai, working_prec);
+    // c2 = −Ai′(0) = |Ai′(0)| (airy_zero_value(AiPrime) is negative).
+    let c2 = airy_zero_value(AiryFn::AiPrime, working_prec).negated();
+
+    match which {
+        AiryFn::Ai => {
+            let (p, _) = c1.mul(&sum_f, RoundingMode::NearestEven);
+            let (q, _) = c2.mul(&sum_g, RoundingMode::NearestEven);
+            let (r, _) = p.sub(&q, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::AiPrime => {
+            let (p, _) = c1.mul(&sum_fp, RoundingMode::NearestEven);
+            let (q, _) = c2.mul(&sum_gp, RoundingMode::NearestEven);
+            let (r, _) = p.sub(&q, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::Bi => {
+            let sqrt3 = {
+                let three = BigFloat::try_from_i64_exact(3, working_prec).expect("precision >= 1");
+                three.sqrt(RoundingMode::NearestEven).0
+            };
+            let (p, _) = c1.mul(&sum_f, RoundingMode::NearestEven);
+            let (q, _) = c2.mul(&sum_g, RoundingMode::NearestEven);
+            let (s, _) = p.add(&q, RoundingMode::NearestEven);
+            let (r, _) = sqrt3.mul(&s, RoundingMode::NearestEven);
+            r
+        }
+        AiryFn::BiPrime => {
+            let sqrt3 = {
+                let three = BigFloat::try_from_i64_exact(3, working_prec).expect("precision >= 1");
+                three.sqrt(RoundingMode::NearestEven).0
+            };
+            let (p, _) = c1.mul(&sum_fp, RoundingMode::NearestEven);
+            let (q, _) = c2.mul(&sum_gp, RoundingMode::NearestEven);
+            let (s, _) = p.add(&q, RoundingMode::NearestEven);
+            let (r, _) = sqrt3.mul(&s, RoundingMode::NearestEven);
+            r
+        }
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +609,129 @@ mod tests {
         let (a, _) = neg0.ai(RoundingMode::NearestEven);
         let (b, _) = zero_at(113).ai(RoundingMode::NearestEven);
         assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
+    }
+
+    fn at(n: i64, d: i64, p: u32) -> BigFloat {
+        let nn = BigFloat::try_from_i64_exact(n, p).unwrap();
+        if d == 1 {
+            nn
+        } else {
+            nn.div(
+                &BigFloat::try_from_i64_exact(d, p).unwrap(),
+                RoundingMode::NearestEven,
+            )
+            .0
+        }
+    }
+
+    #[test]
+    fn ai_small_positive() {
+        // Ai(1) ≈ 0.135292416312881415524147423515466306…
+        let (r, _) = at(1, 1, 160).ai(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.135292416312881415524147423515466306174944142988330706009102",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn bi_small_positive() {
+        // Bi(1) ≈ 1.207423594952871259436378817028286995…
+        let (r, _) = at(1, 1, 160).bi(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "1.20742359495287125943637881702828699538534894464444253753862",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn ai_prime_small_positive() {
+        // Ai′(1) ≈ −0.159147441296793212787500252497229686…
+        let (r, _) = at(1, 1, 160).ai_prime(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "-0.1591474412967932127875002524972296865738892015116109694",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn bi_prime_small_positive() {
+        // Bi′(1) ≈ 0.932435933392775632959451453674435344…
+        let (r, _) = at(1, 1, 160).bi_prime(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.9324359333927756329594514536744353442695653752386283955",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn ai_negative_argument() {
+        // Ai(−2) ≈ 0.227407428201685575991924436037873799…
+        let (r, _) = at(-2, 1, 160).ai(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.22740742820168557599192443603787379946077222541709671649579",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn bi_negative_argument() {
+        // Bi(−2) ≈ −0.412302587956398488083234054611461042…
+        let (r, _) = at(-2, 1, 160).bi(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "-0.4123025879563984880832340546114610420345348344724047288",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        assert!(close_at(&r, &want, 160 - 16));
+    }
+
+    #[test]
+    fn wronskian_identity_small_x() {
+        // Ai(x)·Bi′(x) − Ai′(x)·Bi(x) = 1/π for every x (DLMF 9.2.7).
+        let inv_pi = BigFloat::parse_str(
+            "0.3183098861837906715377675267450287240689192914809128975",
+            200,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        for (n, d) in [(1, 2), (1, 1), (-2, 1), (3, 2)] {
+            let x = at(n, d, 200);
+            let (ai, _) = x.ai(RoundingMode::NearestEven);
+            let (bi, _) = x.bi(RoundingMode::NearestEven);
+            let (aip, _) = x.ai_prime(RoundingMode::NearestEven);
+            let (bip, _) = x.bi_prime(RoundingMode::NearestEven);
+            let (t1, _) = ai.mul(&bip, RoundingMode::NearestEven);
+            let (t2, _) = aip.mul(&bi, RoundingMode::NearestEven);
+            let (w, _) = t1.sub(&t2, RoundingMode::NearestEven);
+            assert!(
+                close_at(&w, &inv_pi, 200 - 24),
+                "Wronskian at {n}/{d}: got {w}"
+            );
+        }
     }
 
     #[test]
