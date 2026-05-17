@@ -1200,4 +1200,54 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(AiryFn::Ai, AiryFn::Bi);
     }
+
+    #[test]
+    fn public_api_round_and_precision_zero() {
+        let x = at(1, 1, 53);
+        // The convenience method equals `*_round(self.precision, …)`.
+        for (conv, rnd) in [
+            (
+                x.ai(RoundingMode::NearestEven).0,
+                x.ai_round(53, RoundingMode::NearestEven),
+            ),
+            (
+                x.bi(RoundingMode::NearestEven).0,
+                x.bi_round(53, RoundingMode::NearestEven),
+            ),
+            (
+                x.ai_prime(RoundingMode::NearestEven).0,
+                x.ai_prime_round(53, RoundingMode::NearestEven),
+            ),
+            (
+                x.bi_prime(RoundingMode::NearestEven).0,
+                x.bi_prime_round(53, RoundingMode::NearestEven),
+            ),
+        ] {
+            assert_eq!(conv.partial_cmp(&rnd.unwrap().0).0, Some(Ordering::Equal));
+        }
+        // target_precision == 0 is a typed error on every entry point.
+        assert!(x.ai_round(0, RoundingMode::NearestEven).is_err());
+        assert!(x.bi_round(0, RoundingMode::NearestEven).is_err());
+        assert!(x.ai_prime_round(0, RoundingMode::NearestEven).is_err());
+        assert!(x.bi_prime_round(0, RoundingMode::NearestEven).is_err());
+    }
+
+    #[cfg(feature = "fixed")]
+    #[test]
+    fn fixed_float_delegation() {
+        use crate::fixed::FixedFloat;
+        // FixedFloat delegates to BigFloat and round-trips precision.
+        let one = FixedFloat::<160>::try_from_i64_exact(1).unwrap();
+        let (ai, _) = one.ai(RoundingMode::NearestEven);
+        let want = BigFloat::parse_str(
+            "0.135292416312881415524147423515466306174944142988330706009102",
+            160,
+            RoundingMode::NearestEven,
+        )
+        .unwrap()
+        .0;
+        let (bip, _) = one.bi_prime(RoundingMode::NearestEven);
+        assert!(close_at(&ai.to_big(), &want, 160 - 16));
+        assert!(!bip.to_big().is_zero());
+    }
 }
