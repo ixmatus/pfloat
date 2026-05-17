@@ -82,3 +82,12 @@ mod ei;
 mod li;
 #[cfg(feature = "integrals")]
 mod si;
+
+#[cfg(feature = "airy")]
+mod ai;
+#[cfg(feature = "airy")]
+mod ai_prime;
+#[cfg(feature = "airy")]
+mod bi;
+#[cfg(feature = "airy")]
+mod bi_prime;
