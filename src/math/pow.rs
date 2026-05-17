@@ -56,7 +56,7 @@ use core::cmp::Ordering;
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
-use crate::ops::limbs::extract_as_integer;
+use crate::ops::limbs::{extract_as_integer, top_set_bit};
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
@@ -425,6 +425,100 @@ fn integer_parity(y: &BigFloat) -> Option<Parity> {
         }
         _ => None,
     }
+}
+
+// `integer_exponent` and `pow_int` are introduced here (slice 7c.2)
+// and wired into `pow_positive` in slice 7c.3; the `dead_code`
+// allows below are removed by that commit.
+
+/// Returns `Some(n)` if `y` is an exact finite integer whose value
+/// fits in `i64`, else `None`.
+///
+/// Sibling of [`integer_parity`]: same `scale` decomposition
+/// (`exponent − precision + 1`), but it reconstructs the signed
+/// value rather than just the parity bit. `None` covers a fractional
+/// part, a non-finite `y`, and a magnitude past `i64::MAX`. The
+/// result-exponent (`n·eₓ`) feasibility guard lives at the dispatch
+/// site (it needs the base); this extractor only decides integrality
+/// and `i64` range, so an out-of-range integer falls back to the
+/// `exp·ln` path (which handles overflow/underflow via `exp`).
+#[allow(dead_code)]
+fn integer_exponent(y: &BigFloat) -> Option<i64> {
+    match &y.class {
+        Class::Zero { .. } => Some(0),
+        Class::Normal {
+            exponent, mantissa, ..
+        } => {
+            let scale = exponent - i64::from(y.precision) + 1;
+            let m_int = extract_as_integer(mantissa, y.precision);
+            // `m_int` is normalized (top bit set) so `top_set_bit`
+            // is `Some`; `lsb` is the lowest set bit.
+            let msb = top_set_bit(&m_int)? as i64;
+            let lsb = lowest_set_bit(&m_int)? as i64;
+            // y = m_int · 2^scale. Integer iff no set bit lands below
+            // the binary point, i.e. lsb + scale ≥ 0.
+            if lsb + scale < 0 {
+                return None;
+            }
+            // Exponent of the integer's most significant bit. Keep it
+            // below 63 so the reconstructed magnitude fits i64.
+            let top = msb + scale;
+            if top > 62 {
+                return None;
+            }
+            let mut mag: i128 = 0;
+            for i in lsb..=msb {
+                let bit = (m_int[(i / 64) as usize] >> (i % 64)) & 1;
+                if bit == 1 {
+                    mag |= 1i128 << (i + scale);
+                }
+            }
+            let signed = i64::try_from(mag).ok()?;
+            Some(if y.is_sign_negative() {
+                -signed
+            } else {
+                signed
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Lowest set bit index of a little-endian limb buffer, or `None`
+/// if every limb is zero.
+#[allow(dead_code)]
+fn lowest_set_bit(buffer: &[u64]) -> Option<usize> {
+    for (i, &limb) in buffer.iter().enumerate() {
+        if limb != 0 {
+            return Some(i * 64 + limb.trailing_zeros() as usize);
+        }
+    }
+    None
+}
+
+/// `x^n_abs` for a non-negative integer exponent by
+/// square-and-multiply at working precision `w` (`NearestEven`
+/// internal rounding). The caller reciprocates for negative `n` and
+/// feeds the result through [`pow_ziv`] for the directed final
+/// round, so exact powers settle bit-exactly at the first guard.
+#[allow(dead_code)]
+fn pow_int(x: &BigFloat, n_abs: u64, w: u32) -> BigFloat {
+    let mut result = BigFloat::try_from_i64_exact(1, w).expect("w >= 1");
+    let mut base = x
+        .round_to_precision(w, RoundingMode::NearestEven)
+        .expect("w >= 1")
+        .0;
+    let mut e = n_abs;
+    while e > 0 {
+        if e & 1 == 1 {
+            result = result.mul(&base, RoundingMode::NearestEven).0;
+        }
+        e >>= 1;
+        if e > 0 {
+            base = base.mul(&base, RoundingMode::NearestEven).0;
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -827,5 +921,63 @@ mod tests {
         let (a, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
         let (b, _) = pow_ziv(eval, 80, RoundingMode::NearestEven);
         assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
+    }
+
+    // --- Integer exponent extractor + pow_int (slice 7c.2) ---
+
+    #[test]
+    fn integer_exponent_detects_across_precisions() {
+        // The trailing-zero mantissa of a small integer grows with
+        // precision; the extractor must still recover the value at
+        // every precision the differential sweep exercises.
+        for &p in &[53u32, 113, 256, 1024] {
+            for n in [0i64, 1, -1, 7, -7, 42, 1024, -1023] {
+                let v = BigFloat::try_from_i64_exact(n, p).unwrap();
+                assert_eq!(integer_exponent(&v), Some(n), "n={n} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn integer_exponent_rejects_non_integers() {
+        for s in ["0.5", "1.5", "0.001", "-3.25"] {
+            assert_eq!(integer_exponent(&parse(s, 53)), None, "{s}");
+        }
+    }
+
+    #[test]
+    fn integer_exponent_rejects_out_of_i64_range() {
+        // 2^62 fits i64; 2^63 does not (top bit exponent 63 > 62).
+        let two_62 = parse("4611686018427387904", 80);
+        assert_eq!(integer_exponent(&two_62), Some(1i64 << 62));
+        let two_63 = parse("9223372036854775808", 80);
+        assert_eq!(integer_exponent(&two_63), None);
+    }
+
+    #[test]
+    fn pow_int_equals_repeated_mul() {
+        // Exactly-representable integer powers: square-and-multiply
+        // must equal the closed-form integer bit-for-bit.
+        for (x, n, expect) in [(3i64, 10u64, 59049i64), (2, 20, 1_048_576), (7, 3, 343)] {
+            let xb = BigFloat::try_from_i64_exact(x, 113).unwrap();
+            let r = pow_int(&xb, n, 113 + 64);
+            let (rr, _) = r
+                .round_to_precision(113, RoundingMode::NearestEven)
+                .unwrap();
+            let want = BigFloat::try_from_i64_exact(expect, 113).unwrap();
+            assert_eq!(
+                rr.partial_cmp(&want).0,
+                Some(Ordering::Equal),
+                "{x}^{n} = {rr}, want {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn pow_int_zero_exponent_is_one() {
+        let x = BigFloat::try_from_i64_exact(5, 53).unwrap();
+        let r = pow_int(&x, 0, 53);
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        assert_eq!(r.partial_cmp(&one).0, Some(Ordering::Equal));
     }
 }
