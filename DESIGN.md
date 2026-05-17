@@ -318,9 +318,18 @@ Each family dispatches by argument region.
 - `erf`, `erfc`. Taylor series near zero; asymptotic expansion for
   large argument; continued fraction in the middle. `erfc` has a
   separate path to avoid catastrophic cancellation in the tail.
-- Bessel `J0/J1/Jn`, `Y0/Y1/Yn`. Power series for small argument;
-  Hankel-form asymptotics for large argument; forward recurrence in
-  the middle for `J`. `Y` derives from `J` and `Y0`.
+- Bessel `J0/J1/Jn` (slice 6o, `bessel` feature; ADR-0023, shipped).
+  Three regimes dispatch on the binary exponent of `|x|`: the
+  convergent Maclaurin series for tiny `|x|` (DLMF 10.2.2), Miller
+  backward recurrence normalized by the sum rule
+  `1 = J0 + 2(J2+J4+⋯)` for moderate `|x|` (DLMF 10.6.1, 10.12.4),
+  and the Hankel asymptotic summed to its smallest term for large
+  `|x|` (DLMF 10.17.3). One descent yields every order, the
+  recurrence and normalization machinery `Y`/`I`/`K` reuse. NaN
+  propagates, `J0(±0)=1`, `Jn(±0)=0` for `n≠0`, `Jn(±∞)=+0` by the
+  decaying-envelope convention. Bit-exact against MPFR `j0/j1/jn`
+  under NearestEven. `Y0/Y1/Yn` follow in slice 6p and derive from
+  `J` and `Y0`.
 - Modified Bessel `I0/I1/In`, `K0/K1/Kn`. Power series and
   asymptotic dispatch as above; Miller's algorithm (backward
   recurrence with normalization) for `In` to avoid the forward-
