@@ -31,7 +31,7 @@ jobs:
           - "--no-default-features --features=fixed"
           - "--no-default-features --features=ops,big"
           - "--no-default-features --features=big,agm"
-          - "--features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals"
+          - "--features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -79,7 +79,7 @@ jobs:
           toolchain: ${{ env.PFLOAT_NIGHTLY }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals --all-targets -- -D warnings
+      - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy --all-targets -- -D warnings
 
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
   # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status

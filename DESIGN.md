@@ -344,8 +344,11 @@ Each family dispatches by argument region.
   `li` via `eint(ln x)` for `x > 1`, and `Si`/`Ci` against a
   checked-in authoritative reference table plus self-consistency.
   ADR-0019 records the design.
-- Airy `Ai`, `Bi`. Power series for small argument; asymptotic for
-  large; the Wronskian relation provides a cross-check.
+- Airy `Ai`, `Bi`, `Ai′`, `Bi′` (slice 6n, shipped). Maclaurin
+  series for small argument; sign-aware asymptotic for large (DLMF
+  9.7, the optimally-truncated error scales as `e^{−2√ζ}`); the
+  Wronskian `Ai·Bi′ − Ai′·Bi = 1/π` is the cross-check.
+  ADR-0021 records the design.
 - Arithmetic-geometric mean. Plain iteration; quadratic convergence.
 
 ## Verification

@@ -47,7 +47,7 @@ v1.0 covers the MPFR-equivalent surface:
 
 - IEEE 754-2019 arithmetic with all five rounding modes (RNE, RNA, RZ, RP, RM) and sticky exception flags.
 - Correctly-rounded elementary transcendentals: `exp`, `log` family, trig and inverses, hyperbolic and inverses, `pow`.
-- Special functions: `gamma`, `lgamma`, `digamma`, `beta`, `erf`, `erfc`, Bessel `J/Y/I/K`, `zeta`, `Ei`, `Si`, `Ci`, Airy, AGM.
+- Special functions: `gamma`, `lgamma`, `digamma`, `beta`, `erf`, `erfc`, Bessel `J/Y/I/K`, `zeta`, `Ei`, `Si`, `Ci`, Airy `Ai/Bi/Ai′/Bi′`, AGM.
 - Two precision profiles in one crate: `BigFloat` (runtime precision, needs `alloc`) and `FixedFloat<const PREC: u32>` (compile-time precision, stack-allocated, runs without `alloc`).
 - `no_std`-first, embedded-friendly. CI cross-compiles to `thumbv6m-none-eabi`.
 
