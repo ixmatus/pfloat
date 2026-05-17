@@ -107,7 +107,7 @@ kani = []
 # differential tests call (ln, sinh, gamma, ...) is available, plus
 # `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`,
 # and `integrals` for slice 6m's `differential_{ei,si,ci,li}.rs`.
-differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals"]
+differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
@@ -255,6 +255,11 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "differential_ci"
 path = "tests/differential_ci.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_ai"
+path = "tests/differential_ai.rs"
 required-features = ["differential-mpfr"]
 
 [lints.rust]
