@@ -91,3 +91,10 @@ mod ai_prime;
 mod bi;
 #[cfg(feature = "airy")]
 mod bi_prime;
+
+#[cfg(feature = "bessel")]
+mod j0;
+#[cfg(feature = "bessel")]
+mod j1;
+#[cfg(feature = "bessel")]
+mod jn;

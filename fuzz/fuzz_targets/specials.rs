@@ -37,7 +37,7 @@ fuzz_target!(|input: Input| {
         return;
     };
 
-    match input.op % 15 {
+    match input.op % 18 {
         0 => {
             let _ = x.erf(mode);
         }
@@ -82,6 +82,17 @@ fuzz_target!(|input: Input| {
         }
         14 => {
             let _ = x.bi_prime(mode);
+        }
+        15 => {
+            let _ = x.j0(mode);
+        }
+        16 => {
+            let _ = x.j1(mode);
+        }
+        17 => {
+            // Fixed small order; `input.y` selects a bounded order
+            // including the negative-order parity path.
+            let _ = x.jn((input.y % 6) as i32, mode);
         }
         _ => unreachable!(),
     }
