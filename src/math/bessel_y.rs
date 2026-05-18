@@ -802,6 +802,79 @@ mod tests {
         }
     }
 
+    // mpmath bessely (dps = 340) for the regime-boundary check.
+    const Y0_256: &str = "-0.0338129017179245490904802001579105142989436828054872732411660094390095268631908096790145694330311129900788922935589008234";
+    const Y1_256: &str = "0.0365875273992917400808021213386381993171223828654781838181095392316295493832100467605787409863810864302865546691367985571";
+
+    /// Cross-regime continuity: at `x = 256` the DLMF 10.17.4
+    /// asymptotic and the DLMF 10.8.1 series (called directly) agree
+    /// and both match mpmath. Pins the `bessel_j_threshold`
+    /// crossover and the reused `a_k(n)` recurrence against the
+    /// independent log-series path (the 6o
+    /// `asymptotic_miller_continuity` analog).
+    #[test]
+    fn asymptotic_series_continuity() {
+        let p = 113;
+        let x = at(256, 1, p);
+        let a0 = bessel_y_asymptotic(0, &x, p);
+        let s0 = bessel_y_series(0, &x, p);
+        assert!(close_at(&a0, &s0, p - 14), "asymp vs series Y_0(256)");
+        assert!(close_at(&a0, &py(Y0_256, p), p - 12), "asymp Y_0(256)");
+        assert!(close_at(&s0, &py(Y0_256, p), p - 12), "series Y_0(256)");
+        let a1 = bessel_y_asymptotic(1, &x, p);
+        let s1 = bessel_y_series(1, &x, p);
+        assert!(close_at(&a1, &s1, p - 14), "asymp vs series Y_1(256)");
+        assert!(close_at(&a1, &py(Y1_256, p), p - 12), "asymp Y_1(256)");
+    }
+
+    // mpmath bessely (dps = 330) for the p = 1024 second-term pin.
+    const Y0_52_BIG: &str = "0.498070359615231887827472350362089806115062532656815304299746294074063215575669958123550705895373981923856729430019346127753372515911094543050074024012999730851446377594493271835804721950823221520618551680086498462052887794347122834260248470497165541676516778255376763944618616628570103413678087256903882209128454569424527607827318";
+    const Y2_256_BIG: &str = "0.0340987417757315158098614667308686252311087014216238215522449902142566327177471381693315908469872152278155060019115320621472548227534413709121545010974754454341942206357994610878177648119695691004956102002044082882671327695788506702585311791097572449883224212162085878637866065222838728564465367755616196261472949877860202203482873";
+
+    /// Second-term-matters pin (the `derive, don't recall` reflex):
+    /// the series path `Y₀(2.5)` and the asymptotic+recurrence path
+    /// `Y₂(256)` at `p = 1024`, validated to `p − 2` against the
+    /// 330-digit references. A coefficient or harmonic-reduction
+    /// error invisible at low precision fails here.
+    #[test]
+    fn high_precision_pin() {
+        let x = at(5, 2, 1024);
+        let (r, _) = x.y0(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(Y0_52_BIG, 1024), 1022), "Y_0(2.5) p=1024");
+
+        let x = at(256, 1, 1024);
+        let (r, _) = x.yn(2, RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(Y2_256_BIG, 1024), 1022), "Y_2(256) p=1024");
+    }
+
+    /// J/Y Wronskian `J_{n+1}(x)·Y_n(x) − J_n(x)·Y_{n+1}(x) =
+    /// 2/(πx)` (DLMF 10.5.2): the load-bearing cross-tie binding the
+    /// 6o `J` kernel to the new `Y` kernel, the deliverable 6o could
+    /// not produce.
+    #[test]
+    fn jy_wronskian() {
+        let p = 200;
+        for &(num, den) in &[(5i64, 2i64), (7, 1), (9, 4)] {
+            let x = at(num, den, p);
+            for n in [0i32, 1, 2, 3] {
+                let (jn, _) = x.jn(n, RoundingMode::NearestEven);
+                let (jn1, _) = x.jn(n + 1, RoundingMode::NearestEven);
+                let (yn, _) = x.yn(n, RoundingMode::NearestEven);
+                let (yn1, _) = x.yn(n + 1, RoundingMode::NearestEven);
+                let (a, _) = jn1.mul(&yn, RoundingMode::NearestEven);
+                let (b, _) = jn.mul(&yn1, RoundingMode::NearestEven);
+                let (lhs, _) = a.sub(&b, RoundingMode::NearestEven);
+                let two = BigFloat::try_from_i64_exact(2, p).unwrap();
+                let (pi_x, _) = pi_at(p).mul(&x, RoundingMode::NearestEven);
+                let (rhs, _) = two.div(&pi_x, RoundingMode::NearestEven);
+                assert!(
+                    close_at(&lhs, &rhs, p - 12),
+                    "Wronskian n={n} x={num}/{den}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn y_positive_zero_is_pole() {
         let z = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
