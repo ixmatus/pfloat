@@ -101,6 +101,17 @@ airy = ["specials"]
 # Miller-recurrence design. Slice 6o.
 bessel = ["specials"]
 
+# Riemann zeta function ζ(s) for real argument (DLMF Chapter 25).
+# Tier-2 special; depends on `specials` for the in-crate
+# transcendental constants (π, the Bernoulli table reused from
+# `gamma_stirling`) and, for the negative-axis functional equation
+# DLMF 25.4.2, the in-crate `sin`, `pow`, and `Γ` kernels. zeta is a
+# distinct family (no order parameter, no recurrence machinery), so
+# it gets its own cluster feature rather than folding under
+# `specials` (the bessel/integrals/airy precedent). ADR-0026 records
+# the design and the DLMF provenance. Slice 6r.
+zeta = ["specials"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -113,7 +124,7 @@ kani = []
 # differential tests call (ln, sinh, gamma, ...) is available, plus
 # `agm` since slice 6l's `differential_agm.rs` calls `BigFloat::agm`,
 # and `integrals` for slice 6m's `differential_{ei,si,ci,li}.rs`.
-differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy", "bessel"]
+differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy", "bessel", "zeta"]
 
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
@@ -286,6 +297,11 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "differential_ik"
 path = "tests/differential_ik.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_zeta"
+path = "tests/differential_zeta.rs"
 required-features = ["differential-mpfr"]
 
 [lints.rust]

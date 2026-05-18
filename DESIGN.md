@@ -372,8 +372,22 @@ Each family dispatches by argument region.
   tiered one: an `mpmath` reference table (`p≤256`), the DLMF
   10.28.2 I/K cross-tie `I_{ν+1}K_ν+I_νK_{ν+1}=1/x`, and dyadic
   self-consistency, with `p=1024` pinned by in-module unit tests.
-- Riemann zeta, real argument. Euler-Maclaurin in the convergent
-  region; the functional equation reflects negative arguments.
+- Riemann zeta, real argument (slice 6r, `zeta` feature;
+  ADR-0026, shipped). For `s>0` the Borwein / Cohen-Villegas-Zagier
+  acceleration of the Dirichlet eta series (DLMF 25.2.3), whose
+  weights carry a rigorous `2·(3+√8)^{−n}` error bound; for `s<0`
+  the functional equation DLMF 25.4.2
+  `ζ(s)=2·(2π)^{s−1}·sin(πs/2)·Γ(1−s)·ζ(1−s)` reflecting into the
+  Borwein region. The roadmap originally specified Euler-Maclaurin
+  reusing the `gamma_stirling` Bernoulli table; that was found to
+  cap accuracy near 90 bits (`|B_{2k}/(2k)!|≈2/(2π)^{2k}`), short
+  of the bit-exact `p=1024` lane, so the algorithm was changed and
+  the rationale recorded in ADR-0026. `ζ(1)` is a pole
+  (`+∞`+`DIV_BY_ZERO`); `ζ(0)=−1/2` and the trivial zeros
+  `ζ(−2n)=0` are exact; `ζ(+∞)=1`; `ζ(−∞)` gives `NaN`+`INVALID`
+  (an unbounded non-converging oscillation, explicitly not the
+  decaying-envelope convention). Bit-exact against MPFR `zeta`
+  under NearestEven across all precisions including `p=1024`.
   Complex arguments deferred (Riemann-Siegel out of scope for 1.0).
 - Exponential integral `Ei`, sine and cosine integrals `Si`, `Ci`,
   logarithmic integral `li` (slice 6m, `integrals` feature). Each
