@@ -130,6 +130,14 @@ differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy"
 # Property-based testing for the integration suite under `tests/`.
 proptest = { version = "1", default-features = false, features = ["std"] }
 
+# Criterion drives the slice 7d Karatsuba-threshold calibration bench
+# (`benches/mul_thresholds.rs`). Dev-only: it is not in the shipped
+# dependency graph, so the permacomputing-horizon / no_std posture is
+# unaffected. `default-features = false` drops the `plotters`/`rayon`
+# HTML-report tree (ADR-0027); `cargo_bench_support` is the minimum
+# needed to run under `cargo bench`.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
 # `rug` is the safe high-level wrapper over `gmp-mpfr-sys`. Unix-only
 # per ADR-0014; Windows differential coverage is not available
 # because gmp-mpfr-sys does not build on stock Windows toolchains.
@@ -350,6 +358,13 @@ should_implement_trait = "allow"
 manual_let_else = "allow"
 enum_variant_names = "allow"
 missing_panics_doc = "allow"
+
+# Slice 7d: Karatsuba/Toom-Cook threshold calibration bench. Uses
+# criterion's own harness (`harness = false`); not run by `cargo test`,
+# so the lib-test bucket is unchanged.
+[[bench]]
+name = "mul_thresholds"
+harness = false
 
 [profile.release]
 lto = "thin"
