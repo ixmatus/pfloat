@@ -116,3 +116,6 @@ mod y0;
 mod y1;
 #[cfg(feature = "bessel")]
 mod yn;
+
+#[cfg(feature = "zeta")]
+mod zeta;
