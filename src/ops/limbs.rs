@@ -367,10 +367,22 @@ pub(crate) fn multiply_limbs_schoolbook(a: &[u64], b: &[u64]) -> Vec<u64> {
     result
 }
 
-/// Karatsuba threshold (operand limb count below which we fall
-/// back to schoolbook). Phase 7 will tune empirically; for now we
-/// match MPFR's default ballpark.
-pub(crate) const KARATSUBA_THRESHOLD: usize = 30;
+/// Karatsuba threshold: operand limb count at or below which the
+/// dispatcher (and the recursion base case) uses schoolbook.
+///
+/// Calibrated empirically in slice 7d against
+/// `benches/mul_thresholds.rs` on the equal-size sweep; ADR-0027
+/// records the methodology and the curves. The MPFR-ballpark value
+/// of 30 was too low: this in-tree Karatsuba allocates several
+/// `Vec`s per recursion node, so its constant factor only pays off
+/// past ~48 limbs. At 30, multiplications in the 32..48-limb band
+/// were routed to Karatsuba and ran ~20% slower than schoolbook;
+/// 48 keeps that band on schoolbook and still wins large-n via a
+/// better recursion base case (n=512 ~15% faster than at 30). The
+/// threshold is host- and arch-dependent (calibrated on
+/// aarch64-apple-darwin); 48 is a deliberate, measured point, not
+/// an asymptotic guess.
+pub(crate) const KARATSUBA_THRESHOLD: usize = 48;
 
 /// Karatsuba-with-schoolbook-fallback multiplication.
 ///
