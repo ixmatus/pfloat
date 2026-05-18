@@ -37,7 +37,7 @@ fuzz_target!(|input: Input| {
         return;
     };
 
-    match input.op % 27 {
+    match input.op % 28 {
         0 => {
             let _ = x.erf(mode);
         }
@@ -130,6 +130,13 @@ fuzz_target!(|input: Input| {
             // order incl. the negative-order parity path
             // (`K₋ₙ = Kₙ`, even, no sign).
             let _ = x.kn((input.y % 6) as i32, mode);
+        }
+        27 => {
+            // ζ exercises every path: the pole `s = 1`
+            // (DIV_BY_ZERO), `ζ(0) = −1/2` and the trivial zeros
+            // `ζ(−2n) = 0` (special-cased), `s > 0` (Borwein), and
+            // `s < 0` (the functional equation through Γ/sin/pow).
+            let _ = x.zeta(mode);
         }
         _ => unreachable!(),
     }
