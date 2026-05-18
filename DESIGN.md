@@ -328,8 +328,23 @@ Each family dispatches by argument region.
   recurrence and normalization machinery `Y`/`I`/`K` reuse. NaN
   propagates, `J0(±0)=1`, `Jn(±0)=0` for `n≠0`, `Jn(±∞)=+0` by the
   decaying-envelope convention. Bit-exact against MPFR `j0/j1/jn`
-  under NearestEven. `Y0/Y1/Yn` follow in slice 6p and derive from
-  `J` and `Y0`.
+  under NearestEven.
+- Bessel `Y0/Y1/Yn` (slice 6p, `bessel` feature; ADR-0024, shipped).
+  `Y` is real only for `x>0`. The base pair `Y0`/`Y1` dispatches on
+  the binary exponent of `x`, sharing the `J` asymptotic threshold:
+  the DLMF 10.8.1 logarithmic series (digamma reduced to harmonic
+  sums plus the in-tree `γ`, the `J_n` piece from slice 6o) below
+  the cut, the DLMF 10.17.4 Hankel asymptotic above (the same
+  `a_k(n)` coefficients as `J`, ADR-0023, with `Y`'s trig
+  combination). `Yn` for `n≥2` climbs by the stable upward
+  recurrence `Y_{k+1}=(2k/x)Y_k−Y_{k−1}` (DLMF 10.6.1), `Y` being
+  the dominant solution (the opposite of `J`'s Miller descent; no
+  recessive-normalization analog, so no cheap middle regime). Pole
+  `Yn(+0)=−∞` raising `DIV_BY_ZERO`; `x<0`/`−0`/`−∞` give `NaN` +
+  `INVALID` (complex, the `Ci`/`li` convention); `Yn(+∞)=+0`. The
+  J/Y Wronskian `J_{n+1}Y_n−J_n Y_{n+1}=2/(πx)` (DLMF 10.5.2) is
+  the re-enabled cross-tie. Bit-exact against MPFR `y0/y1/yn` under
+  NearestEven.
 - Modified Bessel `I0/I1/In`, `K0/K1/Kn`. Power series and
   asymptotic dispatch as above; Miller's algorithm (backward
   recurrence with normalization) for `In` to avoid the forward-

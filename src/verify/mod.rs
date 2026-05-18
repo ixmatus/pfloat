@@ -98,3 +98,9 @@ mod j0;
 mod j1;
 #[cfg(feature = "bessel")]
 mod jn;
+#[cfg(feature = "bessel")]
+mod y0;
+#[cfg(feature = "bessel")]
+mod y1;
+#[cfg(feature = "bessel")]
+mod yn;
