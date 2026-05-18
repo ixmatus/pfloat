@@ -161,6 +161,9 @@ pub(crate) mod bessel_i;
 #[cfg(feature = "bessel")]
 pub(crate) mod bessel_k;
 
+#[cfg(feature = "zeta")]
+pub(crate) mod zeta;
+
 /// Hardcoded `ln(2)` mantissa at 1024-bit precision.
 ///
 /// Layout: little-endian limbs, top-bit-set. The mantissa-as-integer
