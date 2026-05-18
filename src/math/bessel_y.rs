@@ -245,18 +245,68 @@ fn bessel_y_kernel(
 /// [`bessel_y_kernel`] does the single final round.
 ///
 /// The base pair `Y₀`/`Y₁` go through the two-regime dispatch
-/// ([`bessel_y01`]). Slice 6p.3 wires that dispatch; slice 6p.4
-/// replaces the direct `n ≥ 2` series call with the upward
-/// recurrence `Y_{k+1} = (2k/x)·Y_k − Y_{k−1}` (DLMF 10.6.1) that
-/// makes higher orders cheap and is stable for the dominant `Y`.
-/// Until then orders `≥ 2` evaluate the DLMF 10.8.1 series directly
-/// (valid for every `n ≥ 0`, all `x > 0`).
+/// ([`bessel_y01`]); `Yₙ (n ≥ 2)` climbs from that pair by the
+/// **upward** recurrence (DLMF 10.6.1)
+///
+/// ```text
+/// Y_{k+1}(x) = (2k/x)·Y_k(x) − Y_{k−1}(x)
+/// ```
+///
+/// which is numerically stable because `Y` is the *dominant*
+/// solution of the three-term relation (forward recurrence grows the
+/// dominant solution; the `−Y_{k−1}` subtraction is never
+/// catastrophic since `(2k/x)·Y_k` dominates it). This is the
+/// opposite of `J`'s Miller backward descent; there is no recessive
+/// solution to renormalise, so no sum rule and no
+/// [`super::bessel_j::bessel_j_miller`] reuse. The climb is a
+/// rolling pair, `O(m)` time and `O(1)` space, no `Vec`.
 fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
     if m <= 1 {
-        bessel_y01(m, x, target_precision)
-    } else {
-        bessel_y_series(m, x, target_precision)
+        return bessel_y01(m, x, target_precision);
     }
+
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        let shift = (e_x + 1).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 16).min(4096) as u32
+    };
+    let working = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
+
+    // Seeds Y₀, Y₁ at the recurrence working precision.
+    let mut y_prev = bessel_y01(0, x, working)
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let mut y_cur = bessel_y01(1, x, working)
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // Y_{k+1} = (2k/x)·Y_k − Y_{k−1}, k = 1 … m−1.
+    for k in 1..i64::from(m) {
+        let two_k = ci(2 * k, working);
+        let (c1, _) = two_k.mul(&inv_x, RoundingMode::NearestEven);
+        let (c2, _) = c1.mul(&y_cur, RoundingMode::NearestEven);
+        let (y_next, _) = c2.sub(&y_prev, RoundingMode::NearestEven);
+        y_prev = y_cur;
+        y_cur = y_next;
+    }
+    y_cur
 }
 
 /// `Y₀(x)` (`which = 0`) or `Y₁(x)` (`which = 1`) for `x > 0`, the
@@ -697,6 +747,59 @@ mod tests {
         assert!(close_at(&r0, &py(Y0_200, 53), 45), "y0(200) via dispatch");
         let (r1, _) = x.y1(RoundingMode::NearestEven);
         assert!(close_at(&r1, &py(Y1_200, 53), 45), "y1(200) via dispatch");
+    }
+
+    /// Upward-recurrence cross-tie `Y_{n−1}(x) + Y_{n+1}(x) =
+    /// (2n/x)·Y_n(x)` (DLMF 10.6.1), binding three orders that all
+    /// climb from the same `(Y₀, Y₁)` base pair.
+    #[test]
+    fn recurrence_spot_check() {
+        let p = 160;
+        let x = at(5, 2, p); // 2.5
+        let (y2, _) = x.yn(2, RoundingMode::NearestEven);
+        let (y3, _) = x.yn(3, RoundingMode::NearestEven);
+        let (y4, _) = x.yn(4, RoundingMode::NearestEven);
+        let (lhs, _) = y2.add(&y4, RoundingMode::NearestEven);
+        let six = BigFloat::try_from_i64_exact(6, p).unwrap();
+        let (r1, _) = six.mul(&y3, RoundingMode::NearestEven);
+        let (rhs, _) = r1.div(&x, RoundingMode::NearestEven);
+        assert!(close_at(&lhs, &rhs, p - 10), "Y_2+Y_4 = (6/x)Y_3");
+    }
+
+    /// Recurrence agrees with the direct DLMF 10.8.1 series for
+    /// `n ≥ 2` (independent paths), at moderate `x`.
+    #[test]
+    fn recurrence_matches_series() {
+        let p = 160;
+        let x = at(7, 2, p); // 3.5
+        for n in [2u32, 3, 5] {
+            let recur = bessel_y_eval_normal(n, &x, p);
+            let series = bessel_y_series(n, &x, p);
+            assert!(close_at(&recur, &series, p - 12), "Y_{n}(3.5) recur=series");
+        }
+    }
+
+    /// Negative-order parity `Y₋ₙ(x) = (−1)ⁿ Yₙ(x)` (DLMF 10.4.1):
+    /// the kernel reduces on `m = |n|` and flips the sign, so this
+    /// is bit-exact.
+    #[test]
+    fn negative_order_parity() {
+        let p = 160;
+        let x = at(9, 4, p); // 2.25
+        for n in [1i32, 2, 3, 4] {
+            let (pos, _) = x.yn(n, RoundingMode::NearestEven);
+            let (neg, _) = x.yn(-n, RoundingMode::NearestEven);
+            let expected = if n % 2 == 0 {
+                pos.clone()
+            } else {
+                pos.negated()
+            };
+            assert_eq!(
+                neg.partial_cmp(&expected).0,
+                Some(Ordering::Equal),
+                "Y_(-{n}) = (-1)^{n} Y_{n}"
+            );
+        }
     }
 
     #[test]
