@@ -47,7 +47,7 @@
 //!
 //! ADR-0024 records the design and the coefficient provenance.
 
-use super::{euler_gamma_at, pi_at};
+use super::{euler_gamma_at, pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -244,13 +244,39 @@ fn bessel_y_kernel(
 /// recurrence. Returns the unrounded working-precision value;
 /// [`bessel_y_kernel`] does the single final round.
 ///
-/// Slice 6p.2: the DLMF 10.8.1 logarithmic series carries every
-/// order directly (valid for all `n ≥ 0`, all `x > 0`). Slice 6p.3
-/// adds the large-`x` Hankel asymptotic and 6p.4 the regime dispatch
-/// plus the upward recurrence that makes `Yₙ (n ≥ 2)` cheap; until
-/// then `eval_normal` is the series alone.
+/// The base pair `Y₀`/`Y₁` go through the two-regime dispatch
+/// ([`bessel_y01`]). Slice 6p.3 wires that dispatch; slice 6p.4
+/// replaces the direct `n ≥ 2` series call with the upward
+/// recurrence `Y_{k+1} = (2k/x)·Y_k − Y_{k−1}` (DLMF 10.6.1) that
+/// makes higher orders cheap and is stable for the dominant `Y`.
+/// Until then orders `≥ 2` evaluate the DLMF 10.8.1 series directly
+/// (valid for every `n ≥ 0`, all `x > 0`).
 fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
-    bessel_y_series(m, x, target_precision)
+    if m <= 1 {
+        bessel_y01(m, x, target_precision)
+    } else {
+        bessel_y_series(m, x, target_precision)
+    }
+}
+
+/// `Y₀(x)` (`which = 0`) or `Y₁(x)` (`which = 1`) for `x > 0`, the
+/// two-regime base dispatch on the binary exponent of `x`. Shares
+/// [`super::bessel_j::bessel_j_threshold`] with `J`: the DLMF 10.17.4
+/// `Y` asymptotic has the same `e^{−2|x|}` error order as the DLMF
+/// 10.17.3 `J` asymptotic, so the same conservative cut applies.
+/// `Y` has no recessive-normalisation analog, so unlike `J` there is
+/// no cheap middle regime; the log series carries everything below
+/// the asymptotic cut. Returns the unrounded working-precision value.
+fn bessel_y01(which: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    if e_x >= super::bessel_j::bessel_j_threshold(target_precision) {
+        bessel_y_asymptotic(which, x, target_precision)
+    } else {
+        bessel_y_series(which, x, target_precision)
+    }
 }
 
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
@@ -435,6 +461,96 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
     y
 }
 
+/// `Y_n(x)` for `n ≥ 0`, large `x > 0`, via the DLMF 10.17.4
+/// Hankel-form asymptotic
+///
+/// ```text
+/// Y_n(x) ∼ √(2/(πx))·[sin ω · Σ_{k≥0} (−1)^k a_{2k}(n)/x^{2k}
+///                    + cos ω · Σ_{k≥0} (−1)^k a_{2k+1}(n)/x^{2k+1}]
+/// ω = x − n·π/2 − π/4
+/// ```
+///
+/// summed to its smallest term (the [`super::bessel_j`] /
+/// [`super::si`] optimal-truncation idiom). The coefficients
+/// `a_k(n)` and the phase `ω` are **identical to `J`'s** (DLMF
+/// 10.17.1/10.17.2): `a_0(n)=1`,
+/// `a_k(n) = a_{k−1}(n)·(4n²−(2k−1)²)/(8k)`, already derived and
+/// cross-pinned in ADR-0023 (the closed-form ratio and the
+/// Pochhammer form, agreeing at `k=1,2`); 6p reuses that recurrence
+/// verbatim rather than re-deriving it. `Y` differs from `J` only
+/// in the trig combination: DLMF 10.17.4 is `sinω·ΣP + cosω·ΣQ`
+/// where `J`'s 10.17.3 is `cosω·ΣP − sinω·ΣQ`
+/// (`ΣP = Σ(−1)^k a_{2k}/x^{2k}`, `ΣQ = Σ(−1)^k a_{2k+1}/x^{2k+1}`).
+/// Folding the explicit `(−1)^k` into the trig assignment, the
+/// per-`j` factor on `a_j(n)/x^j` is the period-4 cycle
+/// `[+sinω, +cosω, −sinω, −cosω]` for `j ≡ 0,1,2,3 (mod 4)` (vs
+/// `J`'s `[+cosω, −sinω, −cosω, +sinω]`). Hand-check: `j=0` →
+/// `+sinω·a_0` (`k=0` of `ΣP`); `j=1` → `+cosω·a_1` (`k=0` of
+/// `ΣQ`); `j=2` → `−sinω·a_2` (`k=1` of `ΣP`); `j=3` → `−cosω·a_3`
+/// (`k=1` of `ΣQ`). Returns the unrounded working-precision value.
+fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision
+        .saturating_add(64)
+        .min(target_precision.saturating_add(512));
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // ω = x − n·(π/2) − π/4.
+    let half_pi = pi_over_2_at(working);
+    let two = ci(2, working);
+    let (quarter_pi, _) = half_pi.div(&two, RoundingMode::NearestEven);
+    let n_big = ci(i64::from(n), working);
+    let (n_half_pi, _) = n_big.mul(&half_pi, RoundingMode::NearestEven);
+    let (w0, _) = xw.sub(&n_half_pi, RoundingMode::NearestEven);
+    let (omega, _) = w0.sub(&quarter_pi, RoundingMode::NearestEven);
+    let (cw, _) = omega.cos(RoundingMode::NearestEven);
+    let (sw, _) = omega.sin(RoundingMode::NearestEven);
+
+    // prefactor √(2/(πx)).
+    let pi = pi_at(working);
+    let (pi_x, _) = pi.mul(&xw, RoundingMode::NearestEven);
+    let (ratio, _) = two.div(&pi_x, RoundingMode::NearestEven);
+    let (prefac, _) = ratio.sqrt(RoundingMode::NearestEven);
+
+    let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
+    let four_n2: i64 = 4 * i64::from(n) * i64::from(n);
+
+    // j = 0: g_0 = a_0/x^0 = 1, factor +sin ω (Y's j≡0 term).
+    let mut g = ci(1, working);
+    let (mut bracket, _) = sw.mul(&g, RoundingMode::NearestEven);
+    let mut prev_mag = magnitude(&g);
+    let max_iter: i64 = 1 << 22;
+    for j in 1..=max_iter {
+        // a_j/a_{j−1} = (4n²−(2j−1)²)/(8j); g_j = g_{j−1}·that·(1/x).
+        let odd = 2 * j - 1;
+        let num = four_n2 - odd * odd;
+        let num_b = ci(num, working);
+        let den = ci(8 * j, working);
+        let (t1, _) = g.mul(&num_b, RoundingMode::NearestEven);
+        let (t2, _) = t1.div(&den, RoundingMode::NearestEven);
+        let (cand, _) = t2.mul(&inv_x, RoundingMode::NearestEven);
+        let mag = magnitude(&cand);
+        if mag > prev_mag {
+            break; // smallest term passed: optimal truncation.
+        }
+        prev_mag = mag;
+        g = cand;
+        // Y's period-4 trig/sign cycle on a_j/x^j (DLMF 10.17.4).
+        let contribution = match j % 4 {
+            0 => sw.mul(&g, RoundingMode::NearestEven).0,
+            1 => cw.mul(&g, RoundingMode::NearestEven).0,
+            2 => sw.mul(&g, RoundingMode::NearestEven).0.negated(),
+            _ => cw.mul(&g, RoundingMode::NearestEven).0.negated(),
+        };
+        let (b, _) = bracket.add(&contribution, RoundingMode::NearestEven);
+        bracket = b;
+    }
+    let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +642,61 @@ mod tests {
             let (r, _) = x.yn(n, RoundingMode::NearestEven);
             assert!(close_at(&r, &py(want, p), p - 12), "Y_{n}(1e-3)");
         }
+    }
+
+    // mpmath bessely at large |x| (dps = 90).
+    const Y0_200: &str =
+        "-0.054265775249817910693500115141763046843260653011054063148190169321587553804947092";
+    const Y1_200: &str =
+        "0.01530182458038998921966780774391601230422488536804796783556856489053218931466921";
+    const Y2_200: &str =
+        "0.054418793495621810585696793219202206966302901864734542826545854970492875698093784";
+    const Y3_200: &str =
+        "-0.014213448710477553007953871879531968164898827330753276979037647791122331800707334";
+    const Y5_200: &str =
+        "0.012019640832200107520916455504508441524448832663366991333600968414953269974622734";
+    const Y0_1000: &str =
+        "0.0047159179776228133997732614656652550098590048968019771852800026829151397602999922";
+    const Y1_1000: &str =
+        "-0.024784331292351778914862356097141290938631854864870528758349019940178780233621799";
+    const Y2_1000: &str =
+        "-0.0047654866402075169576029861778595375917362686065317182427967007227954973207672358";
+
+    /// DLMF 10.17.4 Hankel-asymptotic path, called directly so the
+    /// reused `a_k(n)` recurrence and `Y`'s period-4 trig cycle are
+    /// pinned independently of the regime dispatch (added in 6p.4):
+    /// `Y_n` at `x = 200` (`p = 53`) and `x = 1000` (`p = 113`) vs
+    /// mpmath. Large enough that the second and later `a_k` terms
+    /// materially contribute, so a recalled coefficient or a wrong
+    /// trig cycle fails here.
+    #[test]
+    fn asymptotic_matches_mpmath() {
+        let p = 53;
+        let x = at(200, 1, p);
+        for (n, want) in [
+            (0u32, Y0_200),
+            (1, Y1_200),
+            (2, Y2_200),
+            (3, Y3_200),
+            (5, Y5_200),
+        ] {
+            let r = bessel_y_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 8), "Y_{n}(200)");
+        }
+        let p = 113;
+        let x = at(1000, 1, p);
+        for (n, want) in [(0u32, Y0_1000), (1, Y1_1000), (2, Y2_1000)] {
+            let r = bessel_y_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 12), "Y_{n}(1000)");
+        }
+
+        // Public path at large x must route through bessel_y01 into
+        // the asymptotic (pins the bessel_j_threshold dispatch).
+        let x = at(200, 1, 53);
+        let (r0, _) = x.y0(RoundingMode::NearestEven);
+        assert!(close_at(&r0, &py(Y0_200, 53), 45), "y0(200) via dispatch");
+        let (r1, _) = x.y1(RoundingMode::NearestEven);
+        assert!(close_at(&r1, &py(Y1_200, 53), 45), "y1(200) via dispatch");
     }
 
     #[test]
