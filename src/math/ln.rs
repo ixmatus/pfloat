@@ -215,6 +215,7 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "fixed")]
     use core::cmp::Ordering;
 
     fn parse(s: &str, p: u32) -> BigFloat {
