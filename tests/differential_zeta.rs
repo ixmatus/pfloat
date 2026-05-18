@@ -4,7 +4,7 @@
 //! rug 1.30 exposes MPFR `mpfr_zeta` (`Float::zeta_ref()`), a
 //! genuine external oracle, so this is a **bit-exact** lane
 //! (`assert_eq!`, the `differential_ei` / `differential_jn` idiom)
-//! under NearestEven across the full `TRANSCENDENTAL_PRECISIONS`
+//! under `NearestEven` across the full `TRANSCENDENTAL_PRECISIONS`
 //! including `p = 1024` (the user-confirmed posture; the oracle
 //! fork resolved to a native MPFR primitive, unlike 6q's tiered
 //! `differential_ik`).

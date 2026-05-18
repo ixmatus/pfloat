@@ -2,7 +2,7 @@
 //! `rug::Float::parse` for canonical decimal strings.
 //!
 //! Both pfloat and rug round to the requested precision under
-//! NearestEven; the bit-for-bit comparison is the standard test.
+//! `NearestEven`; the bit-for-bit comparison is the standard test.
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 

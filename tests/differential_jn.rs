@@ -5,7 +5,7 @@
 //! rug 1.30 exposes MPFR `mpfr_j0` / `mpfr_j1` / `mpfr_jn`
 //! (`j0_ref` / `j1_ref` / `jn_ref`), a genuine external oracle, so
 //! this is a **bit-exact** lane (`assert_eq!`, the `differential_ei`
-//! idiom) under NearestEven.
+//! idiom) under `NearestEven`.
 //!
 //! Cost note (`feedback_differential_lane_cost`): the integer sweep
 //! lands almost entirely in the Miller recurrence regime, whose seed
