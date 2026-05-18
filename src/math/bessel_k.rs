@@ -32,9 +32,13 @@
 //! recurrence in order (DLMF 10.30.2 `Kν → ∞` as `ν → ∞` at fixed
 //! `z`), so the kernel computes `K₀` and `K₁` directly and climbs to
 //! `Kₙ` by **upward** recurrence (DLMF 10.29.1; slice 6q.6), the
-//! [`super::bessel_y`] template. The recurrence differs from the
-//! ordinary-Bessel one by a sign: `𝒵_{ν−1} − 𝒵_{ν+1} = (2ν/z)𝒵_ν`
-//! rather than `𝒞_{ν−1} + 𝒞_{ν+1} = (2ν/z)𝒞_ν`. The base pair
+//! [`super::bessel_y`] template. The recurrence is
+//! `K_{k+1}(x) = (2k/x)·K_k(x) + K_{k−1}(x)`: DLMF 10.29.1 is the
+//! unified `𝒵_{ν−1} − 𝒵_{ν+1} = (2ν/z)𝒵_ν` with the §10.25(ii)
+//! convention `𝒵_ν = I_ν` **or `e^{νπi} K_ν`**, and the `e^{νπi}`
+//! factor flips `K`'s sign relative to a naive reading (and
+//! relative to `I`); see [`bessel_k_eval_normal`] for the
+//! derivation. The base pair
 //! `K₀`/`K₁` uses two regimes on the binary exponent of `x`: the
 //! DLMF 10.31.1 logarithmic series below the cut (slice 6q.5), the
 //! DLMF 10.40.2 asymptotic at/above it (slice 6q.7). ADR-0025
@@ -234,19 +238,84 @@ fn bessel_k_kernel(
     }
 }
 
-/// `K_m(x)` for `m ≥ 0`, normal `x > 0`: the regime evaluator.
-/// Returns the unrounded working-precision value; [`bessel_k_kernel`]
-/// does the single final round.
+/// `K_m(x)` for `m ≥ 0`, normal `x > 0`: the base pair plus upward
+/// recurrence. Returns the unrounded working-precision value;
+/// [`bessel_k_kernel`] does the single final round.
 ///
-/// Slice 6q.5 wires the DLMF 10.31.1 logarithmic series
-/// ([`bessel_k_series`]), which converges for every `x > 0` and so
-/// carries the whole positive axis for every order on its own.
-/// Slices 6q.6 (DLMF 10.29.1 upward recurrence, a faster `n ≥ 2`
-/// path) and 6q.7 (DLMF 10.40.2 asymptotic plus the binary-exponent
-/// regime dispatch, for large `x`) layer the faster regimes on top;
-/// until then the series is the only path and there is no dead code.
+/// The base pair `K₀`/`K₁` goes through [`bessel_k_series`] (slice
+/// 6q.5; slice 6q.7 adds the two-regime series/asymptotic base
+/// dispatch). `Kₙ (n ≥ 2)` climbs from that pair by the **upward**
+/// recurrence (DLMF 10.29.1)
+///
+/// ```text
+/// K_{k+1}(x) = (2k/x)·K_k(x) + K_{k−1}(x)
+/// ```
+///
+/// **derived, not recalled** (the 6n `(2k−1)` defect is the
+/// precedent): DLMF 10.29.1 is the unified
+/// `𝒵_{ν−1} − 𝒵_{ν+1} = (2ν/z)·𝒵_ν` where, by the §10.25(ii)
+/// standard-solution convention, `𝒵_ν = I_ν(z)` **or
+/// `e^{νπi} K_ν(z)`**. Substituting the latter and dividing by
+/// `e^{νπi}` turns `e^{−πi}K_{ν−1} − e^{πi}K_{ν+1} = (2ν/z)K_ν`
+/// into `−K_{ν−1} + K_{ν+1} = (2ν/z)K_ν`, i.e. the **`+ K_{k−1}`**
+/// form above — the opposite sign to a naive reading of the
+/// unified relation, and the opposite of `I`'s
+/// `f_{k−1} = (2k/x)f_k + f_{k+1}` rearrangement. Numerically
+/// pinned by `K₂ − K₀ = (2/x)K₁` at `x = 1` (`recurrence_spot_check`).
+/// `K` is the *dominant* solution in order (DLMF 10.30.2
+/// `Kν ∼ ½Γ(ν)(2/z)ν → ∞` as `ν → ∞`), so this forward climb is
+/// numerically stable (it grows the dominant solution; the
+/// all-positive `(2k/x)·K_k + K_{k−1}` has no cancellation). The
+/// climb is a rolling pair, `O(m)` time and `O(1)` space, no `Vec`,
+/// the [`super::bessel_y`] template (with the sign change and the
+/// `+` recurrence rather than `Y`'s `Y_{k+1}=(2k/x)Y_k−Y_{k−1}`).
 fn bessel_k_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
-    bessel_k_series(m, x, target_precision)
+    if m <= 1 {
+        return bessel_k_series(m, x, target_precision);
+    }
+
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        let shift = (e_x + 1).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 16).min(4096) as u32
+    };
+    let working = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
+
+    // Seeds K₀, K₁ at the recurrence working precision.
+    let mut k_prev = bessel_k_series(0, x, working)
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let mut k_cur = bessel_k_series(1, x, working)
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // K_{k+1} = (2k/x)·K_k + K_{k−1}, k = 1 … m−1.
+    for k in 1..i64::from(m) {
+        let two_k = ci(2 * k, working);
+        let (c1, _) = two_k.mul(&inv_x, RoundingMode::NearestEven);
+        let (c2, _) = c1.mul(&k_cur, RoundingMode::NearestEven);
+        let (k_next, _) = c2.add(&k_prev, RoundingMode::NearestEven);
+        k_prev = k_cur;
+        k_cur = k_next;
+    }
+    k_cur
 }
 
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
@@ -589,6 +658,42 @@ mod tests {
                 close_at(&via_10_31_1, &acc, p - 12),
                 "10.31.1 vs 10.31.2 at x={num}/{den}"
             );
+        }
+    }
+
+    /// Upward-recurrence cross-tie `K_{n+1}(x) − K_{n−1}(x) =
+    /// (2n/x)·K_n(x)` (the verified DLMF 10.29.1 form for `K`, the
+    /// `+ K_{k−1}` rearrangement), binding three orders that all
+    /// climb from the same `(K₀, K₁)` base pair. This is the numeric
+    /// pin for the recurrence **sign** (a wrong sign — the plan's
+    /// original `− K_{k−1}` — fails here; the derive-don't-recall
+    /// catch).
+    #[test]
+    fn recurrence_spot_check() {
+        let p = 160;
+        let x = at(5, 2, p); // 2.5
+        let (k2, _) = x.kn(2, RoundingMode::NearestEven);
+        let (k3, _) = x.kn(3, RoundingMode::NearestEven);
+        let (k4, _) = x.kn(4, RoundingMode::NearestEven);
+        let (lhs, _) = k4.sub(&k2, RoundingMode::NearestEven);
+        let six = ci(6, p);
+        let (r1, _) = six.mul(&k3, RoundingMode::NearestEven);
+        let (rhs, _) = r1.div(&x, RoundingMode::NearestEven);
+        assert!(close_at(&lhs, &rhs, p - 10), "K_4−K_2 = (6/x)K_3");
+    }
+
+    /// Recurrence agrees with the direct DLMF 10.31.1 series for
+    /// `n ≥ 2` (independent paths: `bessel_k_eval_normal` climbs from
+    /// `(K₀,K₁)`, `bessel_k_series` computes `K_n` directly), at
+    /// moderate `x`.
+    #[test]
+    fn recurrence_matches_series() {
+        let p = 160;
+        let x = at(7, 2, p); // 3.5
+        for n in [2u32, 3, 5] {
+            let recur = bessel_k_eval_normal(n, &x, p);
+            let series = bessel_k_series(n, &x, p);
+            assert!(close_at(&recur, &series, p - 12), "K_{n}(3.5) recur=series");
         }
     }
 
