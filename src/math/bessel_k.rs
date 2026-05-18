@@ -44,7 +44,7 @@
 //! DLMF 10.40.2 asymptotic at/above it (slice 6q.7). ADR-0025
 //! records the design and the DLMF provenance.
 
-use super::euler_gamma_at;
+use super::{euler_gamma_at, pi_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -242,9 +242,12 @@ fn bessel_k_kernel(
 /// recurrence. Returns the unrounded working-precision value;
 /// [`bessel_k_kernel`] does the single final round.
 ///
-/// The base pair `K₀`/`K₁` goes through [`bessel_k_series`] (slice
-/// 6q.5; slice 6q.7 adds the two-regime series/asymptotic base
-/// dispatch). `Kₙ (n ≥ 2)` climbs from that pair by the **upward**
+/// The base pair `K₀`/`K₁` goes through the two-regime
+/// [`bessel_k01`] dispatch (DLMF 10.31.1 log series below the
+/// asymptotic cut, DLMF 10.40.2 asymptotic at/above it), so the
+/// `n ≥ 2` climb seeds from the asymptotic for large `x` rather than
+/// the slow series. `Kₙ (n ≥ 2)` climbs from that pair by the
+/// **upward**
 /// recurrence (DLMF 10.29.1)
 ///
 /// ```text
@@ -271,7 +274,7 @@ fn bessel_k_kernel(
 /// `+` recurrence rather than `Y`'s `Y_{k+1}=(2k/x)Y_k−Y_{k−1}`).
 fn bessel_k_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
     if m <= 1 {
-        return bessel_k_series(m, x, target_precision);
+        return bessel_k01(m, x, target_precision);
     }
 
     let e_x = match &x.class {
@@ -296,12 +299,13 @@ fn bessel_k_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat
         .0;
     let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
 
-    // Seeds K₀, K₁ at the recurrence working precision.
-    let mut k_prev = bessel_k_series(0, x, working)
+    // Seeds K₀, K₁ at the recurrence working precision, through the
+    // two-regime base dispatch (asymptotic for large x).
+    let mut k_prev = bessel_k01(0, x, working)
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
-    let mut k_cur = bessel_k_series(1, x, working)
+    let mut k_cur = bessel_k01(1, x, working)
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
@@ -508,6 +512,101 @@ fn bessel_k_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
     k_val
 }
 
+/// `K₀(x)` (`which = 0`) or `K₁(x)` (`which = 1`) for `x > 0`, the
+/// two-regime base dispatch on the binary exponent of `x`. Shares
+/// [`super::bessel_j::bessel_j_threshold`] with `J`/`Y`/`I`, and the
+/// reuse is *derived*, not reflexive (the CLAUDE.md "derive the cut"
+/// reflex; the 6n precedent makes it load-bearing): the
+/// accuracy-controlling quantity is the optimal-truncation
+/// **relative** error of the shared `a_k(ν)` divergent series,
+/// `O(e^{−2x})` — identical to the ordinary-Bessel 10.17 series,
+/// since `K` reuses the same `a_k(ν)` (DLMF 10.40 ≡ §10.17(i)). The
+/// `√(π/2x)·e^{−x}` prefactor is computed exactly and does not enter
+/// the relative error, so the conservative `2^{e_x} ≥ target+64`
+/// cut is strictly more than enough; the DLMF 10.31.1 log series
+/// (always correct, slower) carries everything below. `K` has no
+/// recessive-normalisation analog, so as with `Y` there is no cheap
+/// middle regime: the log series carries the whole sub-asymptotic
+/// range. Returns the unrounded working-precision value.
+fn bessel_k01(which: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    if e_x >= super::bessel_j::bessel_j_threshold(target_precision) {
+        bessel_k_asymptotic(which, x, target_precision)
+    } else {
+        bessel_k_series(which, x, target_precision)
+    }
+}
+
+/// `K_n(x)` for `n ≥ 0`, large `x > 0`, via the DLMF 10.40.2
+/// large-argument asymptotic
+///
+/// ```text
+/// K_n(x) ∼ √(π/(2x))·e^{−x} · Σ_{k≥0} a_k(n)/x^k
+/// ```
+///
+/// summed to its smallest term (the [`super::bessel_j`] /
+/// [`super::si`] optimal-truncation idiom). Like `I` (DLMF 10.40.1)
+/// there is **no trig**; unlike `I` the series is **all positive**
+/// — DLMF 10.40.2 has no `(−1)^k`, so the running `g_j = a_j(n)/x^j`
+/// is accumulated directly with the recurrence's own sign and **no**
+/// explicit per-term sign is applied (contrast
+/// [`super::bessel_i::bessel_i_asymptotic`]'s `(−1)^j`). The
+/// `a_k(n)` are the **same** ADR-0023 coefficients as `J`/`Y`/`I`
+/// (`a_0=1`, `a_k = a_{k−1}(4n²−(2k−1)²)/(8k)`, DLMF 10.40 ≡
+/// §10.17(i)), reused rather than re-derived (the 6n `(2k−1)`
+/// defect is the precedent). The prefactor `√(π/2x)·e^{−x}` is the
+/// genuine exponential decay that makes `K_n(+∞) = +0` a true limit
+/// (module doc). Returns the unrounded working-precision value.
+fn bessel_k_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision
+        .saturating_add(64)
+        .min(target_precision.saturating_add(512));
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // prefactor √(π/(2x))·e^{−x}.
+    let pi = pi_at(working);
+    let two = ci(2, working);
+    let (two_x, _) = two.mul(&xw, RoundingMode::NearestEven);
+    let (ratio, _) = pi.div(&two_x, RoundingMode::NearestEven);
+    let (sqrt_r, _) = ratio.sqrt(RoundingMode::NearestEven);
+    let (neg_x_exp, _) = xw.negated().exp(RoundingMode::NearestEven); // e^{−x}
+    let (prefac, _) = sqrt_r.mul(&neg_x_exp, RoundingMode::NearestEven);
+
+    let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
+    let four_n2: i64 = 4 * i64::from(n) * i64::from(n);
+
+    // j = 0: g_0 = a_0/x^0 = 1, all terms +a_j/x^j (no (−1)^j).
+    let mut g = ci(1, working);
+    let mut bracket = g.clone();
+    let mut prev_mag = magnitude(&g);
+    let max_iter: i64 = 1 << 22;
+    for j in 1..=max_iter {
+        // a_j/a_{j−1} = (4n²−(2j−1)²)/(8j); g_j = g_{j−1}·that·(1/x).
+        let odd = 2 * j - 1;
+        let num = four_n2 - odd * odd;
+        let (t1, _) = g.mul(&ci(num, working), RoundingMode::NearestEven);
+        let (t2, _) = t1.div(&ci(8 * j, working), RoundingMode::NearestEven);
+        let (cand, _) = t2.mul(&inv_x, RoundingMode::NearestEven);
+        let mag = magnitude(&cand);
+        if mag > prev_mag {
+            break; // smallest term passed: optimal truncation.
+        }
+        prev_mag = mag;
+        g = cand;
+        // DLMF 10.40.2 is all-positive: add g_j directly, no sign.
+        let (b, _) = bracket.add(&g, RoundingMode::NearestEven);
+        bracket = b;
+    }
+    let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +793,130 @@ mod tests {
             let recur = bessel_k_eval_normal(n, &x, p);
             let series = bessel_k_series(n, &x, p);
             assert!(close_at(&recur, &series, p - 12), "K_{n}(3.5) recur=series");
+        }
+    }
+
+    // mpmath besselk at large x (dps = 120).
+    const K0_200: &str = "1.22568197977653345166005408750744722858043232343307226554505480400948413258208543347885035e-88";
+    const K1_200: &str = "1.22874237347298581204459101041646009828967124256215093428271656511226991590780102587247439e-88";
+    const K2_200: &str = "1.23796940351126330978049999761161182956332903585869377488788196966060683174116344373757509e-88";
+    const K3_200: &str = "1.2535017615432110782402010103686923348809378232793248097804742045054820525426242947472259e-88";
+    const K5_200: &str = "1.30452473979751346392530925148559923886532811010160775054772605233731290427532198165042557e-88";
+    const K0_1000: &str = "2.01151731624299699674456665888519536091731263904038220844381144808150465554900321257239929601917894793698256410034201785e-436";
+    const K1_1000: &str = "2.01252282371250157000045002372836611718150588509607141476321086813562400393053359058916581014780577250891552366716437716e-436";
+    const K2_1000: &str = "2.0155423618904219998845675589326520931516756508105743512733378698177759035568642797535776276394745594820003951476763466e-436";
+
+    /// DLMF 10.40.2 asymptotic path, called directly so the reused
+    /// ADR-0023 `a_k(n)` recurrence and the all-positive (no-`(−1)^j`,
+    /// no-trig) summation are pinned independently of the regime
+    /// dispatch: `K_n(200)` (`p = 53`) and `K_n(1000)` (`p = 113`)
+    /// vs mpmath. Large enough that the second and later `a_k` terms
+    /// materially contribute. Public path at `x = 200`, `p = 53`
+    /// must route through the dispatch into the asymptotic (pins the
+    /// *derived* `bessel_j_threshold` reuse).
+    #[test]
+    fn asymptotic_matches_mpmath() {
+        let p = 53;
+        let x = at(200, 1, p);
+        for (n, want) in [
+            (0u32, K0_200),
+            (1, K1_200),
+            (2, K2_200),
+            (3, K3_200),
+            (5, K5_200),
+        ] {
+            let r = bessel_k_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 8), "K_{n}(200)");
+        }
+        let p = 113;
+        let x = at(1000, 1, p);
+        for (n, want) in [(0u32, K0_1000), (1, K1_1000), (2, K2_1000)] {
+            let r = bessel_k_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 12), "K_{n}(1000)");
+        }
+
+        let x = at(200, 1, 53);
+        let (r0, _) = x.k0(RoundingMode::NearestEven);
+        assert!(close_at(&r0, &py(K0_200, 53), 45), "k0(200) via dispatch");
+        let (r1, _) = x.k1(RoundingMode::NearestEven);
+        assert!(close_at(&r1, &py(K1_200, 53), 45), "k1(200) via dispatch");
+    }
+
+    // mpmath besselk (dps = 120) for the regime-boundary check.
+    const K0_256: &str = "5.18013339204242334455289668574201853178804794126042564271518856932341161910064071958666155402554376800200903159737738717e-113";
+    const K1_256: &str = "5.190240998114744161907759639192419618652500009370150493984930496194082302203490428908979567643882020065029562301535108e-113";
+
+    /// Cross-regime continuity: at `x = 256` the DLMF 10.40.2
+    /// asymptotic and the DLMF 10.31.1 series (called directly)
+    /// agree and both match mpmath. Pins the *derived*
+    /// `bessel_j_threshold` crossover and the reused `a_k(n)`
+    /// recurrence against the independent log-series path (the
+    /// `bessel_y` `asymptotic_series_continuity` analog).
+    #[test]
+    fn asymptotic_series_continuity() {
+        let p = 113;
+        let x = at(256, 1, p);
+        let a0 = bessel_k_asymptotic(0, &x, p);
+        let s0 = bessel_k_series(0, &x, p);
+        assert!(close_at(&a0, &s0, p - 14), "asymp vs series K_0(256)");
+        assert!(close_at(&a0, &py(K0_256, p), p - 12), "asymp K_0(256)");
+        assert!(close_at(&s0, &py(K0_256, p), p - 12), "series K_0(256)");
+        let a1 = bessel_k_asymptotic(1, &x, p);
+        let s1 = bessel_k_series(1, &x, p);
+        assert!(close_at(&a1, &s1, p - 14), "asymp vs series K_1(256)");
+        assert!(close_at(&a1, &py(K1_256, p), p - 12), "asymp K_1(256)");
+    }
+
+    // mpmath besselk (dps = 340) for the p = 1024 second-term pin.
+    const K0_52_BIG: &str = "0.0623475532003661860291695294760139259960055787434453038385991720783726126799928994588052374550157723832346504362223071937333859248746647628547074755854775229146658531360012871102106624951700453650599181053226061041405718470609266448974058823072792384846349541378874068749713370521339241539788534797609796213569434158867547228742329";
+    const K2_256_BIG: &str = "5.22068214984019478331780105792320931005877059758362994344944583882492788708660548856251295689776159628376707505285813020384154090718705904926391954045119851287186258300722181091561147917155876776889424073906082030457606499386332477071798221208110267943015430265408514405389229962330428534039971409221156839593910076048094148988924e-113";
+
+    /// Second-term-matters pin at `p = 1024` (the `derive, don't
+    /// recall` reflex): the series path `K_0(2.5)` and the
+    /// series-base + recurrence path `K_2(256)` (at `p = 1024` the
+    /// precision-scaled `bessel_j_threshold` keeps `x = 256` in the
+    /// series, not the asymptotic), validated to `p − 2` against the
+    /// 330-digit references. A coefficient, recurrence-sign, or
+    /// harmonic-reduction error invisible at low precision fails
+    /// here.
+    #[test]
+    fn high_precision_pin() {
+        let x = at(5, 2, 1024);
+        let (r, _) = x.k0(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(K0_52_BIG, 1024), 1022), "K_0(2.5) p=1024");
+
+        let x = at(256, 1, 1024);
+        let (r, _) = x.kn(2, RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(K2_256_BIG, 1024), 1022), "K_2(256) p=1024");
+    }
+
+    /// The DLMF 10.28.2 I/K cross-tie
+    /// `I_ν(x)·K_{ν+1}(x) + I_{ν+1}(x)·K_ν(x) = 1/x` (a **plus** and
+    /// `1/x`, vs the J/Y Wronskian's minus and `2/(πx)`). This is
+    /// the load-bearing identity binding the 6q `bessel_i` and
+    /// `bessel_k` kernels — the modified-Bessel analog of 6p's J/Y
+    /// Wronskian, and π-free. The in-module test pins the actual
+    /// `1/x` constant; `tests/property_ik.rs` (6q.9) checks the
+    /// constant-free invariance form.
+    #[test]
+    fn ik_wronskian_10_28_2() {
+        let p = 200;
+        for &(num, den) in &[(1i64, 2i64), (5, 2), (7, 1), (9, 4)] {
+            let x = at(num, den, p);
+            for nu in [0i32, 1, 2, 3] {
+                let (i_nu, _) = x.in_(nu, RoundingMode::NearestEven);
+                let (i_nu1, _) = x.in_(nu + 1, RoundingMode::NearestEven);
+                let (k_nu, _) = x.kn(nu, RoundingMode::NearestEven);
+                let (k_nu1, _) = x.kn(nu + 1, RoundingMode::NearestEven);
+                let (a, _) = i_nu.mul(&k_nu1, RoundingMode::NearestEven);
+                let (b, _) = i_nu1.mul(&k_nu, RoundingMode::NearestEven);
+                let (lhs, _) = a.add(&b, RoundingMode::NearestEven);
+                let (rhs, _) = ci(1, p).div(&x, RoundingMode::NearestEven);
+                assert!(
+                    close_at(&lhs, &rhs, p - 12),
+                    "10.28.2 nu={nu} x={num}/{den}"
+                );
+            }
         }
     }
 
