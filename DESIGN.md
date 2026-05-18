@@ -345,10 +345,33 @@ Each family dispatches by argument region.
   J/Y Wronskian `J_{n+1}Y_n−J_n Y_{n+1}=2/(πx)` (DLMF 10.5.2) is
   the re-enabled cross-tie. Bit-exact against MPFR `y0/y1/yn` under
   NearestEven.
-- Modified Bessel `I0/I1/In`, `K0/K1/Kn`. Power series and
-  asymptotic dispatch as above; Miller's algorithm (backward
-  recurrence with normalization) for `In` to avoid the forward-
-  instability problem.
+- Modified Bessel `I0/I1/In`, `K0/K1/Kn` (slice 6q, `bessel`
+  feature; ADR-0025, shipped). `I` is entire (the `J` domain shape);
+  `K` is real only for `x>0` (the `Y`/`Ci`/`li` shape). `I` is the
+  recessive solution in order, so it reuses the `J` template:
+  three-regime dispatch on the binary exponent of `|x|` — the
+  DLMF 10.25.2 all-positive Maclaurin (no cancellation, no
+  `x·log₂e` boost) for tiny `|x|`, Miller backward recurrence
+  normalized by the DLMF 10.35.5 sum rule `eˣ=I0+2·Σ_{k≥1}Iₖ`
+  (every order, not `J`'s even-only rule) for moderate `|x|`, the
+  DLMF 10.40.1 asymptotic above. `K` is the dominant solution, so it
+  reuses the `Y` template: the DLMF 10.31.1 logarithmic series
+  (digamma reduced to harmonic sums plus the in-tree `γ`, the `I_n`
+  piece from `bessel_i`) below the cut, the DLMF 10.40.2 asymptotic
+  above; `Kn` for `n≥2` climbs by upward recurrence
+  `K_{k+1}=(2k/x)Kₖ+K_{k−1}` (DLMF 10.29.1 with the §10.25(ii)
+  `e^{νπi}` convention flipping `K`'s sign relative to `I` — a
+  derive-don't-recall catch, ADR-0025). The asymptotics reuse `J`'s
+  `a_k(n)` (ADR-0023) with no trig (`I` alternating, `K`
+  all-positive). Pole `Kn(+0)=+∞` (positive, opposite `Y`) raising
+  `DIV_BY_ZERO`; `x<0`/`−0`/`−∞` give `NaN`+`INVALID` (complex);
+  `Kn(+∞)=+0` is a genuine exponential-decay limit (not the
+  decaying-envelope convention); `In(±∞)=±∞` a genuine infinite
+  limit. Order parity is even with no sign (`I₋ₙ=Iₙ`, `K₋ₙ=Kₙ`).
+  No MPFR `I`/`K` primitive exists, so the oracle is the Airy-style
+  tiered one: an `mpmath` reference table (`p≤256`), the DLMF
+  10.28.2 I/K cross-tie `I_{ν+1}K_ν+I_νK_{ν+1}=1/x`, and dyadic
+  self-consistency, with `p=1024` pinned by in-module unit tests.
 - Riemann zeta, real argument. Euler-Maclaurin in the convergent
   region; the functional equation reflects negative arguments.
   Complex arguments deferred (Riemann-Siegel out of scope for 1.0).

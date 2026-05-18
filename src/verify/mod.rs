@@ -93,11 +93,23 @@ mod bi;
 mod bi_prime;
 
 #[cfg(feature = "bessel")]
+mod i0;
+#[cfg(feature = "bessel")]
+mod i1;
+#[cfg(feature = "bessel")]
+mod in_;
+#[cfg(feature = "bessel")]
 mod j0;
 #[cfg(feature = "bessel")]
 mod j1;
 #[cfg(feature = "bessel")]
 mod jn;
+#[cfg(feature = "bessel")]
+mod k0;
+#[cfg(feature = "bessel")]
+mod k1;
+#[cfg(feature = "bessel")]
+mod kn;
 #[cfg(feature = "bessel")]
 mod y0;
 #[cfg(feature = "bessel")]

@@ -37,7 +37,7 @@ fuzz_target!(|input: Input| {
         return;
     };
 
-    match input.op % 21 {
+    match input.op % 27 {
         0 => {
             let _ = x.erf(mode);
         }
@@ -105,6 +105,31 @@ fuzz_target!(|input: Input| {
             // `Y` is real only for `x > 0` (negative / zero `x`
             // exercise the INVALID / pole arms).
             let _ = x.yn((input.y % 6) as i32, mode);
+        }
+        21 => {
+            let _ = x.i0(mode);
+        }
+        22 => {
+            let _ = x.i1(mode);
+        }
+        23 => {
+            // `I` is entire; bounded order incl. the negative-order
+            // parity path (`I₋ₙ = Iₙ`, even, no sign) and the
+            // negative-argument argument parity.
+            let _ = x.in_((input.y % 6) as i32, mode);
+        }
+        24 => {
+            let _ = x.k0(mode);
+        }
+        25 => {
+            let _ = x.k1(mode);
+        }
+        26 => {
+            // `K` is real only for `x > 0` (negative / zero / −0 `x`
+            // exercise the INVALID / positive-pole arms); bounded
+            // order incl. the negative-order parity path
+            // (`K₋ₙ = Kₙ`, even, no sign).
+            let _ = x.kn((input.y % 6) as i32, mode);
         }
         _ => unreachable!(),
     }
