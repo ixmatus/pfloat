@@ -47,6 +47,7 @@
 //!
 //! ADR-0024 records the design and the coefficient provenance.
 
+use super::{euler_gamma_at, pi_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -243,19 +244,289 @@ fn bessel_y_kernel(
 /// recurrence. Returns the unrounded working-precision value;
 /// [`bessel_y_kernel`] does the single final round.
 ///
-/// Slice 6p.1 placeholder: returns a quiet NaN so the skeleton
-/// compiles and the special-value path is exercised in isolation.
-/// Slices 6p.2 (log series), 6p.3 (asymptotic), and 6p.4 (upward
-/// recurrence + dispatch) replace this with the real evaluator; no
-/// normal-argument tests run until then.
-fn bessel_y_eval_normal(_m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
-    let _ = x;
-    BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[]).expect("precision >= 1")
+/// Slice 6p.2: the DLMF 10.8.1 logarithmic series carries every
+/// order directly (valid for all `n ≥ 0`, all `x > 0`). Slice 6p.3
+/// adds the large-`x` Hankel asymptotic and 6p.4 the regime dispatch
+/// plus the upward recurrence that makes `Yₙ (n ≥ 2)` cheap; until
+/// then `eval_normal` is the series alone.
+fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    bessel_y_series(m, x, target_precision)
+}
+
+/// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
+/// non-finite (the [`super::si`] / [`super::bessel_j`] `magnitude`
+/// idiom; `bessel_j`'s copy is private, so `Y` carries its own).
+fn magnitude(v: &BigFloat) -> i64 {
+    match &v.class {
+        Class::Normal { exponent, .. } => *exponent,
+        Class::Zero { .. } => i64::MIN,
+        _ => i64::MAX,
+    }
+}
+
+/// `true` once `term` has fallen `working + 8` bits below the running
+/// `sum`, so further terms cannot perturb the rounded result (the
+/// [`super::si`] / [`super::bessel_j`] `negligible` idiom).
+fn negligible(term: &BigFloat, sum: &BigFloat, working: u32) -> bool {
+    match &term.class {
+        Class::Zero { .. } => true,
+        Class::Normal { exponent, .. } => *exponent < magnitude(sum) - i64::from(working) - 8,
+        _ => false,
+    }
+}
+
+/// Integer `v` as a `BigFloat` at precision `p` (exact for the small
+/// integers this kernel forms).
+fn ci(v: i64, p: u32) -> BigFloat {
+    BigFloat::try_from_i64_exact(v, p).expect("precision >= 1")
+}
+
+/// `Y_n(x)` for integer `n ≥ 0`, `x > 0`, via the DLMF 10.8.1
+/// logarithmic series
+///
+/// ```text
+/// Y_n(x) = −(x/2)^{−n}/π · Σ_{k=0}^{n−1} (n−k−1)!/k! (x²/4)^k
+///        + (2/π) ln(x/2) · J_n(x)
+///        − (x/2)^n/π · Σ_{k≥0} (ψ(k+1)+ψ(n+k+1)) (−x²/4)^k/(k!(n+k)!)
+/// ```
+///
+/// The finite first ("head") sum is empty for `n = 0`. The digamma
+/// terms reduce to elementary running sums: `ψ(k+1) = −γ + H_k` and
+/// `ψ(n+k+1) = −γ + H_{n+k}` (`H_j = Σ_{i=1}^{j} 1/i`, `H_0 = 0`), so
+/// `ψ(k+1)+ψ(n+k+1) = −2γ + H_k + H_{n+k}` — **no digamma kernel
+/// needed**, only harmonic partial sums and the in-tree
+/// Euler–Mascheroni `γ` (slice 6m0, [`super::euler_gamma_at`]). The
+/// `J_n(x)` piece is **6o's `bessel_j` kernel** (`BigFloat::jn_round`
+/// at working precision).
+///
+/// Cross-check (the `derive, don't recall` reflex): for `n = 0` the
+/// finite sum is empty and `−2γ + 2H_k` substituted into the tail,
+/// with `Σ (−x²/4)^k/(k!)² = J_0(x)`, folds the `−2γ J_0` into a
+/// `+γ` and (since `H_0 = 0`) kills the `k = 0` tail term, exactly
+/// reproducing DLMF 10.8.2
+/// `Y_0 = (2/π)(ln(x/2)+γ)J_0 + (2/π)[(x²/4)/(1!)² − …]`. Hand-check
+/// `k = 1`: `−(1/π)·2H_1·(−x²/4)/(1!)² = +(2/π)(x²/4)`, the first
+/// 10.8.2 bracket term. The two DLMF forms agree, pinning the
+/// reduction.
+///
+/// Working precision is boosted `≈ x·log₂e` for the alternating
+/// cancellation (the [`super::ci`] / [`super::bessel_j`] capped
+/// guard). Returns the unrounded working-precision value.
+fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        let shift = (e_x + 1).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 16).min(4096) as u32
+    };
+    let working = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+
+    let nn = i64::from(n);
+    let xw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let two = ci(2, working);
+    let (half, _) = xw.div(&two, RoundingMode::NearestEven); // x/2
+    let (x_sq, _) = xw.mul(&xw, RoundingMode::NearestEven);
+    let (qxs, _) = x_sq.div(&ci(4, working), RoundingMode::NearestEven); // x²/4
+    let neg_qxs = qxs.negated(); // −x²/4
+    let pi = pi_at(working);
+    let gamma = euler_gamma_at(working);
+    let one = ci(1, working);
+
+    // (x/2)^n by repeated multiply (n is small: the base orders are
+    // 0 and 1; an in-module recurrence-from-a-base-term, not
+    // pow.rs::pow_int).
+    let mut half_pow_n = one.clone();
+    for _ in 0..n {
+        half_pow_n = half_pow_n.mul(&half, RoundingMode::NearestEven).0;
+    }
+
+    // log term: (2/π) ln(x/2) · J_n(x).
+    let (ln_half_x, _) = half.ln(RoundingMode::NearestEven);
+    let (jn, _) = xw
+        .jn_round(n as i32, working, RoundingMode::NearestEven)
+        .expect("precision >= 1");
+    let (two_over_pi, _) = two.div(&pi, RoundingMode::NearestEven);
+    let (lt0, _) = two_over_pi.mul(&ln_half_x, RoundingMode::NearestEven);
+    let (log_term, _) = lt0.mul(&jn, RoundingMode::NearestEven);
+
+    // Finite head −(x/2)^{−n}/π · Σ_{k=0}^{n−1} (n−k−1)!/k! (x²/4)^k.
+    // h_0 = (n−1)!; h_k = h_{k−1}·(x²/4)/(k·(n−k)). Empty for n = 0.
+    let head_term = if n == 0 {
+        BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1")
+    } else {
+        let mut fact = one.clone(); // (n−1)!
+        for j in 1..nn {
+            fact = fact.mul(&ci(j, working), RoundingMode::NearestEven).0;
+        }
+        let mut term = fact;
+        let mut hd = term.clone();
+        for k in 1..nn {
+            term = term.mul(&qxs, RoundingMode::NearestEven).0;
+            term = term
+                .div(&ci(k * (nn - k), working), RoundingMode::NearestEven)
+                .0;
+            hd = hd.add(&term, RoundingMode::NearestEven).0;
+        }
+        let (inv_hp, _) = one.div(&half_pow_n, RoundingMode::NearestEven); // (x/2)^{−n}
+        let (a, _) = hd.mul(&inv_hp, RoundingMode::NearestEven);
+        let (b, _) = a.div(&pi, RoundingMode::NearestEven);
+        b.negated()
+    };
+
+    // Tail −(x/2)^n/π · Σ_{k≥0} (−2γ + H_k + H_{n+k}) c_k,
+    // c_0 = 1/n!, c_k = c_{k−1}·(−x²/4)/(k·(n+k)).
+    let mut n_fact = one.clone();
+    for j in 2..=nn {
+        n_fact = n_fact.mul(&ci(j, working), RoundingMode::NearestEven).0;
+    }
+    let (mut c, _) = one.div(&n_fact, RoundingMode::NearestEven); // c_0 = 1/n!
+    let mut h_k = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1"); // H_0
+    let mut h_nk = {
+        let mut s = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+        for i in 1..=nn {
+            let (r, _) = one.div(&ci(i, working), RoundingMode::NearestEven);
+            s = s.add(&r, RoundingMode::NearestEven).0;
+        }
+        s // H_n
+    };
+    let (two_gamma, _) = gamma.mul(&two, RoundingMode::NearestEven);
+    let coef0 = {
+        let (s, _) = h_k.add(&h_nk, RoundingMode::NearestEven);
+        s.sub(&two_gamma, RoundingMode::NearestEven).0
+    };
+    let mut tail = c.mul(&coef0, RoundingMode::NearestEven).0;
+    let max_iter: i64 = 1 << 22;
+    for k in 1..=max_iter {
+        c = c.mul(&neg_qxs, RoundingMode::NearestEven).0;
+        c = c
+            .div(&ci(k * (k + nn), working), RoundingMode::NearestEven)
+            .0;
+        let (rk, _) = one.div(&ci(k, working), RoundingMode::NearestEven);
+        h_k = h_k.add(&rk, RoundingMode::NearestEven).0;
+        let (rnk, _) = one.div(&ci(k + nn, working), RoundingMode::NearestEven);
+        h_nk = h_nk.add(&rnk, RoundingMode::NearestEven).0;
+        let coef = {
+            let (s, _) = h_k.add(&h_nk, RoundingMode::NearestEven);
+            s.sub(&two_gamma, RoundingMode::NearestEven).0
+        };
+        let t = c.mul(&coef, RoundingMode::NearestEven).0;
+        tail = tail.add(&t, RoundingMode::NearestEven).0;
+        if negligible(&t, &tail, working) {
+            break;
+        }
+    }
+    let (tp0, _) = half_pow_n.mul(&tail, RoundingMode::NearestEven);
+    let (tp1, _) = tp0.div(&pi, RoundingMode::NearestEven);
+    let tail_term = tp1.negated();
+
+    let (s1, _) = head_term.add(&log_term, RoundingMode::NearestEven);
+    let (y, _) = s1.add(&tail_term, RoundingMode::NearestEven);
+    y
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cmp::Ordering;
+
+    /// `|v − expected| ≤ 2^(−bits)·|expected|` (the `bessel_j`/`erf`
+    /// test helper). Reference decimals: `mpmath` `bessely(n, x)` at
+    /// `mp.dps = 330`
+    /// (`nix-shell -p 'python3.withPackages(ps:[ps.mpmath])'`),
+    /// treated as a fact.
+    fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
+        let (diff, _) = v.sub(expected, RoundingMode::NearestEven);
+        let abs_diff = diff.abs();
+        if abs_diff.is_zero() {
+            return true;
+        }
+        let p = v.precision().max(expected.precision());
+        let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+        let two = BigFloat::try_from_i64_exact(2, p).unwrap();
+        let abs_b = expected.abs();
+        let mut bound = if abs_b.is_zero() { one } else { abs_b };
+        for _ in 0..bits {
+            bound = bound.div(&two, RoundingMode::NearestEven).0;
+        }
+        matches!(
+            abs_diff.partial_cmp(&bound).0,
+            Some(Ordering::Less | Ordering::Equal)
+        )
+    }
+
+    fn py(s: &str, p: u32) -> BigFloat {
+        BigFloat::parse_str(s, p, RoundingMode::NearestEven)
+            .unwrap()
+            .0
+    }
+
+    fn at(n: i64, d: i64, p: u32) -> BigFloat {
+        let nn = BigFloat::try_from_i64_exact(n, p).unwrap();
+        if d == 1 {
+            nn
+        } else {
+            nn.div(
+                &BigFloat::try_from_i64_exact(d, p).unwrap(),
+                RoundingMode::NearestEven,
+            )
+            .0
+        }
+    }
+
+    // mpmath bessely(n, x), dps = 330 (truncated to fit p = 113).
+    const Y0_HALF: &str = "-0.44451873350670655714839847506833191037356512440151102041489117938823968793141728600040643311534111986534166279374081164055681338354759796819979290414603607710322924252297191321517536861397042466137749158319359986535079";
+    const Y1_HALF: &str = "-1.4714723926702430691885846353232974532410880554357483229559223834066940909523570678868634705980974507427173395904931472603822957011919081229168205907226988262044905682586324008798759255110477030702664113187480772586178";
+    const Y2_HALF: &str = "-5.4413708371742657196059400662248579025907870973414822714087983542385366758780109855470474492770486831055276955682317774009723694212200345234674894587447592277147330305115576903043283334302203876196881536917987091691206";
+    const Y0_52: &str = "0.49807035961523188782747235036208980611506253265681530429974629407406321557566995812355070589537398192385672943001934612775337251591109454305007402401299973085144637759449327183580472195082322152061855168008649846205288";
+    const Y1_52: &str = "0.14591813796678579887875994053587757127608019654670099984510336876847982786986827339694694495998904089288127698548695420739592301285341299984688991547700642348292700296345898227891129232942949834606441993069787616256066";
+    const Y2_52: &str = "-0.38133584924180324872446439793338774909419837541945450442366359905927935327977533940599314992738274920955170784162978276183663410562836414317256209163139459206510477522372608601267568808727962284376701573552819753200435";
+    const Y0_7: &str = "-0.025949743967209264884284963135722970186930836172718446607766370553193513857582489525922712522537272092128691592370516582921565613566622223247970896269009905783095511803775145797385878119661716988114304058052984665018584";
+    const Y1_7: &str = "-0.30266723702418487006076816955839496834131089203393953780158416495055339422290387639178721348655609063443268492972537685185103628707041049719364672402943351702708751523804853131680988618472817659828972258775307059424644";
+    const Y2_7: &str = "-0.060526609468272126561648799595247020767729418694121421335543390861250313063247189443159348473621610946280646958979591089035873325596352204521642453453685384796072349692810148864559803647403476325682759538447892647623256";
+    const Y0_M3: &str = "-4.4714166113759232689802886934264955747044811557836578355293457089934050985223905404716180228246204738260124225710113837270898795280105746607399842023055143947979883646042194261470348839760198332670650930447884411058852";
+    const Y1_M3: &str = "-636.62216723113942807437320601957569637320004286220162988363010289166468020567331606275382078239146840454146131313959710498920403749964474385892562171738689411877766793201649541296641816020550741373175777008581457495406030";
+
+    /// DLMF 10.8.1 log-series path vs mpmath at `p = 113`: orders
+    /// `0,1,2` over small (`0.5`), moderate (`2.5`, `7`) `x`, plus
+    /// the pole approach (`1e-3`, where the `(2/x)^n` head dominates
+    /// for `n ≥ 1`). Large enough orders/arguments that the second
+    /// `c_k` term materially contributes (the `derive, don't recall`
+    /// reflex: a low-`x`-only check would hide a coefficient error).
+    #[test]
+    fn series_matches_mpmath() {
+        let p = 113;
+        let x = at(1, 2, p); // 0.5
+        for (n, want) in [(0i32, Y0_HALF), (1, Y1_HALF), (2, Y2_HALF)] {
+            let (r, _) = x.yn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 8), "Y_{n}(0.5)");
+        }
+        let x = at(5, 2, p); // 2.5
+        for (n, want) in [(0i32, Y0_52), (1, Y1_52), (2, Y2_52)] {
+            let (r, _) = x.yn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 10), "Y_{n}(2.5)");
+        }
+        let x = at(7, 1, p);
+        for (n, want) in [(0i32, Y0_7), (1, Y1_7), (2, Y2_7)] {
+            let (r, _) = x.yn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 12), "Y_{n}(7)");
+        }
+        let x = at(1, 1000, p); // 1e-3, pole approach
+        for (n, want) in [(0i32, Y0_M3), (1, Y1_M3)] {
+            let (r, _) = x.yn(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 12), "Y_{n}(1e-3)");
+        }
+    }
 
     #[test]
     fn y_positive_zero_is_pole() {
