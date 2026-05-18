@@ -1,20 +1,26 @@
 //! Riemann zeta function `ζ(s)` for real argument `s` (DLMF
 //! Chapter 25). Real-valued, single argument (no order parameter,
-//! unlike Bessel). The structural template is
-//! [`super::gamma_stirling`] — a Bernoulli-table asymptotic
-//! correction — not the Bessel recurrence kernels.
+//! unlike Bessel).
 //!
 //! Two evaluation regimes (filled by slices 6r.2 / 6r.3):
 //!
-//! - `s ≥ 1/2`: the Euler–Maclaurin summation (DLMF 25.11), the
-//!   Dirichlet series accelerated by the Bernoulli `B_{2k}`
-//!   correction reused from [`super::gamma_stirling`].
-//! - `s < 1/2`: the functional equation DLMF 25.4.2
+//! - `s > 0`, `s ≠ 1`: the Borwein / Cohen–Villegas–Zagier
+//!   alternating-series acceleration ([`zeta_borwein`]). DLMF
+//!   25.2.3 `ζ(s) = (1−2^{1−s})⁻¹ Σ_{k≥0} (−1)^k/(k+1)^s` holds for
+//!   `ℜ s > 0`; `a_k = 1/(k+1)^s` is the moment sequence of a
+//!   positive measure for `s > 0`, so CVZ Proposition 1's
+//!   `2·(3+√8)^{−n}` relative-error bound applies on the whole open
+//!   right half-line. **The roadmap/DESIGN.md originally specified
+//!   Euler–Maclaurin reusing the 17-pair `gamma_stirling` Bernoulli
+//!   table; that was found insufficient — `|B_{2k}/(2k)!| ≈
+//!   2/(2π)^{2k}` caps a 17-term correction at ≈ 90 bits regardless
+//!   of the sum length, well short of the bit-exact p = 1024
+//!   differential lane. The algorithm was changed to Borwein; the
+//!   deviation and its rationale are recorded in ADR-0026.**
+//! - `s < 0`: the functional equation DLMF 25.4.2
 //!   `ζ(s) = 2·(2π)^{s−1}·sin(πs/2)·Γ(1−s)·ζ(1−s)`, reflecting into
-//!   the well-conditioned `1−s > 1/2` Euler–Maclaurin region. The
-//!   reflection point `1/2` is the symmetry point of the completed
-//!   functional equation `ξ(s) = ξ(1−s)` (DLMF 25.4.3/25.4.4).
-//!   Routes through the in-crate `π`, `pow`, `sin`, `Γ`.
+//!   `1−s > 1` where the Borwein core is well-conditioned (slice
+//!   6r.3). Routes through the in-crate `π`, `pow`, `sin`, `Γ`.
 //!
 //! Special values are handled directly per this domain table
 //! (DLMF 25.2 / 25.6, derived not recalled; ADR-0026):
@@ -189,19 +195,293 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 }
 
 /// `ζ(s)` for a finite, non-special real `s` (not `0`, not `1`, not
-/// a negative even integer). The Euler–Maclaurin regime (`s ≥ 1/2`)
-/// lands in slice 6r.2 and the functional-equation regime
-/// (`s < 1/2`) in slice 6r.3; until then this is a typed
-/// placeholder that returns a quiet NaN so the crate builds and the
-/// special-value dispatch above is exercised in isolation.
+/// a negative even integer).
+///
+/// - `s > 0`: the Borwein / Cohen–Villegas–Zagier alternating-series
+///   acceleration ([`zeta_borwein`]). DLMF 25.2.3
+///   `ζ(s) = (1−2^{1−s})⁻¹ Σ_{k≥0} (−1)^k/(k+1)^s` is valid for
+///   `ℜ s > 0`, and `a_k = 1/(k+1)^s = Γ(s)⁻¹∫₀¹ xᵏ(−ln x)^{s−1}dx`
+///   is the moment sequence of a positive measure for `s > 0`, so
+///   the CVZ Proposition 1 error bound applies on the whole open
+///   right half-line.
+/// - `s < 0`: the functional equation DLMF 25.4.2 reflecting into
+///   `1−s > 1` (slice 6r.3). Until then a typed quiet-NaN
+///   placeholder so the crate builds and the `s > 0` core and the
+///   special-value dispatch are exercised in isolation.
 fn zeta_finite(x: &BigFloat, target_precision: u32) -> BigFloat {
-    let _ = x;
-    BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[]).expect("precision >= 1")
+    if matches!(x.sign(), Sign::Positive) {
+        zeta_borwein(x, target_precision)
+    } else {
+        // Functional equation lands in 6r.3.
+        BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[]).expect("precision >= 1")
+    }
+}
+
+/// Binary exponent of `v`, or `0` for zero / non-finite (the
+/// conditioning-estimate idiom; only used to size the working
+/// precision, never for a value decision).
+fn exponent_of(v: &BigFloat) -> i64 {
+    match &v.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    }
+}
+
+/// `ζ(s)` for real `s > 0`, `s ≠ 1`, via the Cohen–Villegas–Zagier
+/// "Algorithm 1" acceleration of the Dirichlet eta series.
+///
+/// DLMF 25.2.3: `ζ(s) = (1−2^{1−s})⁻¹ Σ_{k=0}^∞ (−1)^k/(k+1)^s`
+/// for `ℜ s > 0`. With `a_k = 1/(k+1)^s` (the moments of the
+/// positive measure `Γ(s)⁻¹(−ln x)^{s−1}dx` on `(0,1)` for
+/// `s > 0`), CVZ Algorithm 1 (Cohen, Rodriguez-Villegas, Zagier,
+/// *Experiment. Math.* 9 (2000), the Borwein algorithm) computes
+/// `S = Σ (−1)^k a_k` to relative error `≤ 2·(3+√8)^{−n}` from the
+/// first `n` terms (CVZ Proposition 1). The algorithm, **verified
+/// against the paper's own worked `n = 1, 2` examples** (`2a₀/3`,
+/// `(16a₀−8a₁)/17`) rather than recalled (the derive-don't-recall
+/// reflex; ADR-0026):
+///
+/// ```text
+/// d = (3+√8)^n;  d = (d + 1/d)/2;   // = d_n, an integer
+/// b = −1;  c = −d;  s = 0;
+/// for k = 0 .. n−1:
+///     c = b − c
+///     s = s + c · a_k                // a_k = (k+1)^{−s}
+///     b = (k+n)(k−n)·b / ((k+½)(k+1))
+/// return s / d
+/// ```
+///
+/// Then `ζ(s) = (s/d) / (1−2^{1−s})`. The intermediate `s` reaches
+/// magnitude `≈ d_n·ζ(s)`, and `d_n ≈ ½(3+√8)^n ≈ 2^{2.543 n}`; with
+/// `n ≈ p·ln2/ln(3+√8) ≈ 0.3933 p` terms for `p` target bits this is
+/// `≈ 2^p`, so recovering `p` bits of `ζ` after the `/d_n` needs a
+/// working precision `≈ 2p` (derived, not guessed — the
+/// `gamma_stirling` boost analog). The `(1−2^{1−s})⁻¹` factor blows
+/// up as `s → 1`; the working precision absorbs that with an
+/// additional `−log₂|s−1|` bits. Returns the unrounded
+/// working-precision value; [`zeta_kernel`] does the single round.
+fn zeta_borwein(x: &BigFloat, target_precision: u32) -> BigFloat {
+    // n: CVZ Proposition 1 relative error ≤ 2·(3+√8)^{−n}. To reach
+    // 2^{−p}: n ≥ p·ln2/ln(3+√8) = p·0.39321…; 3933/10000 is a
+    // safe rational over-estimate, plus a guard.
+    let n: i64 = (u64::from(target_precision).saturating_mul(3933) / 10_000) as i64 + 16;
+
+    // Conditioning: 1/(1−2^{1−s}) loses ≈ −log₂|s−1| bits near
+    // s = 1. |s−1| ≥ 2^{exponent_of(s−1)}, so boost by that many
+    // bits (plus slack). s = 1 itself is special-cased upstream.
+    let probe = target_precision.saturating_add(8);
+    let one_probe = ci(1, probe);
+    let (s_minus_1, _) = x
+        .round_to_precision(probe, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0
+        .sub(&one_probe, RoundingMode::NearestEven);
+    let cond_boost = exponent_of(&s_minus_1).min(0).unsigned_abs() as u32;
+
+    // d_n ≈ 2^{2.543 n}; intermediate ≈ d_n·ζ, so absolute bits
+    // needed ≈ p + log₂ d_n ≈ 2p. 2·target + 96 + the conditioning
+    // boost is the derived working precision.
+    let working = target_precision
+        .saturating_mul(2)
+        .saturating_add(96)
+        .saturating_add(cond_boost)
+        .min(target_precision.saturating_mul(2).saturating_add(8192));
+
+    let sw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let neg_s = sw.negated();
+    let one = ci(1, working);
+    let two = ci(2, working);
+
+    // d = (3+√8)^n; d = (d + 1/d)/2  →  d_n = ½((3+√8)^n+(3−√8)^n).
+    let (sqrt8, _) = ci(8, working).sqrt(RoundingMode::NearestEven);
+    let (base, _) = ci(3, working).add(&sqrt8, RoundingMode::NearestEven);
+    let mut d = one.clone();
+    for _ in 0..n {
+        d = d.mul(&base, RoundingMode::NearestEven).0;
+    }
+    let (inv_d, _) = one.div(&d, RoundingMode::NearestEven);
+    let (d_sum, _) = d.add(&inv_d, RoundingMode::NearestEven);
+    let (d, _) = d_sum.div(&two, RoundingMode::NearestEven);
+
+    // b = −1; c = −d; s = 0.
+    let mut b = one.negated();
+    let mut c = d.negated();
+    let mut sum = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+
+    for k in 0..n {
+        // c = b − c.
+        let (c_new, _) = b.sub(&c, RoundingMode::NearestEven);
+        c = c_new;
+
+        // a_k = (k+1)^{−s}.
+        let base_k = ci(k + 1, working);
+        let (a_k, _) = base_k.pow(&neg_s, RoundingMode::NearestEven);
+        let (term, _) = c.mul(&a_k, RoundingMode::NearestEven);
+        let (s_new, _) = sum.add(&term, RoundingMode::NearestEven);
+        sum = s_new;
+
+        // b = (k+n)(k−n)·b / ((k+½)(k+1)).
+        let num = (k + n) * (k - n); // negative (0 ≤ k < n)
+        let (b1, _) = ci(num, working).mul(&b, RoundingMode::NearestEven);
+        // k + ½ = (2k+1)/2.
+        let (half, _) = ci(2 * k + 1, working).div(&two, RoundingMode::NearestEven);
+        let (den, _) = half.mul(&ci(k + 1, working), RoundingMode::NearestEven);
+        let (b_new, _) = b1.div(&den, RoundingMode::NearestEven);
+        b = b_new;
+    }
+
+    // η(s) = s / d_n.
+    let (eta, _) = sum.div(&d, RoundingMode::NearestEven);
+
+    // ζ(s) = η(s) / (1 − 2^{1−s}).
+    let (one_minus_s, _) = one.sub(&sw, RoundingMode::NearestEven);
+    let (two_pow, _) = two.pow(&one_minus_s, RoundingMode::NearestEven);
+    let (factor, _) = one.sub(&two_pow, RoundingMode::NearestEven);
+    let (zeta, _) = eta.div(&factor, RoundingMode::NearestEven);
+    zeta
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cmp::Ordering as Ord2;
+
+    /// `|v − expected| ≤ 2^(−bits)·|expected|` (the bessel test
+    /// helper). References: `mpmath.zeta` at `mp.dps = 340`
+    /// (`nix-shell -p 'python3.withPackages(ps:[ps.mpmath])'`),
+    /// treated as a fact.
+    fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
+        let (diff, _) = v.sub(expected, RoundingMode::NearestEven);
+        let abs_diff = diff.abs();
+        if abs_diff.is_zero() {
+            return true;
+        }
+        let p = v.precision().max(expected.precision());
+        let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+        let two = BigFloat::try_from_i64_exact(2, p).unwrap();
+        let abs_b = expected.abs();
+        let mut bound = if abs_b.is_zero() { one } else { abs_b };
+        for _ in 0..bits {
+            bound = bound.div(&two, RoundingMode::NearestEven).0;
+        }
+        matches!(
+            abs_diff.partial_cmp(&bound).0,
+            Some(Ord2::Less | Ord2::Equal)
+        )
+    }
+
+    fn py(s: &str, p: u32) -> BigFloat {
+        BigFloat::parse_str(s, p, RoundingMode::NearestEven)
+            .unwrap()
+            .0
+    }
+
+    fn at(n: i64, d: i64, p: u32) -> BigFloat {
+        let nn = BigFloat::try_from_i64_exact(n, p).unwrap();
+        if d == 1 {
+            nn
+        } else {
+            nn.div(
+                &BigFloat::try_from_i64_exact(d, p).unwrap(),
+                RoundingMode::NearestEven,
+            )
+            .0
+        }
+    }
+
+    // mpmath.zeta, dps = 340 (truncated to fit p).
+    const Z2: &str = "1.64493406684822643647241516664602518921894990120679843773555822937000747040320087383362890061975870530400431896233719067962872468700500778793510294633086627683173330936776260509525100687214005479681155879489036082327776191984075645587696323563670971009694890208593200805163647887833884604444518405982514525068";
+    const Z3: &str = "1.20205690315959428539973816151144999076498629234049888179227155534183820578631309018645587360933525814619915779526071941849199599867328321377639683720790016145394178294936006671919157552224249424396156390966410329115909578096551465127991840510571525598801543710978110203982753256678760352233698494166181105701";
+    const Z4: &str = "1.08232323371113819151600369654116790277475095191872690768297621544412061618696884655690963594169991723299081390804274241458407157457004534928200351471621920708778348091083702932618873482617527360423550621937375061711174534929686775073307606686934118905862833795279512033449589046886262694822083503298363214902";
+    const Z15: &str = "2.61237534868548834334856756792407163057080065240006340757332824881492776768827286099624386812631195238297635877214975569815763296843445913443832056180833600833933396280548054166294852684829798168645847550187899242552790919645625985746620957819178983247798052614814070472260846524069586856423142070771015331232";
+    const Z_HALF: &str = "-1.46035450880958681288949915251529801246722933101258149054288608782553052947450062527641937546335681951449637467986952958389234371035889426181923283975376292518263335864916412789122939415410119791731044810824194092788169842885717682395579918451788361465548665937991689152316352160424275374940796571353042261007";
+    const Z10: &str = "1.00099457512781808533714595890031901700601953156447751725778899463629146515191295439704196861038565275400689206320530767736809020353629380731906959498428739536216033347223525967320521789323288320665440138759279913286048883976147693647789769806971192063361022944054388731501219022076400989382492087774683640358";
+    // ζ(2) and ζ(3) at 1024-bit precision (dps = 340).
+    const Z2_BIG: &str = Z2;
+    const Z3_BIG: &str = Z3;
+    // ζ near the pole: s = 1.0009765625 (= 1 + 1/1024). The
+    // 1/(1−2^{1−s}) factor amplifies to ≈ 1024, exercising the
+    // derived conditioning boost.
+    const Z_NEAR1: &str = "1024.5772867695045940578681624248887776501597556226467113160352190702981219581341444863800913012818856950855998236564103910760853485875372916860380523003939719972891239530972602843354325731818616935853605173448667011466739027602092030574417526225201845179601125220008848142816634721046490224598777861367925203549";
+
+    /// Borwein/CVZ core on the moment region `s > 0`: closed-form
+    /// pins ζ(2)=π²/6, ζ(4)=π⁴/90, the irrational ζ(3), the
+    /// critical-line value ζ(1/2) (negative), ζ(3/2), ζ(10), each
+    /// vs the 340-digit mpmath reference at p = 240. Spans
+    /// 0 < s < 1 (where the Dirichlet series itself diverges but
+    /// the eta acceleration converges) and s > 1.
+    #[test]
+    fn borwein_matches_reference() {
+        let p = 240;
+        for (num, den, want) in [
+            (2i64, 1i64, Z2),
+            (4, 1, Z4),
+            (3, 1, Z3),
+            (1, 2, Z_HALF),
+            (3, 2, Z15),
+            (10, 1, Z10),
+        ] {
+            let s = at(num, den, p);
+            let (r, st) = s.zeta(RoundingMode::NearestEven);
+            assert!(!st.invalid() && !st.div_by_zero());
+            assert!(close_at(&r, &py(want, p), p - 16), "ζ({num}/{den})");
+        }
+    }
+
+    /// Large `s`: ζ(50) is 1 to within 2^{−48} (every eta term past
+    /// the first is negligible). Sanity that the accelerator does
+    /// not mis-handle the near-constant regime.
+    #[test]
+    fn borwein_large_argument_is_one() {
+        let p = 113;
+        let s = at(50, 1, p);
+        let (r, _) = s.zeta(RoundingMode::NearestEven);
+        let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+        assert!(close_at(&r, &one, 48), "ζ(50) ≈ 1");
+    }
+
+    /// Conditioning near the pole: s = 1 + 1/1024. ζ ≈ 1024.577;
+    /// the 1/(1−2^{1−s}) factor loses ≈ 10 bits, absorbed by the
+    /// derived `cond_boost`. A wrong boost (or sign) fails here.
+    #[test]
+    fn borwein_near_pole_conditioning() {
+        let p = 160;
+        // 1 + 1/1024 exactly (dyadic).
+        let s = {
+            let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+            let d = BigFloat::try_from_i64_exact(1024, p).unwrap();
+            one.add(
+                &BigFloat::try_from_i64_exact(1, p)
+                    .unwrap()
+                    .div(&d, RoundingMode::NearestEven)
+                    .0,
+                RoundingMode::NearestEven,
+            )
+            .0
+        };
+        let (r, st) = s.zeta(RoundingMode::NearestEven);
+        assert!(!st.invalid());
+        assert!(close_at(&r, &py(Z_NEAR1, p), p - 24), "ζ(1+1/1024)");
+    }
+
+    /// Second-term-matters pin at p = 1024 (the derive-don't-recall
+    /// reflex): ζ(2)=π²/6 and ζ(3) bit-accurate to p−4 against the
+    /// 340-digit references. A `d_k` recurrence error, a wrong sign
+    /// in `c = b − c` / the `b` update, or an under-sized working
+    /// precision is invisible at low p and fails catastrophically
+    /// here.
+    #[test]
+    fn borwein_high_precision_pin() {
+        let s = at(2, 1, 1024);
+        let (r, _) = s.zeta(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(Z2_BIG, 1024), 1020), "ζ(2) p=1024");
+        let s = at(3, 1, 1024);
+        let (r, _) = s.zeta(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(Z3_BIG, 1024), 1020), "ζ(3) p=1024");
+    }
 
     #[test]
     fn zeta_quiet_nan_propagates() {
