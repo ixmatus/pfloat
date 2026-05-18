@@ -21,15 +21,13 @@ fuzz_target!(|data: &[u8]| {
     let Ok(s) = core::str::from_utf8(data) else {
         return;
     };
-    let Ok((parsed, _status)) = BigFloat::parse_str(s, 113, RoundingMode::NearestEven)
-    else {
+    let Ok((parsed, _status)) = BigFloat::parse_str(s, 113, RoundingMode::NearestEven) else {
         return;
     };
     // Round-trip: Display output must re-parse to a numerically
     // equivalent value.
     let rendered = format!("{parsed}");
-    let Ok((reparsed, _)) = BigFloat::parse_str(&rendered, 113, RoundingMode::NearestEven)
-    else {
+    let Ok((reparsed, _)) = BigFloat::parse_str(&rendered, 113, RoundingMode::NearestEven) else {
         return;
     };
     if parsed.is_nan() {
