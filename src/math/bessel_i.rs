@@ -34,6 +34,7 @@
 //! coefficients (slice 6q.4). ADR-0025 records the design and the
 //! DLMF provenance.
 
+use super::pi_at;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -228,12 +229,24 @@ fn bessel_i_tiny_threshold() -> i64 {
     -1
 }
 
-/// `I_m(ax)` for `m ≥ 0`, normal `ax > 0`: the regime dispatch on
-/// the binary exponent of `|x|` (tiny convergent Maclaurin / Miller
-/// backward recurrence). Returns the unrounded working-precision
-/// value; [`bessel_i_kernel`] does the single final round. Slice 6q.4
-/// adds the third (large-`|x|` asymptotic) arm; until then Miller
-/// carries everything `|x| ≥ 1`, so there is no dead code.
+/// `I_m(ax)` for `m ≥ 0`, normal `ax > 0`: the three-regime dispatch
+/// on the binary exponent of `|x|` (tiny convergent Maclaurin /
+/// Miller backward recurrence / DLMF 10.40.1 asymptotic). Returns
+/// the unrounded working-precision value; [`bessel_i_kernel`] does
+/// the single final round.
+///
+/// The asymptotic upper cut **reuses** [`super::bessel_j`]'s
+/// `bessel_j_threshold`, and the reuse is *derived*, not reflexive
+/// (the CLAUDE.md "derive the cut" reflex; the 6n precedent makes it
+/// load-bearing): the quantity that controls accuracy is the
+/// optimal-truncation **relative** error of the shared `a_k(ν)`
+/// divergent series, which is `O(e^{−2x})` — *identical* to the
+/// ordinary-Bessel 10.17.3/10.17.4 series, since `I`/`K` reuse the
+/// same `a_k(ν)` (DLMF 10.40 ≡ §10.17(i), ADR-0023). The `eˣ/√(2πx)`
+/// prefactor is computed exactly and does not enter the relative
+/// error, so `bessel_j_threshold`'s conservative
+/// `2^{e_x} ≥ target+64` cut is strictly more than enough for `I`
+/// too. Miller (always correct, slower) carries everything below it.
 fn bessel_i_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     let e_x = match &ax.class {
         Class::Normal { exponent, .. } => *exponent,
@@ -241,6 +254,8 @@ fn bessel_i_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloa
     };
     if e_x <= bessel_i_tiny_threshold() {
         bessel_i_tiny(m, ax, target_precision)
+    } else if e_x >= super::bessel_j::bessel_j_threshold(target_precision) {
+        bessel_i_asymptotic(m, ax, target_precision)
     } else {
         bessel_i_miller(m, ax, target_precision)
     }
@@ -482,6 +497,80 @@ fn bessel_i_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     i_m
 }
 
+/// `I_m(ax)` for `m ≥ 0`, large `ax > 0`, via the DLMF 10.40.1
+/// large-argument asymptotic
+///
+/// ```text
+/// I_m(x) ∼ eˣ/√(2πx) · Σ_{k≥0} (−1)^k a_k(m)/x^k
+/// ```
+///
+/// summed to its smallest term (the [`super::bessel_j`] /
+/// [`super::si`] optimal-truncation idiom). There is **no trig**
+/// (no `ω`, no `sin`/`cos`): `I` grows monotonically, so the
+/// asymptotic is a single real exponential `eˣ/√(2πx)` times a
+/// `1/x` power series — markedly simpler than `J`/`Y`'s
+/// `√(2/πx)·[sinω·ΣP + cosω·ΣQ]`. The coefficients `a_k(m)` are the
+/// **same** as the ordinary-Bessel 10.17.1 sequence
+/// (`a_0=1`, `a_k = a_{k−1}(4m²−(2k−1)²)/(8k)`), confirmed by
+/// DLMF 10.40 ≡ §10.17(i); they were already derived and
+/// Pochhammer-cross-pinned at `k=1,2` in ADR-0023, so 6q reuses that
+/// pin rather than re-deriving (the 6n `(2k−1)`-divisor defect is
+/// the precedent). The running `g_j` carries `a_j/x^j` with the
+/// recurrence's own sign; DLMF 10.40.1's explicit `(−1)^j` is
+/// applied on top (the [`super::bessel_y`] sign-folding idiom, here
+/// trivial since there is no trig). DLMF 10.40.5 notes a companion
+/// `e^{−x}` term for `I` off the real axis; on the positive real
+/// axis it is `O(e^{−2x})` relative to the `eˣ` lead, below the
+/// optimal-truncation error, so the single series suffices. Returns
+/// the unrounded working-precision value.
+fn bessel_i_asymptotic(n: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision
+        .saturating_add(64)
+        .min(target_precision.saturating_add(512));
+    let x = ax
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // prefactor eˣ / √(2πx).
+    let (ex, _) = x.exp(RoundingMode::NearestEven);
+    let pi = pi_at(working);
+    let two = ci(2, working);
+    let (two_pi, _) = two.mul(&pi, RoundingMode::NearestEven);
+    let (two_pi_x, _) = two_pi.mul(&x, RoundingMode::NearestEven);
+    let (sqrt_tpx, _) = two_pi_x.sqrt(RoundingMode::NearestEven);
+    let (prefac, _) = ex.div(&sqrt_tpx, RoundingMode::NearestEven);
+
+    let (inv_x, _) = ci(1, working).div(&x, RoundingMode::NearestEven);
+    let four_n2: i64 = 4 * i64::from(n) * i64::from(n);
+
+    // j = 0: g_0 = a_0/x^0 = 1, explicit (−1)^0 = +1.
+    let mut g = ci(1, working);
+    let mut bracket = g.clone();
+    let mut prev_mag = magnitude(&g);
+    let max_iter: i64 = 1 << 22;
+    for j in 1..=max_iter {
+        // a_j/a_{j−1} = (4n²−(2j−1)²)/(8j); g_j = g_{j−1}·that·(1/x).
+        let odd = 2 * j - 1;
+        let num = four_n2 - odd * odd;
+        let (t1, _) = g.mul(&ci(num, working), RoundingMode::NearestEven);
+        let (t2, _) = t1.div(&ci(8 * j, working), RoundingMode::NearestEven);
+        let (cand, _) = t2.mul(&inv_x, RoundingMode::NearestEven);
+        let mag = magnitude(&cand);
+        if mag > prev_mag {
+            break; // smallest term passed: optimal truncation.
+        }
+        prev_mag = mag;
+        g = cand;
+        // DLMF 10.40.1 explicit (−1)^j on a_j/x^j (no trig cycle).
+        let contribution = if j % 2 == 0 { g.clone() } else { g.negated() };
+        let (b, _) = bracket.add(&contribution, RoundingMode::NearestEven);
+        bracket = b;
+    }
+    let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +711,101 @@ mod tests {
         let m1 = bessel_i_miller(1, &x, p);
         assert!(close_at(&t1, &m1, p - 12), "tiny vs Miller I_1(1)");
         assert!(close_at(&m1, &py(I1_1, p), p - 12), "Miller I_1(1)");
+    }
+
+    // mpmath besseli at large x (dps = 120).
+    const I0_200: &str = "20396871734097246195416731267794596223326757361483433789432837835530189904402084547243.5871";
+    const I1_200: &str = "20345815493320627034274279771390695038966116168112296415921960606931666871258425531892.7136";
+    const I2_200: &str =
+        "20193413579164039925073988470080689272937096199802310825273618229460873235689500291924.66";
+    const I3_200: &str = "19941947221737346235772800001989081253507374244116250199416488242342449406544635526054.2204";
+    const I5_200: &str = "19158141015236869454252767823188240580094099245217097266644843299054825416404909077008.499";
+    const I0_1000: &str = "2.48568609607586417456277148414567563132911034374842167789492204933350605326104812721297733851453673308429390778241907277e+432";
+    const I1_1000: &str = "2.4844429420058669729947094283340842192656945142670877097696307799870865072981949999169252725636201630993234673884229269e+432";
+    const I2_1000: &str = "2.48071721019185244061678206528900746289057895471988750247538278777353188024645173721314348796940949275809526084764222692e+432";
+
+    /// DLMF 10.40.1 asymptotic path, called directly so the reused
+    /// ADR-0023 `a_k(n)` recurrence and the explicit `(−1)^j` sign
+    /// (no trig) are pinned independently of the regime dispatch:
+    /// `I_n(200)` (`p = 53`) and `I_n(1000)` (`p = 113`) vs mpmath.
+    /// Large enough that the second and later `a_k` terms materially
+    /// contribute, so a recalled coefficient or a wrong sign fails
+    /// here. The public path at `x = 200`, `p = 53` must route
+    /// through the dispatch into the asymptotic (pins the *derived*
+    /// `bessel_j_threshold` reuse).
+    #[test]
+    fn asymptotic_regime_matches_mpmath() {
+        let p = 53;
+        let x = at(200, 1, p);
+        for (n, want) in [
+            (0u32, I0_200),
+            (1, I1_200),
+            (2, I2_200),
+            (3, I3_200),
+            (5, I5_200),
+        ] {
+            let r = bessel_i_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 8), "I_{n}(200)");
+        }
+        let p = 113;
+        let x = at(1000, 1, p);
+        for (n, want) in [(0u32, I0_1000), (1, I1_1000), (2, I2_1000)] {
+            let r = bessel_i_asymptotic(n, &x, p);
+            assert!(close_at(&r, &py(want, p), p - 12), "I_{n}(1000)");
+        }
+
+        let x = at(200, 1, 53);
+        let (r0, _) = x.i0(RoundingMode::NearestEven);
+        assert!(close_at(&r0, &py(I0_200, 53), 45), "i0(200) via dispatch");
+        let (r1, _) = x.i1(RoundingMode::NearestEven);
+        assert!(close_at(&r1, &py(I1_200, 53), 45), "i1(200) via dispatch");
+    }
+
+    // mpmath besseli (dps = 120) for the regime-boundary check.
+    const I0_256: &str = "37704216813925512248187965940740515799724074745159949233554531401110625525761751932277313607778930620432331127.5288431961";
+    const I1_256: &str = "37630503567727454079825096501224087285338948500695164037686115528501114205565327708769760904440709640999968454.0273413245";
+
+    /// Cross-regime continuity: at `x = 256` the DLMF 10.40.1
+    /// asymptotic and the DLMF 10.29.1 Miller recurrence (called
+    /// directly) agree and both match mpmath. Pins the *derived*
+    /// `bessel_j_threshold` crossover and the reused `a_k(n)`
+    /// recurrence against the independent Miller path (the
+    /// `bessel_j` `asymptotic_miller_continuity` analog).
+    #[test]
+    fn asymptotic_miller_continuity() {
+        let p = 113;
+        let x = at(256, 1, p);
+        let a0 = bessel_i_asymptotic(0, &x, p);
+        let mi0 = bessel_i_miller(0, &x, p);
+        assert!(close_at(&a0, &mi0, p - 12), "asymp vs Miller I_0(256)");
+        assert!(close_at(&a0, &py(I0_256, p), p - 12), "asymp I_0(256)");
+        assert!(close_at(&mi0, &py(I0_256, p), p - 12), "Miller I_0(256)");
+        let a1 = bessel_i_asymptotic(1, &x, p);
+        let mi1 = bessel_i_miller(1, &x, p);
+        assert!(close_at(&a1, &mi1, p - 12), "asymp vs Miller I_1(256)");
+        assert!(close_at(&a1, &py(I1_256, p), p - 12), "asymp I_1(256)");
+    }
+
+    // mpmath besseli (dps = 340) for the p = 1024 second-term pin.
+    const I0_52_BIG: &str = "3.28983914405012303570590822990605602611180157534839416125528705344053812810694973324070513417838122219340846596165467918112126063839091011363774129787473762498039721506143816371758308617539645157852076897235980325849930352382392897037908199549603978795284238351346766116171420991967458447353913510971538513036177229884938048029043";
+    const I2_256_BIG: &str = "37410228504802641513189332374324702617807364209998268264510108623544210571030772809552549850712987576362018873.9817545920191533882152982129453659415258064928448971088079928843708892549110307533090426032502310242193371456222198148772771860159740743468648991188382406203461068619103845253344226863032223166060549000013756896507611957";
+
+    /// Second-term-matters pin at `p = 1024` (the `derive, don't
+    /// recall` reflex): the Miller path `I_0(2.5)` and the deeper
+    /// Miller path `I_2(256)` (at `p = 1024` the
+    /// precision-scaled `bessel_j_threshold` keeps `x = 256` in
+    /// Miller, not the asymptotic), validated to `p − 2` against the
+    /// 330-digit references. A coefficient, recurrence-sign, or
+    /// sum-rule error invisible at low precision fails here.
+    #[test]
+    fn high_precision_pin() {
+        let x = at(5, 2, 1024);
+        let (r, _) = x.i0(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(I0_52_BIG, 1024), 1022), "I_0(2.5) p=1024");
+
+        let x = at(256, 1, 1024);
+        let (r, _) = x.in_(2, RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(I2_256_BIG, 1024), 1022), "I_2(256) p=1024");
     }
 
     #[test]
