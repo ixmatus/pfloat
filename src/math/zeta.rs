@@ -50,6 +50,7 @@
 //!   precedent, ADR-0025).
 
 use super::lgamma::is_integer_test;
+use super::pi_at;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -125,8 +126,8 @@ fn is_negative_even_integer(x: &BigFloat) -> bool {
 ///
 /// Special values are handled directly per the module-level domain
 /// table; a finite non-special argument routes to [`zeta_finite`]
-/// (the Euler–Maclaurin / functional-equation regimes, slices
-/// 6r.2 / 6r.3), then the single final round is applied.
+/// (the Borwein core for `s > 0`, the functional equation for
+/// `s < 0`), then the single final round is applied.
 fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
     match &x.class {
         Class::Nan {
@@ -204,17 +205,72 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 ///   is the moment sequence of a positive measure for `s > 0`, so
 ///   the CVZ Proposition 1 error bound applies on the whole open
 ///   right half-line.
-/// - `s < 0`: the functional equation DLMF 25.4.2 reflecting into
-///   `1−s > 1` (slice 6r.3). Until then a typed quiet-NaN
-///   placeholder so the crate builds and the `s > 0` core and the
-///   special-value dispatch are exercised in isolation.
+/// - `s < 0`: the functional equation DLMF 25.4.2 ([`zeta_fe`])
+///   reflecting into `1−s > 1`, where the Borwein core is
+///   well-conditioned.
 fn zeta_finite(x: &BigFloat, target_precision: u32) -> BigFloat {
     if matches!(x.sign(), Sign::Positive) {
         zeta_borwein(x, target_precision)
     } else {
-        // Functional equation lands in 6r.3.
-        BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[]).expect("precision >= 1")
+        zeta_fe(x, target_precision)
     }
+}
+
+/// `ζ(s)` for real `s < 0`, `s` not a negative even integer (those
+/// are the trivial zeros, special-cased exactly upstream), via the
+/// functional equation DLMF 25.4.2
+///
+/// ```text
+/// ζ(s) = 2·(2π)^{s−1}·sin(πs/2)·Γ(1−s)·ζ(1−s)
+/// ```
+///
+/// quoted verbatim from the DLMF primary source, **not recalled**
+/// (the 25.4.1 `cos(πs/2)·Γ(s)` companion is the wrong branch for
+/// the negative axis; the sin-vs-cos / Γ(1−s)-vs-Γ(s) choice is the
+/// derive-don't-recall catch, the ADR-0025 K-recurrence-sign
+/// precedent). For `s < 0` the reflected argument `1−s > 1` lands
+/// strictly inside the Borwein moment region, so `ζ(1−s)` is the
+/// well-conditioned [`zeta_borwein`] path. Numerically pinned by
+/// `ζ(−1) = 2·(2π)⁻²·(−1)·1·(π²/6) = −1/12`. The factors multiply
+/// with no cancellation (`Γ(1−s)` grows, `(2π)^{s−1}` decays, the
+/// product is the genuine — possibly large — value), so a single
+/// `+96`-bit working boost over the gamma/sin/pow composition
+/// suffices. Returns the unrounded working-precision value.
+fn zeta_fe(x: &BigFloat, target_precision: u32) -> BigFloat {
+    let working = target_precision
+        .saturating_add(96)
+        .min(target_precision.saturating_add(4096));
+
+    let sw = x
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let one = ci(1, working);
+    let two = ci(2, working);
+    let pi = pi_at(working);
+
+    // 2·(2π)^{s−1}.
+    let (two_pi, _) = two.mul(&pi, RoundingMode::NearestEven);
+    let (s_minus_1, _) = sw.sub(&one, RoundingMode::NearestEven);
+    let (tp_pow, _) = two_pi.pow(&s_minus_1, RoundingMode::NearestEven);
+    let (coeff, _) = two.mul(&tp_pow, RoundingMode::NearestEven);
+
+    // sin(πs/2).
+    let (pi_s, _) = pi.mul(&sw, RoundingMode::NearestEven);
+    let (arg, _) = pi_s.div(&two, RoundingMode::NearestEven);
+    let (sin_term, _) = arg.sin(RoundingMode::NearestEven);
+
+    // Γ(1−s), with 1−s > 1.
+    let (one_minus_s, _) = one.sub(&sw, RoundingMode::NearestEven);
+    let (gamma_term, _) = one_minus_s.gamma(RoundingMode::NearestEven);
+
+    // ζ(1−s): 1−s > 1 > 0, the Borwein moment region.
+    let zeta_reflected = zeta_borwein(&one_minus_s, working);
+
+    let (p1, _) = coeff.mul(&sin_term, RoundingMode::NearestEven);
+    let (p2, _) = p1.mul(&gamma_term, RoundingMode::NearestEven);
+    let (result, _) = p2.mul(&zeta_reflected, RoundingMode::NearestEven);
+    result
 }
 
 /// Binary exponent of `v`, or `0` for zero / non-finite (the
@@ -481,6 +537,61 @@ mod tests {
         let s = at(3, 1, 1024);
         let (r, _) = s.zeta(RoundingMode::NearestEven);
         assert!(close_at(&r, &py(Z3_BIG, 1024), 1020), "ζ(3) p=1024");
+    }
+
+    // mpmath.zeta on the negative axis, dps = 340. ζ(−1)=−1/12,
+    // ζ(−3)=1/120, ζ(−5)=−1/252, ζ(−7)=1/240 (exact rationals,
+    // routed entirely through the functional equation since the
+    // negative odd integers are NOT special-cased).
+    const ZN1: &str = "-0.0833333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333";
+    const ZN3: &str = "0.00833333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333";
+    const ZN5: &str = "-0.00396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825396825397";
+    const ZN_HALF: &str = "-0.207886224977354566017306725397049302226268531287672537610113557106147291932292340487543266940733215643109975614128689565661326914694458311965705623294109531061640017807007041375078320755666248787786920661504691428291233832569371613677729383610945938789";
+    const ZN15: &str = "-0.0254852018898330359495429869107047454690249846009729968346454983492493771883392785970925189475243606083956786090522338379231706922081480226595534733619982128781578133045264443099251947318696331135537227085510583845600615587030880946621048463536127324092";
+    const ZN25: &str = "0.00851692877785033054235856702834448693627599022007447776588885495191457755599180493669488160134326161961109140844500462979255917397088304193018048008544285079380916536592281145828175781513758799235867264721263349427536024814776909920531663911328610074";
+    const ZN105: &str = "0.0111461224739428141361386754700669760847882533145070950020015456357735060427323428518682330397325401032561182052740841597292413751057605763603111924201930408938517933090311436848472127517446387995128075773617523581154995570298259266384590180139117838251";
+
+    /// Functional-equation negative axis (DLMF 25.4.2): exact
+    /// rationals ζ(−1)=−1/12, ζ(−3)=1/120, ζ(−5)=−1/252, ζ(−7)
+    /// =1/240 (each computed via the full FE, the negative odd
+    /// integers deliberately NOT special-cased), plus the
+    /// non-integer ζ(−1/2), ζ(−3/2), ζ(−5/2), ζ(−21/2) vs the
+    /// 340-digit mpmath reference at p = 128. (The FE composes
+    /// Γ+sin+pow+Borwein, so it is costly per
+    /// `feedback_differential_lane_cost`; p = 128 keeps the
+    /// lib-test tier fast — exhaustive precision coverage is the
+    /// 6r.4 differential lane's job, and `fe_high_precision_pin`
+    /// carries the p = 512 second-term pin.)
+    #[test]
+    fn fe_matches_reference() {
+        let p = 128;
+        for (num, den, want) in [
+            (-1i64, 1i64, ZN1),
+            (-3, 1, ZN3),
+            (-5, 1, ZN5),
+            (-7, 1, "0.004166666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666667"),
+            (-1, 2, ZN_HALF),
+            (-3, 2, ZN15),
+            (-5, 2, ZN25),
+            (-21, 2, ZN105),
+        ] {
+            let s = at(num, den, p);
+            let (r, st) = s.zeta(RoundingMode::NearestEven);
+            assert!(!st.invalid() && !st.div_by_zero());
+            assert!(close_at(&r, &py(want, p), p - 24), "ζ({num}/{den})");
+        }
+    }
+
+    /// Functional-equation cross-tie / second-term pin at p = 512:
+    /// ζ(−1) = −1/12 to p−4 bits. Binds the FE composition
+    /// (2·(2π)^{s−1}·sin·Γ·ζ(1−s), Borwein on the s>0 side) against
+    /// the independent exact rational. A sin-vs-cos or
+    /// Γ(1−s)-vs-Γ(s) error fails here.
+    #[test]
+    fn fe_high_precision_pin() {
+        let s = at(-1, 1, 512);
+        let (r, _) = s.zeta(RoundingMode::NearestEven);
+        assert!(close_at(&r, &py(ZN1, 512), 508), "ζ(−1) = −1/12 p=512");
     }
 
     #[test]
