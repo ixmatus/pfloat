@@ -299,6 +299,11 @@ name = "differential_ik"
 path = "tests/differential_ik.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "differential_zeta"
+path = "tests/differential_zeta.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
