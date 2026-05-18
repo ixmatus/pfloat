@@ -214,20 +214,36 @@ fn bessel_i_kernel(
     }
 }
 
-/// `I_m(ax)` for `m ≥ 0`, normal `ax > 0`: the regime evaluator.
-/// Returns the unrounded working-precision value; [`bessel_i_kernel`]
-/// does the single final round.
+/// Binary-exponent boundary below which the convergent Maclaurin
+/// series ([`bessel_i_tiny`]) is used instead of Miller recurrence.
 ///
-/// Slice 6q.2 wires the DLMF 10.25.2 convergent Maclaurin series
-/// ([`bessel_i_tiny`]), which is entire and converges for every `x`,
-/// so it carries the whole real line on its own. Slices 6q.3 (Miller
-/// backward recurrence normalised by the DLMF 10.35.5 sum rule, for
-/// moderate `|x|`) and 6q.4 (DLMF 10.40.1 asymptotic plus the
-/// binary-exponent regime dispatch, for large `|x|`) layer the
-/// faster regimes on top; until then the series is the only path and
-/// there is no dead code.
+/// `e_x ≤ −1` ⇔ `|x| < 1`. The tiny regime exists only to keep the
+/// `2k/x` recurrence away from `x → 0`; it is not a tuned crossover
+/// (CLAUDE.md: no perf machinery without a bench). It mirrors
+/// [`super::bessel_j::bessel_j_tiny_threshold`] exactly: `I` shares
+/// `J`'s recurrence-near-zero hazard. Miller carries everything
+/// `|x| ≥ 1` until slice 6q.4 adds the large-`|x|` asymptotic upper
+/// cut; continuity across the boundary is pinned by a unit test.
+fn bessel_i_tiny_threshold() -> i64 {
+    -1
+}
+
+/// `I_m(ax)` for `m ≥ 0`, normal `ax > 0`: the regime dispatch on
+/// the binary exponent of `|x|` (tiny convergent Maclaurin / Miller
+/// backward recurrence). Returns the unrounded working-precision
+/// value; [`bessel_i_kernel`] does the single final round. Slice 6q.4
+/// adds the third (large-`|x|` asymptotic) arm; until then Miller
+/// carries everything `|x| ≥ 1`, so there is no dead code.
 fn bessel_i_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
-    bessel_i_tiny(m, ax, target_precision)
+    let e_x = match &ax.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    if e_x <= bessel_i_tiny_threshold() {
+        bessel_i_tiny(m, ax, target_precision)
+    } else {
+        bessel_i_miller(m, ax, target_precision)
+    }
 }
 
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
@@ -322,6 +338,150 @@ fn bessel_i_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     sum
 }
 
+/// `I_m(ax)` for `m ≥ 0`, `ax ≥ 1`, via Miller backward recurrence
+/// (DLMF 10.29.1) with sum-rule normalisation (DLMF 10.35.5).
+///
+/// `I` is the **recessive** (minimal) solution of the
+/// modified-Bessel three-term recurrence *in order* (DLMF 10.30.1
+/// `Iν(z) ∼ (½z)ν/Γ(ν+1) → 0` as `ν → ∞` at fixed `z`), exactly the
+/// role `J` plays for the ordinary recurrence, so the same Miller
+/// backward descent applies. The DLMF 10.29.1 relation is
+/// `𝒵_{ν−1}(z) − 𝒵_{ν+1}(z) = (2ν/z)·𝒵_ν(z)` — note the **minus**,
+/// where the ordinary-Bessel 10.6.1 has a plus. Solving for the
+/// lower order gives the descent
+///
+/// ```text
+/// f_{k−1} = (2k/x)·f_k + f_{k+1}
+/// ```
+///
+/// with a **plus** `f_{k+1}`, the single sign change from
+/// [`super::bessel_j::bessel_j_miller`]'s `− f_{k+1}`. Started at a
+/// high seed index `M` with `f_{M+1}=0`, `f_M=1`, the descent
+/// converges to a fixed multiple `c·I_k(x)` of the recessive
+/// solution. Because every term of the descent is **added** (the
+/// `f` values are all positive and grow as the index falls), the
+/// recurrence has **no subtractive cancellation** — unlike `J`'s,
+/// whose `− f_{k+1}` does. The normalising constant is the DLMF
+/// 10.35.5 identity `eˣ = I_0(x) + 2·Σ_{k≥1} I_k(x)` (every order
+/// `k ≥ 1`, *not* the even-only `J` sum rule DLMF 10.12.4; it is the
+/// modified generating function DLMF 10.35.1
+/// `exp(½x(t+1/t)) = Σ I_n(x) tⁿ` at `t = 1`, using `I_{−n}=I_n`).
+/// So `S = f_0 + 2·Σ_{k≥1} f_k = c·eˣ`, giving
+/// `I_m(x) = f_m / c = f_m·eˣ / S`, every order from one descent and
+/// one `exp(x)`.
+///
+/// `M` is derived, not guessed: the recessive modified-Bessel
+/// solution has the same leading large-order decay
+/// `I_M(x) ∼ (1/√(2πM))·(ex/(2M))^M` as the ordinary recessive
+/// solution (the `J` form DLMF 10.19.1, pinned in ADR-0023). The
+/// prefactor only shrinks the bound, so requiring
+/// `(ex/(2M))^M < 2^{−P}`, `P = target+64`, i.e. in natural logs
+/// `M·(1 + ln(x/(2M))) < −P·ln2`, is the **same conservative seed
+/// criterion** as `bessel_j_miller`; it is reused verbatim (an
+/// exponential search at low working precision plus a fixed step
+/// guard; overshoot ≤ 2× is the deliberate robustness/cost trade,
+/// CLAUDE.md). Working precision takes the same `≈ |x|·log₂e`
+/// boost as `bessel_j_miller` plus the `+64` base: **not** for
+/// cancellation in the recurrence (`I` has none) but to carry the
+/// wide `f`-magnitude dynamic range and the `eˣ` normalisation
+/// composition conservatively (CLAUDE.md: conservative, not
+/// perf-tuned without a bench). Returns the unrounded
+/// working-precision value.
+fn bessel_i_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &ax.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        let shift = (e_x + 1).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 16).min(4096) as u32
+    };
+    let working = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+    let x = ax
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // --- seed index M (same criterion as bessel_j_miller) ---------
+    let p_bits = i64::from(target_precision) + 64;
+    let lp = 64u32;
+    let x_lp = x
+        .round_to_precision(lp, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+    let ln2 = ci(2, lp).ln(RoundingMode::NearestEven).0;
+    let neg_p_ln2 = {
+        let (v, _) = ci(p_bits, lp).mul(&ln2, RoundingMode::NearestEven);
+        v.negated()
+    };
+    let satisfies = |big_m: i64| -> bool {
+        // lhs = M·(1 + ln(x/(2M))) ; satisfied when lhs ≤ −P·ln2.
+        let mm = ci(big_m, lp);
+        let two_m = ci(2 * big_m, lp);
+        let (y, _) = x_lp.div(&two_m, RoundingMode::NearestEven);
+        let (lny, _) = y.ln(RoundingMode::NearestEven);
+        let (s, _) = ci(1, lp).add(&lny, RoundingMode::NearestEven);
+        let (lhs, _) = mm.mul(&s, RoundingMode::NearestEven);
+        matches!(
+            lhs.partial_cmp(&neg_p_ln2).0,
+            Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+        )
+    };
+    let m_floor = i64::from(m) + 2;
+    let start = m_floor.max(1i64 << (e_x.max(0) + 2).min(60));
+    let cap: i64 = 1 << 24;
+    let mut big_m = start;
+    while big_m < cap && !satisfies(big_m) {
+        big_m = (big_m * 2).min(cap);
+    }
+    big_m = (big_m + 8).min(cap).max(m_floor);
+
+    // --- backward recurrence (DLMF 10.29.1) + sum rule (10.35.5) --
+    let (inv_ax, _) = ci(1, working).div(&x, RoundingMode::NearestEven);
+    let zero = BigFloat::try_new_zero(Sign::Positive, working).expect("precision >= 1");
+
+    let mut f_hi = zero.clone(); // f_{idx+1}
+    let mut f_cur = ci(1, working); // f_M
+    let mut s = zero.clone();
+    let mut result = zero;
+    let mut idx = big_m;
+    loop {
+        if idx == i64::from(m) {
+            result = f_cur.clone();
+        }
+        // DLMF 10.35.5: every order contributes (f_0 once, f_{k≥1}
+        // doubled), unlike J's even-only DLMF 10.12.4 sum rule.
+        if idx == 0 {
+            let (ns, _) = s.add(&f_cur, RoundingMode::NearestEven);
+            s = ns;
+            break;
+        }
+        let two_f = f_cur.mul(&ci(2, working), RoundingMode::NearestEven).0;
+        let (ns, _) = s.add(&two_f, RoundingMode::NearestEven);
+        s = ns;
+        // f_{idx−1} = (2·idx/x)·f_idx + f_{idx+1}  (PLUS: DLMF
+        // 10.29.1, vs bessel_j_miller's − f_{idx+1}).
+        let two_idx = ci(2 * idx, working);
+        let (c1, _) = two_idx.mul(&inv_ax, RoundingMode::NearestEven);
+        let (c2, _) = c1.mul(&f_cur, RoundingMode::NearestEven);
+        let (f_lo, _) = c2.add(&f_hi, RoundingMode::NearestEven);
+        f_hi = f_cur;
+        f_cur = f_lo;
+        idx -= 1;
+    }
+    // I_m = f_m·eˣ / S  (S = c·eˣ; result = f_m = c·I_m).
+    let (ex, _) = x.exp(RoundingMode::NearestEven);
+    let (num, _) = result.mul(&ex, RoundingMode::NearestEven);
+    let (i_m, _) = num.div(&s, RoundingMode::NearestEven);
+    i_m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +563,65 @@ mod tests {
         let x = at(9, 10, p); // 0.9
         let (r, _) = x.in_(3, RoundingMode::NearestEven);
         assert!(close_at(&r, &py(I3_09, p), p - 8), "I_3(0.9)");
+    }
+
+    // mpmath besseli(n, x), dps = 330.
+    const I0_52: &str = "3.2898391440501230357059082299060560261118015753483941612552870534405381281069497332407051341783812221934084659616546791811212606383909101136377412978747376249803972150614381637175830861753964515785207689723598032584993035238239289703790819954960397879528423835134676611617142099196745844735391351097153851303617722988494";
+    const I1_52: &str = "2.5167162452886984415281917481223776723889473033969492189945395536862123621998489805478611328623654879854309633948532751443897799743868030305513678468672073092043537834766850107277309570952811649702000233303932592586843992778535656938613510512689669963141673599204696295648188684564962922311601663177882163200383719996789";
+    const I2_52: &str = "1.2764661478191642824833548314081538882006437326308347860596554104915682383470705488024162278884888318050636952457720590656094366588814676891966470203809717776169141882800901551353983204991715196023607503080451958515517841015410764152900011544808661909015084955770919575098591151544775506886110020554848120743310746991063";
+    const I3_52: &str = "0.47437040877803558955482401786933145126791733118761356129909089689970318084453610246399516824078335709732905100161798063941468132017645472783673261425765246501729108222854076251109364429660673360642282283752094589620154471538784342939734920409958109087175376699712249754904428420933221112938256302901251700110865248110878";
+    const I5_52: &str = "0.032843475172023213389137014599704554763462490289814396685211671516405247019947613219746131086835277828612337907573482940169236550710930432193568626537313707975961191247445322163018206897197584976195701243937183654063699004635036438240987397245592057881995511688329014694155218442675430399485440514277248931763664498884024";
+    const I0_7: &str = "168.59390851028969885732662718750084037652267923453171419319405566855416412467567826523169181672021486929560740073878851136031864873853514579691924920051719620176847781535776336671740853295939586010914436537083026003191102696772561838030422796757453778910033451199739338748330017676012004587611339859666944366147702231554";
+    const I1_7: &str = "156.03909286995545346239058066071115563003105204154494317062487461487033616940013352003661452334856107081952187307407510752031015044268041681675441168719517175559714279703872634857336249277754166744896266292847517491713297098270599426677882319174023951343080424877167156982090527896085153837147505053744589452455698324444";
+    const I2_7: &str = "124.01131054744528358235788985586908162508523579409030185872980577859121093341849725950694481004919742049002972271762419492594432004062645527784656014703286141445500844477527012426787639216581252655229789024840878148415874954409533430408170705564875507097724758377691579610589866848559103491283481272882775951160359853142";
+    const I0_1: &str = "1.2660658777520083355982446252147175376076703113549622068081353312135750161227754703948183571472801018710361346890561387866044362393033515852308035320408747903825409142441362953734395725600995545926438383227198691560588492206548377304558882075871377934066816603165868599396338832481107108607514361134215851892896832534291";
+    const I1_1: &str = "0.56515910399248502720769602760986330732889962162109200948029448947925564096437113409266499776681441006467788605552630267685763768491717981204113120812102680026939328297640534978443200181007060344916618001109074264750052022176527680673939532145235807641855528642638633569454900860852508478096649245186461937460814440257591";
+
+    /// Miller backward-recurrence regime (`|x| ≥ 1`, DLMF 10.29.1
+    /// descent normalised by the DLMF 10.35.5 `eˣ` sum rule):
+    /// `I_n(2.5)` orders `0,1,2,3,5` and `I_n(7)` orders `0,1,2`,
+    /// where the recurrence depth and the `eˣ` normalisation both
+    /// materially matter, vs mpmath at `p = 160`. A wrong recurrence
+    /// sign (the `+ f_{k+1}` vs `− f_{k+1}` fork) or an even-only
+    /// sum rule fails here.
+    #[test]
+    fn miller_regime_matches_mpmath() {
+        let p = 160;
+        let x = at(5, 2, p); // 2.5
+        for (n, want) in [
+            (0i32, I0_52),
+            (1, I1_52),
+            (2, I2_52),
+            (3, I3_52),
+            (5, I5_52),
+        ] {
+            let (r, _) = x.in_(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 12), "I_{n}(2.5)");
+        }
+        let x = at(7, 1, p);
+        for (n, want) in [(0i32, I0_7), (1, I1_7), (2, I2_7)] {
+            let (r, _) = x.in_(n, RoundingMode::NearestEven);
+            assert!(close_at(&r, &py(want, p), p - 12), "I_{n}(7)");
+        }
+    }
+
+    /// Boundary continuity: at `x = 1` the two regime evaluators
+    /// (called directly) agree, and both match mpmath. Pins the
+    /// `bessel_i_tiny_threshold` crossover and the all-positive
+    /// 10.25.2 series against the independent Miller path.
+    #[test]
+    fn tiny_miller_continuity_at_boundary() {
+        let p = 160;
+        let x = at(1, 1, p);
+        let t0 = bessel_i_tiny(0, &x, p);
+        let m0 = bessel_i_miller(0, &x, p);
+        assert!(close_at(&t0, &m0, p - 12), "tiny vs Miller I_0(1)");
+        assert!(close_at(&t0, &py(I0_1, p), p - 12), "tiny I_0(1)");
+        assert!(close_at(&m0, &py(I0_1, p), p - 12), "Miller I_0(1)");
+        let t1 = bessel_i_tiny(1, &x, p);
+        let m1 = bessel_i_miller(1, &x, p);
+        assert!(close_at(&t1, &m1, p - 12), "tiny vs Miller I_1(1)");
+        assert!(close_at(&m1, &py(I1_1, p), p - 12), "Miller I_1(1)");
     }
 
     #[test]
