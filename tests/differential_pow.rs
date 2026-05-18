@@ -10,7 +10,7 @@
 //! equality (`assert_eq!`, the `differential_ei` idiom) under
 //! [`BIT_EXACT_ROUNDING_MODES`].
 //!
-//! **Oracle note (NearestAway).** MPFR has no roundTiesToAway mode:
+//! **Oracle note (`NearestAway`).** MPFR has no roundTiesToAway mode:
 //! `MPFR_RNDA` (rug `Round::AwayZero`) is *directed* round-away (it
 //! takes the farther neighbor of any inexact value), and `MPFR_RNDN`
 //! is ties-to-*even*. An integer base raised to a small integer

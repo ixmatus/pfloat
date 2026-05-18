@@ -203,7 +203,7 @@ pub const BIT_EXACT_ROUNDING_MODES: &[RoundingMode] = &[
 ];
 
 /// Rounding modes exercised by differential tests for operations
-/// whose pfloat kernel is correctly rounded only under NearestEven:
+/// whose pfloat kernel is correctly rounded only under `NearestEven`:
 /// all transcendentals (exp, ln, sin, cos, tan, atan2, sinh, cosh,
 /// asinh), all tier-1 specials (erf, erfc, gamma, lgamma, digamma,
 /// beta), and AGM.
@@ -216,7 +216,7 @@ pub const BIT_EXACT_ROUNDING_MODES: &[RoundingMode] = &[
 /// Slice 7c (ADR-0022) shipped the Ziv recompute-and-compare driver
 /// for `pow`, which is therefore the first kernel off this tier and
 /// uses [`BIT_EXACT_ROUNDING_MODES`]; the rest stay under
-/// NearestEven only until later slices extend the driver, the same
+/// `NearestEven` only until later slices extend the driver, the same
 /// correctness floor that ships today.
 pub const NEAREST_EVEN_ROUNDING_MODES: &[RoundingMode] = &[RoundingMode::NearestEven];
 

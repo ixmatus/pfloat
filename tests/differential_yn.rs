@@ -5,7 +5,7 @@
 //! rug 1.30 exposes MPFR `mpfr_y0` / `mpfr_y1` / `mpfr_yn`
 //! (`y0_ref` / `y1_ref` / `yn_ref`), a genuine external oracle, so
 //! this is a **bit-exact** lane (`assert_eq!`, the `differential_ei`
-//! / `differential_jn` idiom) under NearestEven.
+//! / `differential_jn` idiom) under `NearestEven`.
 //!
 //! Domain note: `Y` is real-valued only for `x > 0` (the Ci/li
 //! convention; `Y` is complex off the positive axis, with a pole at

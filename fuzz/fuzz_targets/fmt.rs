@@ -24,9 +24,7 @@ fuzz_target!(|input: Input| {
         return;
     };
     let rendered = format!("{v}");
-    let Ok((reparsed, _)) =
-        BigFloat::parse_str(&rendered, prec, RoundingMode::NearestEven)
-    else {
+    let Ok((reparsed, _)) = BigFloat::parse_str(&rendered, prec, RoundingMode::NearestEven) else {
         // If parse rejects pfloat's own Display output, that is a
         // bug. Surface as a panic.
         panic!("parse rejected Display output: {rendered}");

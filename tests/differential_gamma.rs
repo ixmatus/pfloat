@@ -1,6 +1,6 @@
 //! MPFR differential: `BigFloat::gamma` matches `rug::Float::gamma`.
 //!
-//! Capped at precisions ≤ 512 bits per the asymptotic z_min
+//! Capped at precisions ≤ 512 bits per the asymptotic `z_min`
 //! memory: pfloat's Stirling implementation uses a 17-pair
 //! Bernoulli table that caps the target precision around ~600 bits.
 
