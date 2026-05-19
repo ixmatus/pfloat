@@ -21,7 +21,8 @@
 //! - `a+b ∈ Zle` with `a, b ∉ Zle`: `+0` (denominator pole).
 //! - one operand a negative integer, the other a positive integer,
 //!   `a+b ∈ Zle`: finite via pole cancellation,
-//!   `(−1)^m / (m · C(n,m))` (ADR-0030 case 4).
+//!   `(−1)^m (m−1)!(n−m)!/n!` evaluated through `lgamma` of the
+//!   three positive-integer factorials (ADR-0030 case 4).
 //! - one operand a negative integer otherwise: `qNaN + INVALID`
 //!   (two-sided sign-ambiguous pole, mirrors `gamma`).
 //! - one operand `±0` otherwise: `±∞ + DIV_BY_ZERO` (mirrors
@@ -38,6 +39,7 @@
 
 use super::gamma::gamma_sign_of;
 use super::lgamma::is_integer_test;
+use super::pow::{integer_parity, Parity};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -162,8 +164,9 @@ fn beta_kernel(
     // Case 4: pole cancellation to a finite value. One operand is a
     // negative integer −n, the other a positive integer m, and
     // a+b = m−n is a non-positive integer (so 1 ≤ m ≤ n). The closed
-    // form (ADR-0030) is B(−n,m) = (−1)^m / (m · C(n,m)); computed in
-    // reciprocal-product form to avoid forming the huge C(n,m).
+    // form (ADR-0030) is B(−n,m) = (−1)^m (m−1)!(n−m)!/n!; evaluated
+    // through lgamma of the three positive-integer factorials (O(1),
+    // no loop over the caller-supplied m).
     if a_npi && is_pos_integer(b) && s_npi {
         return beta_case4(a, b, target_precision, mode);
     }
@@ -260,12 +263,25 @@ fn sign_product_is_negative(a: Sign, b: Sign, c: Sign) -> bool {
 /// Case 4 of ADR-0030: `B(neg, pos)` where `neg` is a negative
 /// integer `−n`, `pos` a positive integer `m`, and `neg + pos` a
 /// non-positive integer (so `1 ≤ m ≤ n`). The pole/pole cancellation
-/// leaves the finite value `(−1)^m / (m · C(n,m))`. Evaluated as
-/// `(−1)^m · (1/m) · ∏_{i=0}^{m−1} (i+1)/(n−i)`: the reciprocal
-/// product never forms the huge binomial, every `n−i ≥ 1`, and the
-/// `(−1)^m` parity is accumulated in the loop (no integer
-/// extraction). The loop runs `m` times; for the rare very large
-/// `m` this trades speed for exactness, the correct call here.
+/// leaves the finite value
+///
+/// ```text
+/// B(−n, m) = (−1)^m (m−1)! (n−m)! / n!,   n ≥ 1, 1 ≤ m ≤ n
+/// ```
+///
+/// The three factorials are `Γ` of the *positive* integers `m`,
+/// `n−m+1`, `n+1` (none a `Γ` pole), so the magnitude is
+/// `exp(lgamma(m) + lgamma(n−m+1) − lgamma(n+1))` and the sign is
+/// `(−1)^m`, read from the parity of `m`. This is `O(1)` (three
+/// `lgamma` calls plus an `exp`); no huge binomial is formed and,
+/// unlike the earlier reciprocal-product form, there is no loop over
+/// the caller-supplied `m`. That form was exact but ran `m`
+/// iterations — an unbounded cost on a caller-controlled integer
+/// (a hang at large `m`); replacing it is the ADR-0030 robustness
+/// fix. The `lgamma` composition trades the old form's exact
+/// rational arithmetic for the same ~`p`-bit accuracy as the
+/// negative-domain magnitude path (cases 1/2), the right call given
+/// the alternative is non-termination.
 fn beta_case4(
     neg: &BigFloat,
     pos: &BigFloat,
@@ -275,27 +291,28 @@ fn beta_case4(
     let wp = target_precision.saturating_add(64);
     let ne = RoundingMode::NearestEven;
     let one = BigFloat::try_from_i64_exact(1, wp).expect("precision >= 1");
-    let n = neg.negated(); // +n
-    let mut prod = one.clone(); // ∏ (i+1)/(n−i)
-    let mut i = BigFloat::try_new_zero(Sign::Positive, wp).expect("precision >= 1");
-    let mut parity_negative = false; // tracks (−1)^m
-    loop {
-        // Stop after m iterations: i has reached pos.
-        if matches!(i.partial_cmp(pos).0, Some(core::cmp::Ordering::Equal)) {
-            break;
-        }
-        let (numer, _) = i.add(&one, ne); // i + 1
-        let (denom, _) = n.sub(&i, ne); // n − i  (≥ 1)
-        let (step, _) = numer.div(&denom, ne);
-        let (next, _) = prod.mul(&step, ne);
-        prod = next;
-        parity_negative = !parity_negative;
-        let (i_next, _) = i.add(&one, ne);
-        i = i_next;
-    }
-    // result = (±1) · prod / m
-    let (mag, _) = prod.div(pos, ne);
-    let signed = if parity_negative { mag.negated() } else { mag };
+    // n, m as exact integers at the working precision (neg, pos are
+    // already exact integers, so widening cannot round).
+    let n = neg
+        .negated()
+        .round_to_precision(wp, ne)
+        .expect("precision >= 1")
+        .0; // +n  ≥ 1
+    let m = pos.round_to_precision(wp, ne).expect("precision >= 1").0; // m   ≥ 1
+    let (n_plus_1, _) = n.add(&one, ne); // n + 1     ≥ 2
+    let (n_minus_m, _) = n.sub(&m, ne); // n − m     ≥ 0
+    let (n_minus_m_plus_1, _) = n_minus_m.add(&one, ne); // n−m+1 ≥ 1
+    let (lg_m, _) = m.lgamma_round(wp, ne).expect("precision >= 1"); // ln (m−1)!
+    let (lg_nm1, _) = n_minus_m_plus_1
+        .lgamma_round(wp, ne)
+        .expect("precision >= 1"); // ln (n−m)!
+    let (lg_np1, _) = n_plus_1.lgamma_round(wp, ne).expect("precision >= 1"); // ln n!
+    let (sum, _) = lg_m.add(&lg_nm1, ne);
+    let (ln_mag, _) = sum.sub(&lg_np1, ne);
+    let (mag, _) = ln_mag.exp(ne);
+    // sign = (−1)^m, from the parity of m (O(limbs), no loop).
+    let negative = matches!(integer_parity(pos), Some(Parity::Odd));
+    let signed = if negative { mag.negated() } else { mag };
     let (rounded, status) = signed
         .round_to_precision(target_precision, mode)
         .expect("precision >= 1");
@@ -492,7 +509,7 @@ mod tests {
 
     #[test]
     fn beta_case4_pole_cancellation_closed_form() {
-        // ADR-0030 case 4: B(−n,m) = (−1)^m/(m·C(n,m)),
+        // ADR-0030 case 4: B(−n,m) = (−1)^m (m−1)!(n−m)!/n!,
         // pinned vs mpmath; symmetric.
         let cases: &[(i64, i64, &str)] = &[
             (
@@ -523,6 +540,49 @@ mod tests {
             let (rs, _) = b.beta(&a, RoundingMode::NearestEven);
             assert!(close_at(&rs, &p(exp), 90), "B({mb},{na}) symmetry");
         }
+    }
+
+    #[test]
+    fn beta_case4_factorial_exact_rational() {
+        // ADR-0030 case 4 cross-checked against a hand-derived exact
+        // rational (no mpmath): B(−10, 4) = (−1)^4·3!·6!/10!
+        // = (6·720)/3628800 = 4320/3628800 = 1/840.
+        let a = BigFloat::try_from_i64_exact(-10, 113).unwrap();
+        let b = BigFloat::try_from_i64_exact(4, 113).unwrap();
+        let (r, status) = a.beta(&b, RoundingMode::NearestEven);
+        assert!(!status.invalid() && !status.div_by_zero());
+        assert!(r.is_sign_positive());
+        let one = BigFloat::try_from_i64_exact(1, 113).unwrap();
+        let n840 = BigFloat::try_from_i64_exact(840, 113).unwrap();
+        let (expected, _) = one.div(&n840, RoundingMode::NearestEven);
+        assert!(close_at(&r, &expected, 90));
+        // symmetric
+        let (rs, _) = b.beta(&a, RoundingMode::NearestEven);
+        assert!(close_at(&rs, &expected, 90));
+    }
+
+    #[test]
+    fn beta_case4_large_m_terminates() {
+        // Robustness regression (ADR-0030): the earlier reciprocal-
+        // product form looped `m` times, so this case — m = 10^12 —
+        // did not terminate. The closed form is O(1); the test
+        // returning at all is the property. With n = m+1,
+        // B(−(m+1), m) = (−1)^m (m−1)!·1!/(m+1)! = (−1)^m /((m+1)·m);
+        // m even ⇒ +1/(m·(m+1)).
+        let m: i64 = 1_000_000_000_000;
+        let neg = BigFloat::try_from_i64_exact(-(m + 1), 113).unwrap();
+        let pos = BigFloat::try_from_i64_exact(m, 113).unwrap();
+        let (r, status) = neg.beta(&pos, RoundingMode::NearestEven);
+        assert!(!r.is_nan() && !r.is_infinite(), "got {r}");
+        assert!(!status.invalid() && !status.div_by_zero());
+        assert!(r.is_sign_positive(), "m even ⇒ positive");
+        // Value cross-check: 1/(m·(m+1)).
+        let m_big = BigFloat::try_from_i64_exact(m, 113).unwrap();
+        let m_plus_1 = BigFloat::try_from_i64_exact(m + 1, 113).unwrap();
+        let one = BigFloat::try_from_i64_exact(1, 113).unwrap();
+        let (denom, _) = m_big.mul(&m_plus_1, RoundingMode::NearestEven);
+        let (expected, _) = one.div(&denom, RoundingMode::NearestEven);
+        assert!(close_at(&r, &expected, 50), "B(−(m+1), m) = {r}");
     }
 
     #[test]

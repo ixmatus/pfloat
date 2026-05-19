@@ -107,11 +107,41 @@ the value finite).
 Reuse, no duplication: `gamma_sign_of` is widened from `fn` to
 `pub(super) fn` (both modules are children of `src/math/`); the
 reflection derivation lives in one place. Integer detection reuses
-`super::lgamma::is_integer_test` (already used by the gamma kernel).
-The magnitude path for cases 1, 2 is the existing `lgamma`
-composition, unchanged. Case 4 must not route through `lgamma`
-(`lgamma(-n)` is `+inf`); it uses the closed form on the integer
-arguments directly.
+`super::lgamma::is_integer_test` (already used by the gamma kernel),
+and the case-4 `(-1)^m` sign reuses `super::pow::integer_parity`
+(also widened to `pub(super)`, the same precedent). The magnitude
+path for cases 1, 2 is the existing `lgamma` composition, unchanged.
+Case 4 must not pass a non-positive integer to `lgamma`
+(`lgamma(-n)` is `+inf`), but it *does* route through `lgamma` of
+the three *positive*-integer factorials: with
+`B(-n,m) = (-1)^m (m-1)!(n-m)!/n!`, the magnitude is
+`exp(lgamma(m) + lgamma(n-m+1) - lgamma(n+1))` (arguments `m`,
+`n-m+1`, `n+1`, all `>= 1`, never a `Gamma` pole) and the sign is
+`(-1)^m` from the parity of `m`. This is `O(1)`.
+
+Correction (robustness fix, recorded not silently applied). This
+ADR originally specified case 4 as the reciprocal product
+`(-1)^m (1/m) prod_{i=0}^{m-1} (i+1)/(n-i)`, "computed in
+reciprocal-product form to avoid forming the huge binomial ...
+for the rare very large `m` this trades speed for exactness, the
+correct call here". That was exact but ran `m` iterations, and `m`
+is a caller-supplied integer: `B(-2e18, 1e18)` is a legal call that
+spins ~`1e18` BigFloat iterations and does not terminate. The
+"trades speed for exactness" framing understated a caller-reachable
+unbounded-resource-consumption defect (CLAUDE.md security posture).
+The `lgamma`-of-factorials form above is the same value, still
+total, and `O(1)`; it replaces the loop. The accuracy of case 4
+changes from exact rational arithmetic to the same `~p`-bit
+`lgamma`-composition accuracy as the negative-domain magnitude path
+(cases 1, 2) — the right trade-off, since the alternative is
+non-termination. This is the same recalled-design failure mode the
+derive-do-not-recall discipline targets: a plan/ADR algorithm
+choice (here "use the reciprocal product") is recalled math too;
+its cost bound (`O(m)`, `m` unbounded) was not derived against the
+input domain until the fuzz slice forced it. Pinned by
+`beta_case4_large_m_terminates` (`m = 1e12`, returns) and
+`beta_case4_factorial_exact_rational` (`B(-10,4) = 1/840`,
+hand-derived).
 
 The `NaN` / signaling `NaN` / `+-inf` handling already in
 `beta_kernel` is unchanged. `B` with an infinite operand and a
@@ -139,6 +169,13 @@ a known narrow edge in DESIGN.md rather than silently widened.
   slice; it closes an inline TODO and is documented in DESIGN.md, it
   does not get its own ADR. Recorded here so the slice's two behavior
   changes are discoverable from one place.
+- Case 4's implementation approach was corrected post-ship from an
+  `O(m)` reciprocal-product loop (unbounded on a caller-supplied
+  `m`) to the `O(1)` `lgamma`-of-factorials form, as a labelled
+  robustness fix. See the "Correction" note in the Decision section;
+  it is also the recalled-algorithm-cost variant of the derive do
+  not recall lesson (the cost bound of a recalled algorithm choice
+  must be derived against the input domain, not assumed).
 - This is the sixth derive do not recall instance and the second
   (after zeta) where the resolution required reproducing the source's
   own structure (here the 5.2 residues) and pinning every case
