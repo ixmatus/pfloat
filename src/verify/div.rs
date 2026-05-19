@@ -2,8 +2,10 @@
 //!
 //! Coverage: NaN propagation, signaling-NaN INVALID, the invalid
 //! `0/0` and `∞/∞` forms, the `DIV_BY_ZERO` flag for
-//! `finite_nonzero / 0`, and sign-of-quotient for the
-//! `0 / finite_nonzero` and `∞ / finite` cases.
+//! `finite_nonzero / 0`, sign-of-quotient for the
+//! `0 / finite_nonzero` and `∞ / finite` cases, and exponent-range
+//! saturation (a quotient exponent past `i64::MAX` flags `OVERFLOW`
+//! without panicking, pf-rnc).
 
 use crate::big::BigFloat;
 use crate::rounding::RoundingMode;
@@ -94,4 +96,34 @@ fn div_pos_inf_by_pos_finite_is_pos_inf() {
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
     assert!(status.is_ok());
+}
+
+/// Regression (pf-rnc, fuzz-found via Airy `bi_prime`): the quotient
+/// exponent is now computed in `i128` and saturated to the `i64`
+/// range, so a quotient whose true exponent exceeds `i64::MAX` flags
+/// `OVERFLOW` and returns a finite saturated value instead of
+/// panicking on `i64` overflow. Square `2` until the next square
+/// would saturate, take the reciprocal, then `big / tiny` has
+/// exponent past `i64::MAX`. No step panics or yields `NaN`, and
+/// saturation is reached. Advisory: bounded `unwind` over a chain
+/// of `mul`s is the documented ADR-0012 deep-unwind cost.
+#[kani::proof]
+#[kani::unwind(67)]
+fn div_extreme_exponent_saturates_without_panic() {
+    let mut big = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
+    let mut i = 0;
+    while i < 66 {
+        let (sq, st) = big.mul(&big, RoundingMode::NearestEven);
+        assert!(!sq.is_nan());
+        if st.overflow() {
+            break;
+        }
+        big = sq;
+        i += 1;
+    }
+    let one = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
+    let (tiny, _) = one.div(&big, RoundingMode::NearestEven);
+    let (q, st) = big.div(&tiny, RoundingMode::NearestEven);
+    assert!(!q.is_nan());
+    assert!(st.overflow());
 }

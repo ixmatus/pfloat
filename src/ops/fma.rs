@@ -227,7 +227,29 @@ fn fma_finite_finite_finite(
 
     let prod_top_bit = top_set_bit(&product).expect("non-zero product");
     let prod_precision = (prod_top_bit + 1) as u32;
-    let prod_exp = (prod_top_bit as i64) + e_a + e_b - i64::from(p_a) - i64::from(p_b) + 2;
+    // `e_a + e_b` can exceed the `i64` range pfloat uses for
+    // exponents (operands from, e.g., `exp` of a large argument);
+    // the bare `i64` sum would panic/wrap — the same caller-
+    // reachable defect fixed in `mul`/`div` (pf-rnc, fuzz-found via
+    // Airy `bi_prime`). Compute in `i128` and saturate to the `i64`
+    // range, flagging `OVERFLOW`/`UNDERFLOW` (pfloat has no `emax`,
+    // so a saturated product exponent is a finite value, not `±∞`;
+    // the subsequent add then proceeds normally). The flag is merged
+    // into the returned status below.
+    let prod_exp_wide = i128::from(prod_top_bit as i64) + i128::from(e_a) + i128::from(e_b)
+        - i128::from(p_a)
+        - i128::from(p_b)
+        + 2;
+    let mut exp_saturation = Status::OK;
+    let prod_exp = if prod_exp_wide > i128::from(i64::MAX) {
+        exp_saturation = Status::OVERFLOW;
+        i64::MAX
+    } else if prod_exp_wide < i128::from(i64::MIN) {
+        exp_saturation = Status::UNDERFLOW;
+        i64::MIN
+    } else {
+        prod_exp_wide as i64
+    };
 
     // Build a BigFloat representing the product at its exact
     // precision. The mantissa is top-aligned (top-bit-set) as
@@ -249,11 +271,16 @@ fn fma_finite_finite_finite(
     // Single rounding: feed the exact product and c to add_round.
     // add_round routes through the universal rounding pipeline; the
     // result is correctly rounded to target_precision.
-    let (value, status) = product_bf
+    let (value, add_status) = product_bf
         .add_round(c, target_precision, mode)
         .expect("target_precision validated");
-    // `add_round` already calls auto_raise inside; do not double-raise.
-    let _ = auto_raise; // marker for reviewers — see note above
+    // `add_round` already auto-raised its own flags; raise only the
+    // extra product-exponent saturation flag (if any) so the global
+    // status reflects it without double-raising add's flags.
+    if exp_saturation != Status::OK {
+        auto_raise(exp_saturation);
+    }
+    let status = add_status | exp_saturation;
     (value, status)
 }
 
@@ -471,5 +498,31 @@ mod tests {
             .fma_round_with_flags(&three, &zero, 3, RoundingMode::NearestEven, &mut flags)
             .unwrap();
         assert!(flags.inexact());
+    }
+
+    #[test]
+    fn fma_extreme_product_exponent_saturates_not_panics() {
+        // Regression (pf-rnc, fuzz-found via Airy bi_prime): the
+        // product exponent e_a + e_b ± … was computed in i64 and
+        // overflowed once e_a + e_b passed i64::MAX. Square 2 until
+        // the next square would saturate (so `big`'s exponent
+        // exceeds i64::MAX/2), then fma(big, big, c) has product
+        // exponent ≈ 2·that > i64::MAX and must saturate with
+        // OVERFLOW — never panic or yield NaN.
+        let mut big = from_i64(2, 53);
+        loop {
+            let (sq, st) = big.mul(&big, RoundingMode::NearestEven);
+            if st.overflow() {
+                break;
+            }
+            big = sq;
+        }
+        let c = from_i64(1, 53);
+        let (r, st) = big.fma(&big, &c, RoundingMode::NearestEven);
+        assert!(!r.is_nan(), "exponent saturation must not produce NaN");
+        assert!(
+            st.overflow(),
+            "fma product exponent past i64::MAX must flag OVERFLOW"
+        );
     }
 }

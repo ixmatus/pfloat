@@ -123,6 +123,17 @@ Decision recorded in ADR-0005.
 MPFR's choice for compatibility with the differential-testing
 oracle. ADR-0006.
 
+There is no `emax`: `i64::MAX`/`i64::MIN` are *saturating*
+sentinels, not infinity/zero. A computation whose true exponent
+leaves the `i64` range clamps to the boundary and flags
+`OVERFLOW`/`UNDERFLOW`; the value stays finite. `round_finite_to_`
+`precision` has always done this for a round-up carry past
+`i64::MAX`; `mul`, `div`, and `fma` compute the result exponent in
+`i128` and apply the same saturation rather than overflowing the
+`i64` arithmetic (a caller-reachable panic on extreme operands
+before the fix; pf-rnc, fuzz-found via Airy `bi_prime`, which
+composes `mul` and `div`).
+
 ### Rounding modes and exception flags
 
 Rounding mode is an enum passed at the call site:

@@ -227,10 +227,32 @@ fn div_finite_finite(
     // pfloat's exponent is the position of the result MSB:
     //   result_exp = top_bit + (scale_a - scale_b - L)
     // with scale_a = e_a - p_a + 1, scale_b = e_b - p_b + 1.
-    let scale_diff = (e_a - i64::from(p_a) + 1) - (e_b - i64::from(p_b) + 1);
-    let result_exp = (top_bit as i64) + scale_diff - i64::from(l);
+    // `e_a` and `e_b` can each approach the `i64` limits (operands
+    // produced by, e.g., `exp` of a large argument), so the quotient
+    // exponent `e_a − e_b ± …` can fall outside the `i64` range
+    // pfloat uses for exponents. The bare `i64` arithmetic would
+    // panic (debug-overflow) or wrap (release) — the same
+    // caller-reachable defect fixed in `mul` (pf-rnc, fuzz-found via
+    // Airy `bi_prime`, which composes both). Compute in `i128` and
+    // saturate to the `i64` range, flagging `OVERFLOW`/`UNDERFLOW`
+    // (the saturating contract `round_finite_to_precision` already
+    // applies to a round-up past `i64::MAX`; pfloat has no `emax`,
+    // so a saturated exponent is a finite value, not `±∞`).
+    let scale_diff =
+        (i128::from(e_a) - i128::from(p_a) + 1) - (i128::from(e_b) - i128::from(p_b) + 1);
+    let result_exp_wide = i128::from(top_bit as i64) + scale_diff - i128::from(l);
+    let mut exp_saturation = Status::OK;
+    let result_exp = if result_exp_wide > i128::from(i64::MAX) {
+        exp_saturation = Status::OVERFLOW;
+        i64::MAX
+    } else if result_exp_wide < i128::from(i64::MIN) {
+        exp_saturation = Status::UNDERFLOW;
+        i64::MIN
+    } else {
+        result_exp_wide as i64
+    };
 
-    let (value, status) = round_finite_to_precision(
+    let (value, round_status) = round_finite_to_precision(
         result_sign,
         result_exp,
         &intermediate,
@@ -239,6 +261,7 @@ fn div_finite_finite(
         target_precision,
         mode,
     );
+    let status = round_status | exp_saturation;
     auto_raise(status);
     (value, status)
 }
@@ -442,5 +465,29 @@ mod tests {
         let mut flags = Status::OK;
         let _ = one.div_with_flags(&three, RoundingMode::NearestEven, &mut flags);
         assert!(flags.inexact());
+    }
+
+    #[test]
+    fn div_extreme_exponent_saturates_not_panics() {
+        // Regression (pf-rnc, fuzz-found via Airy bi_prime): the
+        // quotient exponent (scale_diff) was computed in i64 and
+        // overflowed once e_a − e_b passed i64::MAX. Square 2 until
+        // the next square would saturate (so `big`'s exponent
+        // exceeds i64::MAX/2), take its reciprocal (exponent ≈ −that),
+        // then big / tiny has exponent ≈ 2·that > i64::MAX and must
+        // saturate with OVERFLOW — never panic or yield NaN.
+        let mut big = from_i64(2, 53);
+        loop {
+            let (sq, st) = big.mul(&big, RoundingMode::NearestEven);
+            if st.overflow() {
+                break;
+            }
+            big = sq;
+        }
+        let one = from_i64(1, 53);
+        let (tiny, _) = one.div(&big, RoundingMode::NearestEven);
+        let (q, st) = big.div(&tiny, RoundingMode::NearestEven);
+        assert!(!q.is_nan(), "exponent saturation must not produce NaN");
+        assert!(st.overflow(), "huge / tiny must flag exponent OVERFLOW");
     }
 }

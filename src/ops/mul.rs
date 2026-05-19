@@ -186,9 +186,36 @@ fn mul_finite_finite(
     // where M_prod has its top bit at integer position `top_bit`.
     // The pfloat exponent of the result is the position of its
     // MSB, which is `top_bit + (e_a + e_b - p_a - p_b + 2)`.
-    let result_exp = (top_bit as i64) + e_a + e_b - i64::from(p_a) - i64::from(p_b) + 2;
+    // `e_a` and `e_b` can each approach `i64::MAX` (operands
+    // produced by, e.g., `exp` of a large argument), so the true
+    // result exponent can fall outside the `i64` range pfloat uses
+    // for exponents. The bare `i64` additions would panic
+    // (debug-overflow) or wrap (release) on such operands — a
+    // caller-reachable defect (fuzz-found via Airy `bi_prime`,
+    // pre-existing since slice 1d). Compute in `i128` (the sum of a
+    // small `top_bit` and a few `i64`s cannot overflow `i128`) and
+    // saturate to the `i64` range, flagging `OVERFLOW`/`UNDERFLOW`.
+    // This is the same saturating contract `round_finite_to_precision`
+    // already applies when a round-up pushes the exponent past
+    // `i64::MAX` (see `rounding.rs`): pfloat has no `emax`, so an
+    // exponent of `i64::MAX`/`i64::MIN` is a saturated finite value,
+    // not `±∞`.
+    let result_exp_wide = i128::from(top_bit as i64) + i128::from(e_a) + i128::from(e_b)
+        - i128::from(p_a)
+        - i128::from(p_b)
+        + 2;
+    let mut exp_saturation = Status::OK;
+    let result_exp = if result_exp_wide > i128::from(i64::MAX) {
+        exp_saturation = Status::OVERFLOW;
+        i64::MAX
+    } else if result_exp_wide < i128::from(i64::MIN) {
+        exp_saturation = Status::UNDERFLOW;
+        i64::MIN
+    } else {
+        result_exp_wide as i64
+    };
 
-    let (value, status) = round_finite_to_precision(
+    let (value, round_status) = round_finite_to_precision(
         result_sign,
         result_exp,
         &intermediate,
@@ -197,6 +224,7 @@ fn mul_finite_finite(
         target_precision,
         mode,
     );
+    let status = round_status | exp_saturation;
     auto_raise(status);
     (value, status)
 }
@@ -372,5 +400,34 @@ mod tests {
             .mul_round_with_flags(&five, 3, RoundingMode::NearestEven, &mut flags)
             .unwrap();
         assert!(flags.inexact());
+    }
+
+    #[test]
+    fn mul_extreme_exponent_saturates_not_panics() {
+        // Regression (pf-rnc, fuzz-found via Airy bi_prime): the
+        // result exponent `top_bit + e_a + e_b - p_a - p_b + 2` was
+        // computed in `i64` and overflowed (debug-panic / release-
+        // wrap) once `e_a + e_b` passed `i64::MAX`. Squaring 2
+        // repeatedly doubles the exponent; within ~63 steps the true
+        // product exponent exceeds the `i64` range and must saturate
+        // with `OVERFLOW` to a finite value (pfloat has no `emax`,
+        // so the exponent clamps to `i64::MAX`, never `±∞`), and it
+        // must never panic or yield `NaN`.
+        let mut x = from_i64(2, 53);
+        let mut saw_overflow = false;
+        for _ in 0..70 {
+            let (sq, st) = x.mul(&x, RoundingMode::NearestEven);
+            assert!(!sq.is_nan(), "exponent saturation must not produce NaN");
+            if st.overflow() {
+                saw_overflow = true;
+                assert!(!sq.is_nan());
+                break;
+            }
+            x = sq;
+        }
+        assert!(
+            saw_overflow,
+            "repeated squaring must hit exponent saturation (OVERFLOW), not panic"
+        );
     }
 }
