@@ -31,8 +31,12 @@ fn agm_matches_mpfr_on_positive_integer_inputs() {
                 let rug_r = {
                     let a_rg = rug_from_i64(a, p);
                     let b_rg = rug_from_i64(b, p);
-                    let (r, _ord) =
-                        rug::Float::with_val_round(p, a_rg.agm_ref(&b_rg), mpfr_round_of(mode));
+                    let (r, _ord) = rug::Float::with_val_round(
+                        p,
+                        a_rg.agm_ref(&b_rg),
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                    );
                     r
                 };
                 assert_eq!(bf_r, rug_r, "agm({a}, {b}) at p={p}, mode={mode:?}");

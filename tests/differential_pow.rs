@@ -18,12 +18,12 @@
 //! `99⁸ = 9227446944279201` is exactly between two p=53 values), so
 //! neither `RNDA` nor `RNDN` is a valid roundTiesToAway oracle. This
 //! lane therefore synthesizes the roundTiesToAway value from a
-//! high-precision MPFR result and rounds it itself (nearest, ties to
-//! the larger magnitude — all results here are positive). The shared
-//! `differential::mpfr_round_of` still maps `NearestAway → AwayZero`;
-//! that mapping is unused elsewhere (every other lane is
-//! NearestEven-only) and is filed as separate cleanup, not widened
-//! here.
+//! high-precision MPFR result via the shared
+//! [`differential::round_ties_to_away`] helper. Since pf-suo,
+//! `differential::mpfr_round_of` returns `None` for `NearestAway`
+//! rather than aliasing it to the wrong directed mode, so the
+//! absent equivalent cannot be used by accident; the add/sub/mul
+//! lanes synthesize it the same way.
 //!
 //! Restricted to positive bases and small finite exponents. The
 //! full IEEE 754-2019 §9.2.1 table (zero base, infinity base,
@@ -35,41 +35,26 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, round_ties_to_away,
+    rug_from_i64, sweep_size, BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 use pfloat::RoundingMode;
-use rug::float::Round;
 use rug::ops::Pow;
 use rug::Float;
 
-/// Exact (for these inputs) high-precision `base^exp`, then the IEEE
-/// roundTiesToAway value at precision `p`. `base ∈ [1,100]`,
-/// `exp ∈ [-10,10]`: positive exponents give an exact integer (a
-/// genuine tie source), negative give `1/integer` (non-terminating
-/// binary, so never an exact `p`-bit tie). `p + 128` captures the
-/// integer exactly and resolves every non-tie unambiguously, so the
-/// tie test below is exact.
+/// IEEE roundTiesToAway of `base^exp` at precision `p`, synthesized
+/// because MPFR has no such mode (see `differential::mpfr_round_of`).
+/// `base ∈ [1,100]`, `exp ∈ [-10,10]`: positive exponents give an
+/// exact integer (a genuine tie source), negative give `1/integer`
+/// (non-terminating binary, so never an exact `p`-bit tie). `p + 128`
+/// captures the integer exactly and resolves every non-tie
+/// unambiguously, so the shared rounding below is exact.
 fn pow_ties_to_away(base: i64, exp: i64, p: u32) -> Float {
     let guard = p + 128;
     let b = Float::with_val(guard, base);
     let e = Float::with_val(guard, exp);
     let hp = Float::with_val(guard, Pow::pow(&b, &e));
-
-    let (lo, _) = Float::with_val_round(p, &hp, Round::Zero);
-    let (hi, _) = Float::with_val_round(p, &hp, Round::AwayZero);
-    if lo == hi {
-        return lo; // exactly representable at p
-    }
-    let d_lo = Float::with_val(guard, &hp - &lo).abs();
-    let d_hi = Float::with_val(guard, &hi - &hp).abs();
-    if d_hi < d_lo {
-        hi
-    } else if d_lo < d_hi {
-        lo
-    } else {
-        hi // exact tie → away from zero; all results positive
-    }
+    round_ties_to_away(&hp, p)
 }
 
 #[test]
@@ -96,8 +81,11 @@ fn pow_matches_mpfr_on_positive_base_small_exponent() {
                 } else {
                     let b_rg = rug_from_i64(base, p);
                     let e_rg = rug_from_i64(exp, p);
-                    let (r, _ord) =
-                        Float::with_val_round(p, Pow::pow(&b_rg, &e_rg), mpfr_round_of(mode));
+                    let (r, _ord) = Float::with_val_round(
+                        p,
+                        Pow::pow(&b_rg, &e_rg),
+                        mpfr_round_of(mode).expect("non-NearestAway has an MPFR equivalent"),
+                    );
                     r
                 };
                 assert_eq!(bf_r, rug_r, "pow({base}, {exp}) at p={p}, mode={mode:?}");

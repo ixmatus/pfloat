@@ -28,14 +28,58 @@ use rug::float::{Round, Special};
 use rug::integer::Order;
 use rug::{Float, Integer};
 
-/// Map pfloat's [`RoundingMode`] to MPFR's [`Round`].
-pub fn mpfr_round_of(mode: RoundingMode) -> Round {
+/// Map pfloat's [`RoundingMode`] to MPFR's [`Round`], or `None` when
+/// MPFR has no equivalent.
+///
+/// `None` is returned only for [`RoundingMode::NearestAway`]: MPFR
+/// has no roundTiesToAway mode. `MPFR_RNDA` (rug [`Round::AwayZero`])
+/// is *directed* round-away-from-zero, which takes the farther
+/// neighbour of every inexact value, not only ties; it differs from
+/// IEEE 754 roundTiesToAway on every inexact non-tie value (e.g.
+/// `63^-3` at p=53: roundTiesToAway ...263, `MPFR_RNDA` ...271). A
+/// lane that sweeps `NearestAway` must synthesize the oracle with
+/// [`round_ties_to_away`]. Returning `None` makes the absent
+/// equivalent impossible to use by accident (the previous total
+/// mapping silently aliased `NearestAway` to the wrong directed
+/// mode; it was masked only because the four lanes that reach it
+/// sweep exact arithmetic — pf-suo).
+pub fn mpfr_round_of(mode: RoundingMode) -> Option<Round> {
     match mode {
-        RoundingMode::NearestEven => Round::Nearest,
-        RoundingMode::NearestAway => Round::AwayZero,
-        RoundingMode::TowardZero => Round::Zero,
-        RoundingMode::TowardPositive => Round::Up,
-        RoundingMode::TowardNegative => Round::Down,
+        RoundingMode::NearestEven => Some(Round::Nearest),
+        RoundingMode::NearestAway => None,
+        RoundingMode::TowardZero => Some(Round::Zero),
+        RoundingMode::TowardPositive => Some(Round::Up),
+        RoundingMode::TowardNegative => Some(Round::Down),
+    }
+}
+
+/// IEEE 754 roundTiesToAway of a high-precision value `hp` to
+/// precision `p`, synthesized because MPFR offers no such mode (see
+/// [`mpfr_round_of`]).
+///
+/// `hp` must carry enough precision that both `p`-bit neighbours and
+/// their distances to the true value are represented without further
+/// rounding (the caller's responsibility — typically the operation
+/// evaluated at `p + guard`). The two neighbours are obtained with
+/// MPFR's directed modes; on an exact tie the away-from-zero
+/// neighbour wins, and [`Round::AwayZero`] yields the correctly
+/// signed larger-magnitude value so this is sign-correct for
+/// negatives too.
+pub fn round_ties_to_away(hp: &Float, p: u32) -> Float {
+    let (lo, _) = Float::with_val_round(p, hp, Round::Zero);
+    let (hi, _) = Float::with_val_round(p, hp, Round::AwayZero);
+    if lo == hi {
+        return lo; // exactly representable at p
+    }
+    let g = hp.prec();
+    let d_lo = Float::with_val(g, hp - &lo).abs();
+    let d_hi = Float::with_val(g, &hi - hp).abs();
+    if d_hi < d_lo {
+        hi
+    } else if d_lo < d_hi {
+        lo
+    } else {
+        hi // exact tie → away from zero
     }
 }
 

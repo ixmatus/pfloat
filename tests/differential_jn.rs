@@ -54,9 +54,13 @@ fn j0_matches_mpfr() {
                     let (r, _s) = bigfloat_from_i64(a, p).j0(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r =
-                    rug::Float::with_val_round(p, rug_from_i64(a, p).j0_ref(), mpfr_round_of(mode))
-                        .0;
+                let rug_r = rug::Float::with_val_round(
+                    p,
+                    rug_from_i64(a, p).j0_ref(),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                )
+                .0;
                 assert_eq!(bf_r, rug_r, "J0({a}) at p={p}, mode={mode:?}");
             }
         }
@@ -75,9 +79,13 @@ fn j1_matches_mpfr() {
                     let (r, _s) = bigfloat_from_i64(a, p).j1(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r =
-                    rug::Float::with_val_round(p, rug_from_i64(a, p).j1_ref(), mpfr_round_of(mode))
-                        .0;
+                let rug_r = rug::Float::with_val_round(
+                    p,
+                    rug_from_i64(a, p).j1_ref(),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                )
+                .0;
                 assert_eq!(bf_r, rug_r, "J1({a}) at p={p}, mode={mode:?}");
             }
         }
@@ -100,7 +108,8 @@ fn jn_matches_mpfr() {
                     let rug_r = rug::Float::with_val_round(
                         p,
                         rug_from_i64(a, p).jn_ref(n),
-                        mpfr_round_of(mode),
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
                     )
                     .0;
                     assert_eq!(bf_r, rug_r, "J{n}({a}) at p={p}, mode={mode:?}");
@@ -130,7 +139,8 @@ fn jn_negative_and_dyadic_matches_mpfr() {
                 let rug_r = rug::Float::with_val_round(
                     p,
                     rug_from_i64(a, p).jn_ref(n),
-                    mpfr_round_of(mode),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
                 )
                 .0;
                 assert_eq!(bf_r, rug_r, "J{n}({a}) at p={p}");
@@ -150,7 +160,13 @@ fn jn_negative_and_dyadic_matches_mpfr() {
                     let (r, _s) = x_bf.jn(n, mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = rug::Float::with_val_round(p, x_rg.jn_ref(n), mpfr_round_of(mode)).0;
+                let rug_r = rug::Float::with_val_round(
+                    p,
+                    x_rg.jn_ref(n),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                )
+                .0;
                 assert_eq!(bf_r, rug_r, "J{n}({num}/{den}) at p={p}");
             }
         }

@@ -44,7 +44,12 @@ fn beta_matches_mpfr_lgamma_composition_loosely() {
                 let lg_b = rug::Float::with_val(p_oracle, b_rg.ln_gamma_ref());
                 let lg_ab = rug::Float::with_val(p_oracle, ab_rg.ln_gamma_ref());
                 let sum = lg_a + lg_b - lg_ab;
-                let (r, _ord) = rug::Float::with_val_round(p, sum.exp(), mpfr_round_of(mode));
+                let (r, _ord) = rug::Float::with_val_round(
+                    p,
+                    sum.exp(),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                );
                 r
             };
             assert!(

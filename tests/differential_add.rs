@@ -12,9 +12,10 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, round_ties_to_away,
+    rug_from_i64, sweep_size, BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
 };
+use pfloat::RoundingMode;
 
 /// Splitmix64. Seeded deterministically; no `rand` dependency.
 #[test]
@@ -44,9 +45,19 @@ fn add_matches_mpfr_on_i64_pairs() {
                 let rug_sum = {
                     let a_rg = rug_from_i64(a, p);
                     let b_rg = rug_from_i64(b, p);
-                    let (sum, _ord) =
-                        rug::Float::with_val_round(p, &a_rg + &b_rg, mpfr_round_of(mode));
-                    sum
+                    if matches!(mode, RoundingMode::NearestAway) {
+                        // MPFR has no roundTiesToAway; synthesize it
+                        // from an exact high-precision sum (pf-suo).
+                        let hp = rug::Float::with_val(p + 128, &a_rg + &b_rg);
+                        round_ties_to_away(&hp, p)
+                    } else {
+                        rug::Float::with_val_round(
+                            p,
+                            &a_rg + &b_rg,
+                            mpfr_round_of(mode).expect("non-NearestAway has an MPFR equivalent"),
+                        )
+                        .0
+                    }
                 };
                 assert_eq!(
                     bf_sum, rug_sum,
@@ -85,8 +96,17 @@ fn add_matches_mpfr_at_boundary_cases() {
                 let bf_as_rug = bigfloat_to_rug(&sum_bf);
                 let a_rg = rug_from_i64(a, p);
                 let b_rg = rug_from_i64(b, p);
-                let (rug_sum, _ord) =
-                    rug::Float::with_val_round(p, &a_rg + &b_rg, mpfr_round_of(mode));
+                let rug_sum = if matches!(mode, RoundingMode::NearestAway) {
+                    let hp = rug::Float::with_val(p + 128, &a_rg + &b_rg);
+                    round_ties_to_away(&hp, p)
+                } else {
+                    rug::Float::with_val_round(
+                        p,
+                        &a_rg + &b_rg,
+                        mpfr_round_of(mode).expect("non-NearestAway has an MPFR equivalent"),
+                    )
+                    .0
+                };
                 assert_eq!(
                     bf_as_rug, rug_sum,
                     "boundary add({a}, {b}) at p={p}, mode={mode:?}: pfloat={bf_as_rug} mpfr={rug_sum}"

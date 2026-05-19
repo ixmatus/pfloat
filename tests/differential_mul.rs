@@ -7,9 +7,10 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, round_ties_to_away,
+    rug_from_i64, sweep_size, BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
 };
+use pfloat::RoundingMode;
 
 #[test]
 fn mul_matches_mpfr_on_i64_pairs() {
@@ -37,9 +38,19 @@ fn mul_matches_mpfr_on_i64_pairs() {
                 let rug_prod = {
                     let a_rg = rug_from_i64(a, p);
                     let b_rg = rug_from_i64(b, p);
-                    let (prod, _ord) =
-                        rug::Float::with_val_round(p, &a_rg * &b_rg, mpfr_round_of(mode));
-                    prod
+                    if matches!(mode, RoundingMode::NearestAway) {
+                        // MPFR has no roundTiesToAway; synthesize it
+                        // from an exact high-precision product (pf-suo).
+                        let hp = rug::Float::with_val(p + 128, &a_rg * &b_rg);
+                        round_ties_to_away(&hp, p)
+                    } else {
+                        rug::Float::with_val_round(
+                            p,
+                            &a_rg * &b_rg,
+                            mpfr_round_of(mode).expect("non-NearestAway has an MPFR equivalent"),
+                        )
+                        .0
+                    }
                 };
                 assert_eq!(bf_prod, rug_prod, "mul({a}, {b}) at p={p}, mode={mode:?}");
             }
