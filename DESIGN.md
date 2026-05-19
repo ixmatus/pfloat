@@ -262,8 +262,11 @@ is straightforward; correctness on the tie cases is the test target.
 at the requested precision under the given rounding mode. The
 algorithm is a generalization of Steele–White (Ryu does not extend
 cleanly to arbitrary precision). `to_string(value, mode)` formats
-shortest-round-trip-correct by default; explicit-digit-count format
-is also exposed.
+round-trip-correct: `parse_str` at the same precision recovers the
+exact value. It emits `round_trip_digit_count(p)` digits, enough to
+guarantee round-trip, not the minimal number that round-trips;
+shortest output (Dragon4 / Steele–White) is deferred to 1.x per
+ADR-0029. Explicit-digit-count format is also exposed.
 
 Both directions are differential-tested against MPFR's
 `mpfr_set_str` and `mpfr_sprintf`.

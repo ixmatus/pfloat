@@ -1,0 +1,30 @@
+# Slice 7f.0 allocation profiling tool. A standalone in-tree crate,
+# deliberately NOT part of the pfloat package: pfloat enforces
+# `[lints.rust] unsafe_code = "forbid"` across all its targets, and a
+# counting `#[global_allocator]` needs `unsafe impl GlobalAlloc`.
+# Keeping the harness here preserves pfloat's unsafe-free invariant
+# fully and adds no dependency to pfloat itself. The empty
+# `[workspace]` table makes this crate its own workspace root so cargo
+# does not try to fold it into the pfloat package. ADR-0028 records
+# this rationale.
+#
+# Run: `cargo run --release --manifest-path tools/alloc-profile/Cargo.toml`
+
+[workspace]
+
+[package]
+name = "alloc-profile"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# `specials` pulls trig -> exp-log -> big/agm, covering mul, exp, and
+# gamma. Default features (std, fmt, big) are kept for parse_str and
+# System/println.
+pfloat = { path = "../..", features = ["specials"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

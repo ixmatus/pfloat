@@ -66,6 +66,15 @@ profiling data needed to pick the inline cap honestly does not
 exist yet. Once Phase 7 lands, if a hot path shows the allocation
 cost dominating, this ADR gets revisited.
 
+**Revisited by ADR-0028 (slice 7f.0, 2026-05-18).** Phase 7
+measured it: the composing transcendental and special kernels
+allocate heavily per call (exp ~900, gamma ~7820 allocs/op), so the
+trigger is acknowledged met for that kernel class. The inline-cap
+data now exists. The storage change itself (slice 7f.1) is a
+crate-wide `Class::Normal` refactor with correctness risk across
+every verified kernel, so it is scheduled as data-backed 1.x work
+rather than landed against the v1.0 timeline. See ADR-0028.
+
 ## Consequences
 
 **Wins:**
