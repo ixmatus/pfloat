@@ -7,25 +7,37 @@
 //! β(a, b)    = sign · exp(ln β(a, b))
 //! ```
 //!
-//! The combined sign is the product of the three Γ signs. For
-//! positive `a, b`, all three are positive and the sign is `+`.
+//! The combined sign is the product of the three Γ signs
+//! (`gamma_sign_of`: `+` for a positive argument, `sign sin(πx)`
+//! for a negative non-integer, derived from DLMF 5.5.3). For
+//! positive `a, b` all three are positive and the sign is `+`.
 //!
-//! Slice 4c restricts the kernel to `a, b > 0` for full numerical
-//! support. Non-positive integer inputs hit Γ poles and the
-//! division produces an indeterminate form; the kernel returns
-//! `qNaN + INVALID` in those cases rather than attempting the
-//! delicate cancellation analysis. Negative non-integer inputs
-//! that produce a well-defined result are also coerced to
-//! `qNaN + INVALID` for now; a follow-up slice can extend the
-//! domain by tracking signs explicitly.
+//! `beta` accepts the full real domain (ADR-0030, derived from
+//! DLMF 5.12.1 / 5.5.3 / 5.2, every case pinned against mpmath).
+//! With `Zle = {0, −1, −2, …}` the Γ poles:
+//!
+//! - `a, b, a+b` all off `Zle`: finite, magnitude via the `lgamma`
+//!   composition, sign the product of the three Γ signs.
+//! - `a+b ∈ Zle` with `a, b ∉ Zle`: `+0` (denominator pole).
+//! - one operand a negative integer, the other a positive integer,
+//!   `a+b ∈ Zle`: finite via pole cancellation,
+//!   `(−1)^m / (m · C(n,m))` (ADR-0030 case 4).
+//! - one operand a negative integer otherwise: `qNaN + INVALID`
+//!   (two-sided sign-ambiguous pole, mirrors `gamma`).
+//! - one operand `±0` otherwise: `±∞ + DIV_BY_ZERO` (mirrors
+//!   `gamma(±0)`).
+//! - both operands in `Zle`: `qNaN + INVALID` (net pole).
 //!
 //! Special cases:
 //!
 //! - `beta(NaN, _) = beta(_, NaN) = NaN`; `sNaN` raises `INVALID`.
-//! - `beta(a, b)` with `a ≤ 0` or `b ≤ 0`: `qNaN + INVALID`.
-//! - `beta(+∞, b)` finite positive `b`: `+0`.
-//! - `beta(a, +∞)` finite positive `a`: `+0`.
+//! - `beta(+∞, b)` finite positive `b`: `+0`; symmetrically in `a`.
+//! - any other infinite operand: `qNaN + INVALID` (the
+//!   ∞-with-negative-operand edge is outside this extension; see
+//!   ADR-0030 and DESIGN.md).
 
+use super::gamma::gamma_sign_of;
+use super::lgamma::is_integer_test;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -111,14 +123,87 @@ fn beta_kernel(
         );
     }
 
-    // Domain check: both a, b must be finite and strictly positive.
-    if !is_finite_positive(a) || !is_finite_positive(b) {
+    // Any infinite operand beyond the +∞ × finite-positive case
+    // handled above is left at the conservative INVALID convention
+    // (ADR-0030: the ∞-with-negative-operand edge is not part of the
+    // negative-domain extension and is recorded in DESIGN.md).
+    if a.is_infinite() || b.is_infinite() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
         return (nan, Status::INVALID);
     }
 
+    // Both operands are finite. Classify against the Γ pole set
+    // (the non-positive integers) per ADR-0030, derived from DLMF
+    // 5.2 (poles only there, no zeros), 5.5.3 (reflection sign),
+    // 5.12.1 (B = Γ(a)Γ(b)/Γ(a+b)). The decision table:
+    //   6  a,b both non-positive integers      → qNaN+INVALID (pole)
+    //   4  one a non-pos int, the other a pos
+    //      int, a+b a non-pos int              → finite (cancellation)
+    //   0  one operand ±0, not case 4          → ±∞+DIV_BY_ZERO
+    //   3  one operand a negative integer,
+    //      not case 4                          → qNaN+INVALID (pole)
+    //   5  a+b a non-pos int, a,b not poles    → +0 (denominator pole)
+    //   1/2 otherwise                          → signed lgamma path
+    let a_npi = is_nonpos_integer(a);
+    let b_npi = is_nonpos_integer(b);
+    let (sum, _) = a.add(b, RoundingMode::NearestEven);
+    let s_npi = is_nonpos_integer(&sum);
+
+    // Case 6: both operands at Γ poles; the net is still a pole.
+    if a_npi && b_npi {
+        let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+            .expect("precision >= 1");
+        auto_raise(Status::INVALID);
+        return (nan, Status::INVALID);
+    }
+
+    // Case 4: pole cancellation to a finite value. One operand is a
+    // negative integer −n, the other a positive integer m, and
+    // a+b = m−n is a non-positive integer (so 1 ≤ m ≤ n). The closed
+    // form (ADR-0030) is B(−n,m) = (−1)^m / (m · C(n,m)); computed in
+    // reciprocal-product form to avoid forming the huge C(n,m).
+    if a_npi && is_pos_integer(b) && s_npi {
+        return beta_case4(a, b, target_precision, mode);
+    }
+    if b_npi && is_pos_integer(a) && s_npi {
+        return beta_case4(b, a, target_precision, mode);
+    }
+
+    // Cases 0 and 3: exactly one operand sits at a Γ pole with no
+    // compensating a+b pole. A ±0 operand mirrors gamma(±0) (signed
+    // ∞ + DIV_BY_ZERO); a negative integer is a two-sided
+    // sign-ambiguous pole (qNaN + INVALID), mirroring
+    // gamma(negative integer).
+    if a_npi || b_npi {
+        let pole = if a_npi { a } else { b };
+        if pole.is_zero() {
+            let inf =
+                BigFloat::try_new_infinity(pole.sign(), target_precision).expect("precision >= 1");
+            auto_raise(Status::DIV_BY_ZERO);
+            return (inf, Status::DIV_BY_ZERO);
+        }
+        let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+            .expect("precision >= 1");
+        auto_raise(Status::INVALID);
+        return (nan, Status::INVALID);
+    }
+
+    // Case 5: a+b is a non-positive integer while a, b are not Γ
+    // poles. Γ(a+b) is a denominator pole, 1/Γ(a+b) = 0, so B = +0
+    // exactly (a genuine finite value, no exception).
+    if s_npi {
+        return (
+            BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1"),
+            Status::OK,
+        );
+    }
+
+    // Cases 1 and 2: a, b, a+b all away from Γ poles. Magnitude via
+    // the lgamma composition (unchanged); sign is the product of the
+    // three Γ signs (ADR-0030), reusing the single reflection
+    // derivation in gamma_sign_of.
     let working_prec = target_precision
         .saturating_add(64)
         .min(target_precision.saturating_add(512));
@@ -128,14 +213,90 @@ fn beta_kernel(
     let (lg_b, _) = b
         .lgamma_round(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1");
-    let (sum, _) = a.add(b, RoundingMode::NearestEven);
     let (lg_sum, _) = sum
         .lgamma_round(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1");
     let (lg_a_plus_b, _) = lg_a.add(&lg_b, RoundingMode::NearestEven);
     let (lb, _) = lg_a_plus_b.sub(&lg_sum, RoundingMode::NearestEven);
-    let (result, _) = lb.exp(RoundingMode::NearestEven);
-    let (rounded, status) = result
+    let (magnitude, _) = lb.exp(RoundingMode::NearestEven);
+
+    let sign_a = gamma_sign_of(a, working_prec);
+    let sign_b = gamma_sign_of(b, working_prec);
+    let sign_sum = gamma_sign_of(&sum, working_prec);
+    let signed = if sign_product_is_negative(sign_a, sign_b, sign_sum) {
+        magnitude.negated()
+    } else {
+        magnitude
+    };
+
+    let (rounded, status) = signed
+        .round_to_precision(target_precision, mode)
+        .expect("precision >= 1");
+    auto_raise(status);
+    (rounded, status)
+}
+
+/// `true` iff `x` is a non-positive integer, i.e. sits at a Γ pole
+/// (DLMF 5.2: simple poles exactly at 0, −1, −2, …). Zero counts;
+/// positive integers do not.
+fn is_nonpos_integer(x: &BigFloat) -> bool {
+    (x.is_zero() || matches!(x.sign(), Sign::Negative)) && is_integer_test(x)
+}
+
+/// `true` iff `x` is a strictly positive integer (1, 2, 3, …).
+fn is_pos_integer(x: &BigFloat) -> bool {
+    matches!(x.sign(), Sign::Positive) && !x.is_zero() && is_integer_test(x)
+}
+
+/// `true` iff the product of three Γ signs is negative.
+fn sign_product_is_negative(a: Sign, b: Sign, c: Sign) -> bool {
+    let neg = [a, b, c]
+        .into_iter()
+        .filter(|s| matches!(s, Sign::Negative))
+        .count();
+    neg % 2 == 1
+}
+
+/// Case 4 of ADR-0030: `B(neg, pos)` where `neg` is a negative
+/// integer `−n`, `pos` a positive integer `m`, and `neg + pos` a
+/// non-positive integer (so `1 ≤ m ≤ n`). The pole/pole cancellation
+/// leaves the finite value `(−1)^m / (m · C(n,m))`. Evaluated as
+/// `(−1)^m · (1/m) · ∏_{i=0}^{m−1} (i+1)/(n−i)`: the reciprocal
+/// product never forms the huge binomial, every `n−i ≥ 1`, and the
+/// `(−1)^m` parity is accumulated in the loop (no integer
+/// extraction). The loop runs `m` times; for the rare very large
+/// `m` this trades speed for exactness, the correct call here.
+fn beta_case4(
+    neg: &BigFloat,
+    pos: &BigFloat,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
+    let wp = target_precision.saturating_add(64);
+    let ne = RoundingMode::NearestEven;
+    let one = BigFloat::try_from_i64_exact(1, wp).expect("precision >= 1");
+    let n = neg.negated(); // +n
+    let mut prod = one.clone(); // ∏ (i+1)/(n−i)
+    let mut i = BigFloat::try_new_zero(Sign::Positive, wp).expect("precision >= 1");
+    let mut parity_negative = false; // tracks (−1)^m
+    loop {
+        // Stop after m iterations: i has reached pos.
+        if matches!(i.partial_cmp(pos).0, Some(core::cmp::Ordering::Equal)) {
+            break;
+        }
+        let (numer, _) = i.add(&one, ne); // i + 1
+        let (denom, _) = n.sub(&i, ne); // n − i  (≥ 1)
+        let (step, _) = numer.div(&denom, ne);
+        let (next, _) = prod.mul(&step, ne);
+        prod = next;
+        parity_negative = !parity_negative;
+        let (i_next, _) = i.add(&one, ne);
+        i = i_next;
+    }
+    // result = (±1) · prod / m
+    let (mag, _) = prod.div(pos, ne);
+    let signed = if parity_negative { mag.negated() } else { mag };
+    let (rounded, status) = signed
         .round_to_precision(target_precision, mode)
         .expect("precision >= 1");
     auto_raise(status);
@@ -236,19 +397,140 @@ mod tests {
         assert!(close_at(&ab, &ba, 80));
     }
 
+    fn p(s: &str) -> BigFloat {
+        BigFloat::parse_str(s, 113, RoundingMode::NearestEven)
+            .unwrap()
+            .0
+    }
+
     #[test]
-    fn beta_negative_is_invalid() {
+    fn beta_negative_integer_no_cancellation_is_invalid() {
+        // ADR-0030 case 3: a = −1 (negative integer), b = 2, a+b = 1
+        // is positive so no pole cancellation → qNaN + INVALID.
         let a = BigFloat::try_from_i64_exact(-1, 53).unwrap();
         let b = BigFloat::try_from_i64_exact(2, 53).unwrap();
         let (r, status) = a.beta(&b, RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
+        // m > n (B(−3,5), mpmath +inf) is the same case.
+        let a = BigFloat::try_from_i64_exact(-3, 53).unwrap();
+        let b = BigFloat::try_from_i64_exact(5, 53).unwrap();
+        let (r, status) = a.beta(&b, RoundingMode::NearestEven);
+        assert!(r.is_quiet_nan() && status.invalid());
     }
 
     #[test]
-    fn beta_zero_is_invalid() {
-        let a = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
+    fn beta_zero_operand_is_signed_pole() {
+        // ADR-0030 case 0: a = +0, b = 2 → +∞ + DIV_BY_ZERO
+        // (mirrors gamma(+0)); a = −0 → −∞ + DIV_BY_ZERO.
         let b = BigFloat::try_from_i64_exact(2, 53).unwrap();
+        let pz = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
+        let (r, status) = pz.beta(&b, RoundingMode::NearestEven);
+        assert!(r.is_infinite() && r.is_sign_positive());
+        assert!(status.div_by_zero());
+        let nz = BigFloat::try_new_zero(Sign::Negative, 53).unwrap();
+        let (r, status) = nz.beta(&b, RoundingMode::NearestEven);
+        assert!(r.is_infinite() && r.is_sign_negative());
+        assert!(status.div_by_zero());
+    }
+
+    #[test]
+    fn beta_case2_negative_non_integer_signed() {
+        // ADR-0030 case 2, pinned vs mpmath (dps 55).
+        let (r, _) = p("-0.5").beta(&p("0.25"), RoundingMode::NearestEven);
+        assert!(close_at(
+            &r,
+            &p("2.622057554292119810464839589891119413682754951431623163"),
+            80
+        ));
+        assert!(r.is_sign_positive());
+        let (r, _) = p("-0.5").beta(&p("0.75"), RoundingMode::NearestEven);
+        assert!(close_at(
+            &r,
+            &p("-1.198140234735592207439922492280323878227212663215651558"),
+            80
+        ));
+        assert!(r.is_sign_negative());
+        let (r, _) = p("-2.5").beta(&p("-1.25"), RoundingMode::NearestEven);
+        assert!(close_at(
+            &r,
+            &p("-13.8385197111960899959311047858377407935243062601407755"),
+            80
+        ));
+    }
+
+    #[test]
+    fn beta_case2_symmetric_on_negative_domain() {
+        let (ab, _) = p("-0.5").beta(&p("0.75"), RoundingMode::NearestEven);
+        let (ba, _) = p("0.75").beta(&p("-0.5"), RoundingMode::NearestEven);
+        assert!(close_at(&ab, &ba, 80));
+    }
+
+    #[test]
+    fn beta_case2_near_pole() {
+        // a = −1 + 1/1024 (exact dyadic, non-integer), near the −1
+        // Γ pole; finite, large magnitude. mpmath: −1025.0009775171…
+        let a = p("-0.9990234375");
+        let b = BigFloat::try_from_i64_exact(2, 113).unwrap();
+        let (r, _) = a.beta(&b, RoundingMode::NearestEven);
+        assert!(close_at(
+            &r,
+            &p("-1025.000977517106549364613880742913000977517106549364614"),
+            70
+        ));
+    }
+
+    #[test]
+    fn beta_case5_sum_is_nonpos_integer_is_zero() {
+        // ADR-0030 case 5: a,b not poles, a+b ∈ {0,−1,…} → +0.
+        for (x, y) in [("-0.5", "0.5"), ("-1.5", "0.5"), ("-0.5", "-0.5")] {
+            let (r, status) = p(x).beta(&p(y), RoundingMode::NearestEven);
+            assert!(r.is_zero() && r.is_sign_positive(), "B({x},{y})");
+            assert!(!status.invalid() && !status.div_by_zero());
+        }
+    }
+
+    #[test]
+    fn beta_case4_pole_cancellation_closed_form() {
+        // ADR-0030 case 4: B(−n,m) = (−1)^m/(m·C(n,m)),
+        // pinned vs mpmath; symmetric.
+        let cases: &[(i64, i64, &str)] = &[
+            (
+                -3,
+                2,
+                "0.16666666666666666666666666666666666666666666666667",
+            ),
+            (-1, 1, "-1.0"),
+            (-5, 5, "-0.2"),
+            (
+                -5,
+                3,
+                "-0.03333333333333333333333333333333333333333333333333",
+            ),
+            (
+                -3,
+                1,
+                "-0.33333333333333333333333333333333333333333333333333",
+            ),
+        ];
+        for &(na, mb, exp) in cases {
+            let a = BigFloat::try_from_i64_exact(na, 113).unwrap();
+            let b = BigFloat::try_from_i64_exact(mb, 113).unwrap();
+            let (r, status) = a.beta(&b, RoundingMode::NearestEven);
+            assert!(!status.invalid(), "B({na},{mb}) should be finite");
+            assert!(close_at(&r, &p(exp), 90), "B({na},{mb})");
+            // symmetric: B(m,−n) == B(−n,m)
+            let (rs, _) = b.beta(&a, RoundingMode::NearestEven);
+            assert!(close_at(&rs, &p(exp), 90), "B({mb},{na}) symmetry");
+        }
+    }
+
+    #[test]
+    fn beta_case6_both_nonpos_integers_is_invalid() {
+        // ADR-0030 case 6: B(−2,−3) net pole (mpmath +inf) →
+        // qNaN + INVALID.
+        let a = BigFloat::try_from_i64_exact(-2, 53).unwrap();
+        let b = BigFloat::try_from_i64_exact(-3, 53).unwrap();
         let (r, status) = a.beta(&b, RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
