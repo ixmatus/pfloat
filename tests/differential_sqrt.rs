@@ -35,8 +35,12 @@ fn sqrt_matches_mpfr_on_nonnegative_i64() {
                 };
                 let rug_root = {
                     let a_rg = rug_from_i64(a, p);
-                    let (root, _ord) =
-                        rug::Float::with_val_round(p, a_rg.sqrt_ref(), mpfr_round_of(mode));
+                    let (root, _ord) = rug::Float::with_val_round(
+                        p,
+                        a_rg.sqrt_ref(),
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                    );
                     root
                 };
                 assert_eq!(bf_root, rug_root, "sqrt({a}) at p={p}, mode={mode:?}");

@@ -52,7 +52,13 @@ fn assert_ai_close(num: i64, den: i64, p: u32, slack: u32) {
         } else {
             rug::Float::with_val(p, n / rug_from_i64(den, p))
         };
-        rug::Float::with_val_round(p, xr.ai_ref(), mpfr_round_of(RoundingMode::NearestEven)).0
+        rug::Float::with_val_round(
+            p,
+            xr.ai_ref(),
+            mpfr_round_of(RoundingMode::NearestEven)
+                .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+        )
+        .0
     };
     let diff = rug::Float::with_val(p + 16, &bf - &rg).abs();
     let mut tol = rug::Float::with_val(p + 16, rg.clone().abs());

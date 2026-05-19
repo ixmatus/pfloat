@@ -41,8 +41,12 @@ fn div_matches_mpfr_on_i64_pairs() {
                 let rug_quot = {
                     let a_rg = rug_from_i64(a, p);
                     let b_rg = rug_from_i64(b, p);
-                    let (quot, _ord) =
-                        rug::Float::with_val_round(p, &a_rg / &b_rg, mpfr_round_of(mode));
+                    let (quot, _ord) = rug::Float::with_val_round(
+                        p,
+                        &a_rg / &b_rg,
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                    );
                     quot
                 };
                 assert_eq!(bf_quot, rug_quot, "div({a}, {b}) at p={p}, mode={mode:?}");

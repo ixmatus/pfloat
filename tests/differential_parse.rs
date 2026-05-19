@@ -50,7 +50,12 @@ fn parse_matches_mpfr_on_canonical_strings() {
                 let rug_r = {
                     let parsed = rug::Float::parse(s)
                         .unwrap_or_else(|e| panic!("rug parse failed for {s:?}: {e:?}"));
-                    let (r, _ord) = rug::Float::with_val_round(p, parsed, mpfr_round_of(mode));
+                    let (r, _ord) = rug::Float::with_val_round(
+                        p,
+                        parsed,
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                    );
                     r
                 };
                 assert_eq!(

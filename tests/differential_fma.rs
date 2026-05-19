@@ -47,7 +47,8 @@ fn fma_matches_mpfr_on_i64_triples() {
                     let (r, _ord) = rug::Float::with_val_round(
                         p,
                         a_rg.mul_add_ref(&b_rg, &c_rg),
-                        mpfr_round_of(mode),
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
                     );
                     r
                 };

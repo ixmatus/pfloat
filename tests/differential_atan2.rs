@@ -33,8 +33,12 @@ fn atan2_matches_mpfr_on_integer_pairs() {
                 let rug_r = {
                     let y_rg = rug_from_i64(y, p);
                     let x_rg = rug_from_i64(x, p);
-                    let (r, _ord) =
-                        rug::Float::with_val_round(p, y_rg.atan2_ref(&x_rg), mpfr_round_of(mode));
+                    let (r, _ord) = rug::Float::with_val_round(
+                        p,
+                        y_rg.atan2_ref(&x_rg),
+                        mpfr_round_of(mode)
+                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                    );
                     r
                 };
                 assert_eq!(bf_r, rug_r, "atan2({y}, {x}) at p={p}, mode={mode:?}");

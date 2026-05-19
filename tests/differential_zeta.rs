@@ -85,7 +85,13 @@ fn zeta_matches_mpfr() {
                     let (r, _s) = x_bf.zeta(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = rug::Float::with_val_round(p, x_rg.zeta_ref(), mpfr_round_of(mode)).0;
+                let rug_r = rug::Float::with_val_round(
+                    p,
+                    x_rg.zeta_ref(),
+                    mpfr_round_of(mode)
+                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
+                )
+                .0;
                 assert_eq!(bf_r, rug_r, "ζ({num}/{den}) at p={p}, mode={mode:?}");
             }
         }
