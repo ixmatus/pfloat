@@ -126,3 +126,17 @@ jobs:
       - name: Install MPFR + GMP
         run: sudo apt-get update && sudo apt-get install -y libmpfr-dev libgmp-dev
       - run: cargo test --features=differential-mpfr --test 'differential_*' --verbose
+
+  # ---------- Conformance evidence anti-rot gate ----------
+  # README's `## Conformance evidence` section reports per-bucket
+  # counts (Kani harnesses, differential lanes, fuzz targets, property
+  # files) that drift as the project evolves. `scripts/conformance-
+  # counts.sh --check` regenerates the block and diffs it against the
+  # README; the job fails CI on any drift. Pure POSIX shell, no
+  # Rust toolchain build, so it is the cheapest job in the matrix.
+  conformance:
+    name: conformance counts (per-bucket --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/conformance-counts.sh --check
