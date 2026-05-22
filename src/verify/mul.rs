@@ -1,9 +1,11 @@
 //! Kani harnesses for [`BigFloat::mul`].
 //!
 //! Coverage: NaN propagation, signaling-NaN INVALID emission, the
-//! IEEE 754 invalid `±0 × ±∞ → qNaN + INVALID` form, and sign-of-
+//! IEEE 754 invalid `±0 × ±∞ → qNaN + INVALID` form, sign-of-
 //! product correctness for the `±0 × ±finite`, `±finite × ±0`,
-//! `±∞ × ±finite`, and `±finite × ±∞` paths.
+//! `±∞ × ±finite`, and `±finite × ±∞` paths, and exponent-range
+//! saturation (the product exponent exceeding `i64::MAX` flags
+//! `OVERFLOW` without panicking, pf-rnc).
 
 use crate::big::BigFloat;
 use crate::rounding::RoundingMode;
@@ -84,4 +86,33 @@ fn mul_pos_zero_times_neg_zero_is_neg_zero() {
     assert!(r.is_zero());
     assert!(r.is_sign_negative());
     assert!(status.is_ok());
+}
+
+/// Regression (pf-rnc, fuzz-found via Airy `bi_prime`): the result
+/// exponent `top_bit + e_a + e_b − p_a − p_b + 2` is now computed in
+/// `i128` and saturated to the `i64` range, so multiplying operands
+/// whose true product exponent exceeds `i64::MAX` flags `OVERFLOW`
+/// and returns a finite saturated value (pfloat has no `emax`)
+/// instead of panicking on `i64` overflow. Squaring `2` doubles the
+/// exponent each step; within ~63 steps it passes `i64::MAX`. The
+/// invariant proved: no step panics or yields `NaN`, and saturation
+/// is reached. Advisory: the bounded `unwind` over a chain of `mul`s
+/// is the documented ADR-0012 deep-unwind cost.
+#[kani::proof]
+#[kani::unwind(67)]
+fn mul_extreme_exponent_saturates_without_panic() {
+    let mut x = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
+    let mut saw_overflow = false;
+    let mut i = 0;
+    while i < 66 {
+        let (sq, status) = x.mul(&x, RoundingMode::NearestEven);
+        assert!(!sq.is_nan());
+        if status.overflow() {
+            saw_overflow = true;
+            break;
+        }
+        x = sq;
+        i += 1;
+    }
+    assert!(saw_overflow);
 }

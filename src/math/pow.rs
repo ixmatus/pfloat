@@ -113,8 +113,12 @@ where
     }
 }
 
+/// Parity of an integer-valued [`BigFloat`]. `pub(super)`: the beta
+/// kernel's pole-cancellation closed form (`src/math/beta.rs`,
+/// ADR-0030 case 4) reuses [`integer_parity`] for its `(−1)^m` sign;
+/// both modules are children of `src/math/`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Parity {
+pub(super) enum Parity {
     Even,
     Odd,
 }
@@ -462,7 +466,13 @@ fn is_negative_one(v: &BigFloat) -> bool {
 
 /// Returns `Some(parity)` if `y` is a finite integer (including ±0),
 /// or `None` if `y` has a fractional part or is not finite.
-fn integer_parity(y: &BigFloat) -> Option<Parity> {
+///
+/// `pub(super)`: reused by the beta kernel's ADR-0030 case-4 closed
+/// form for its `(−1)^m` sign. The parity is read from the mantissa
+/// bit at the binary point, so this is `O(limbs)` regardless of the
+/// integer's magnitude — the property that lets `beta_case4` avoid
+/// an `O(m)` loop over a caller-supplied `m`.
+pub(super) fn integer_parity(y: &BigFloat) -> Option<Parity> {
     match &y.class {
         Class::Zero { .. } => Some(Parity::Even),
         Class::Normal {

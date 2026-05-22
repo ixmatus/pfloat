@@ -12,6 +12,14 @@ fn arb_precision() -> impl Strategy<Value = u32> {
     prop_oneof![Just(53u32), Just(64u32), Just(113u32)]
 }
 
+/// `num/den` as an exact pfloat dyadic (`den` a power of two) at
+/// precision `p`.
+fn dyadic(num: i64, den: i64, p: u32) -> BigFloat {
+    let n = BigFloat::try_from_i64_exact(num, p).unwrap();
+    let d = BigFloat::try_from_i64_exact(den, p).unwrap();
+    n.div(&d, RoundingMode::NearestEven).0
+}
+
 fn close_within(a: &BigFloat, b: &BigFloat, bits: u32) -> bool {
     let (diff, _) = a.sub(b, RoundingMode::NearestEven);
     let abs_diff = diff.abs();
@@ -149,7 +157,11 @@ proptest! {
         prop_assert!(!r.is_zero());
     }
 
-    /// β returns NaN/INVALID for non-positive a at any precision.
+    /// ADR-0030 row 3: a *negative integer* with no a+b pole
+    /// cancellation is a two-sided sign-ambiguous Γ pole, so β
+    /// returns qNaN/INVALID at any precision. (β is no longer
+    /// invalid for negative *non-integers* — see the properties
+    /// below; only the integer-pole subcase keeps this behavior.)
     #[test]
     fn beta_non_positive_invalid(p in arb_precision()) {
         let neg = BigFloat::try_from_i64_exact(-1, p).unwrap();
@@ -157,5 +169,49 @@ proptest! {
         let (r, status) = neg.beta(&pos, RoundingMode::NearestEven);
         prop_assert!(r.is_quiet_nan());
         prop_assert!(status.invalid());
+    }
+
+    /// β(a, b) = β(b, a) on the negative domain (ADR-0030 case 2):
+    /// a = −(2i+1)/2 (negative non-integer), b = ±(2j+1)/4, so a+b
+    /// has an odd numerator over 4 and is never a pole.
+    #[test]
+    fn beta_symmetric_negative_non_integer(i in 1i64..=8, j in 0i64..=8, bneg in any::<bool>()) {
+        let p = 113u32;
+        let a = dyadic(-(2 * i + 1), 2, p);
+        let bn = if bneg { -(2 * j + 1) } else { 2 * j + 1 };
+        let b = dyadic(bn, 4, p);
+        let (ab, sab) = a.beta(&b, RoundingMode::NearestEven);
+        let (ba, sba) = b.beta(&a, RoundingMode::NearestEven);
+        prop_assert!(ab.is_finite() && !ab.is_nan());
+        prop_assert!(!sab.invalid() && !sba.invalid());
+        prop_assert!(
+            close_within(&ab, &ba, p.saturating_sub(16)),
+            "β({a}, {b}) = {ab} vs β({b}, {a}) = {ba}",
+        );
+    }
+
+    /// β(a, b) = Γ(a)·Γ(b)/Γ(a+b) on the negative domain (DLMF
+    /// 5.12.1, the defining Γ-quotient continuation; ADR-0030
+    /// case 2). An in-crate reflection-consistency check that needs
+    /// no external oracle and carries the sign through Γ. Modest
+    /// ranges keep the Γ magnitudes tame.
+    #[test]
+    fn beta_equals_gamma_quotient_negative(i in 1i64..=4, j in 0i64..=4, bneg in any::<bool>()) {
+        let p = 113u32;
+        let a = dyadic(-(2 * i + 1), 2, p);
+        let bn = if bneg { -(2 * j + 1) } else { 2 * j + 1 };
+        let b = dyadic(bn, 4, p);
+        let (sum, _) = a.add(&b, RoundingMode::NearestEven);
+        let (r, status) = a.beta(&b, RoundingMode::NearestEven);
+        prop_assert!(r.is_finite() && !status.invalid());
+        let (ga, _) = a.gamma(RoundingMode::NearestEven);
+        let (gb, _) = b.gamma(RoundingMode::NearestEven);
+        let (gab, _) = sum.gamma(RoundingMode::NearestEven);
+        let (num, _) = ga.mul(&gb, RoundingMode::NearestEven);
+        let (expected, _) = num.div(&gab, RoundingMode::NearestEven);
+        prop_assert!(
+            close_within(&r, &expected, p.saturating_sub(30)),
+            "β({a}, {b}) = {r}, Γ-quotient = {expected}",
+        );
     }
 }

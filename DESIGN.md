@@ -123,6 +123,17 @@ Decision recorded in ADR-0005.
 MPFR's choice for compatibility with the differential-testing
 oracle. ADR-0006.
 
+There is no `emax`: `i64::MAX`/`i64::MIN` are *saturating*
+sentinels, not infinity/zero. A computation whose true exponent
+leaves the `i64` range clamps to the boundary and flags
+`OVERFLOW`/`UNDERFLOW`; the value stays finite. `round_finite_to_`
+`precision` has always done this for a round-up carry past
+`i64::MAX`; `mul`, `div`, and `fma` compute the result exponent in
+`i128` and apply the same saturation rather than overflowing the
+`i64` arithmetic (a caller-reachable panic on extreme operands
+before the fix; pf-rnc, fuzz-found via Airy `bi_prime`, which
+composes `mul` and `div`).
+
 ### Rounding modes and exception flags
 
 Rounding mode is an enum passed at the call site:
@@ -270,6 +281,22 @@ ADR-0029. Explicit-digit-count format is also exposed.
 
 Both directions are differential-tested against MPFR's
 `mpfr_set_str` and `mpfr_sprintf`.
+
+`parse_str` caps `|decimal exponent|` at `MAX_DECIMAL_EXPONENT`
+(about `5.785 * 10^7`), derived in code from a 16 MiB `pow5`
+storage budget (`POW5_STORAGE_BUDGET_BITS` and ADR-0031). Past the
+cap the parser short-circuits to `±∞` with `OVERFLOW + INEXACT`
+(positive exponent) or `±0` with `UNDERFLOW + INEXACT` (negative
+exponent) without allocating; within it the result is correctly
+rounded. The big `pow5(|e|)` is intrinsic to correctly rounded
+decimal-to-binary conversion (Clinger 1990, Gay `dtoa`, Lemire
+`fast_float`), so the cap is a storage budget, not an algorithmic
+limit, and the existing 1.0 documentation calling it
+"computational feasibility" is replaced by an explicit budget the
+reader can audit and raise. Strings whose decimal exponent
+magnitude is in `(10^6, ~5.785 * 10^7]` previously saturated to
+`±∞ / ±0` under the recalled `1_000_000` cap; they now parse to
+their correct finite values (ADR-0031, slice 8a).
 
 ## Transcendentals
 

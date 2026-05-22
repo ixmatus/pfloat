@@ -54,7 +54,36 @@ fuzz_target!(|input: Input| {
             let _ = x.digamma(mode);
         }
         5 => {
-            let _ = x.beta(&y, mode);
+            // ADR-0030: beta is total over the reals. Route x, y as
+            // quarter-integers (exact dyadics) so the fuzzer reaches
+            // every domain row — negative non-integers (case 2),
+            // a+b-pole zeros (case 5), integer pole-cancellation
+            // (case 4, the O(1) path), and the qNaN/±inf pole rows —
+            // not just the positive integers the raw x, y give. The
+            // result must be classified per ADR-0030: a NaN pairs
+            // with INVALID, an infinity with DIV_BY_ZERO or OVERFLOW,
+            // and a finite value raises neither INVALID nor
+            // DIV_BY_ZERO.
+            let four = BigFloat::try_from_i64_exact(4, prec).expect("4 fits");
+            let a = x.div(&four, RoundingMode::NearestEven).0;
+            let b = y.div(&four, RoundingMode::NearestEven).0;
+            let (r, st) = a.beta(&b, mode);
+            if r.is_nan() {
+                assert!(
+                    r.is_quiet_nan() && st.invalid(),
+                    "beta({a}, {b}) NaN must be qNaN+INVALID, st={st:?}"
+                );
+            } else if r.is_infinite() {
+                assert!(
+                    st.div_by_zero() || st.overflow(),
+                    "beta({a}, {b}) inf must be DIV_BY_ZERO|OVERFLOW, st={st:?}"
+                );
+            } else {
+                assert!(
+                    !st.invalid() && !st.div_by_zero(),
+                    "beta({a}, {b}) finite must not raise INVALID|DIV_BY_ZERO, st={st:?}"
+                );
+            }
         }
         6 => {
             let _ = x.agm(&y, mode);

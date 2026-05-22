@@ -5,7 +5,9 @@
 //! invalid form, and the subtle §7.2 carve-out where
 //! `c` being NaN suppresses the `INVALID` that would otherwise
 //! arise from the `0 × ∞` product (the NaN propagates without an
-//! extra flag).
+//! extra flag), and product-exponent-range saturation (a product
+//! exponent past `i64::MAX` flags `OVERFLOW` without panicking,
+//! pf-rnc).
 
 use crate::big::BigFloat;
 use crate::rounding::RoundingMode;
@@ -72,4 +74,33 @@ fn fma_inf_times_finite_plus_zero_is_inf() {
     assert!(r.is_infinite());
     assert!(r.is_sign_positive());
     assert!(status.is_ok());
+}
+
+/// Regression (pf-rnc, fuzz-found via Airy `bi_prime`): the product
+/// exponent is now computed in `i128` and saturated to the `i64`
+/// range, so an fma whose product exponent exceeds `i64::MAX` flags
+/// `OVERFLOW` and returns a finite saturated value instead of
+/// panicking on `i64` overflow. Square `2` until the next square
+/// would saturate, then `fma(big, big, c)` has product exponent
+/// past `i64::MAX`. No step panics or yields `NaN`, and saturation
+/// is reached. Advisory: bounded `unwind` over a chain of `mul`s is
+/// the documented ADR-0012 deep-unwind cost.
+#[kani::proof]
+#[kani::unwind(67)]
+fn fma_extreme_product_exponent_saturates_without_panic() {
+    let mut big = BigFloat::try_from_i64_exact(2, 53).expect("2 fits");
+    let mut i = 0;
+    while i < 66 {
+        let (sq, st) = big.mul(&big, RoundingMode::NearestEven);
+        assert!(!sq.is_nan());
+        if st.overflow() {
+            break;
+        }
+        big = sq;
+        i += 1;
+    }
+    let c = BigFloat::try_from_i64_exact(1, 53).expect("1 fits");
+    let (r, st) = big.fma(&big, &c, RoundingMode::NearestEven);
+    assert!(!r.is_nan());
+    assert!(st.overflow());
 }

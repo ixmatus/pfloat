@@ -153,7 +153,7 @@ fn gamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
 /// non-integer `x` alternates per the reflection
 /// `Γ(x)·Γ(1−x) = π/sin(πx)` (`Γ(1−x) > 0` for `x < 1`, so the
 /// sign of `Γ(x)` matches the sign of `sin(πx)` for negative `x`).
-fn gamma_sign_of(x: &BigFloat, working_prec: u32) -> Sign {
+pub(super) fn gamma_sign_of(x: &BigFloat, working_prec: u32) -> Sign {
     if matches!(x.sign(), Sign::Positive) {
         return Sign::Positive;
     }
