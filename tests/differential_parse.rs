@@ -37,6 +37,23 @@ const STRINGS: &[&str] = &[
     "-1.5e-20",
 ];
 
+/// ADR-0031 boundary band: just past the prior recalled `1_000_000`
+/// cap, well inside pfloat's derived `~5.785 * 10^7`
+/// pow5-storage-budget cap. These were previously saturated by
+/// pfloat and now parse to correct finite values; the property the
+/// test pins is that pfloat and rug/MPFR agree bit-exact at the new
+/// boundary.
+///
+/// Kept just past the old cap rather than deep into the widened
+/// band: MPFR's `strtod` at very large decimal exponents becomes the
+/// bottleneck (each parse at `|e| ~ 3 * 10^6` ran into the tens of
+/// minutes locally; the in-band-vs-saturated property does not need
+/// a large offset). Tested separately from [`STRINGS`] so they hit
+/// only the bit-exact comparison and not the Display round-trip —
+/// rendering a value whose binary exponent is in the millions is
+/// its own performance problem, outside slice 8a's scope.
+const BOUNDARY_STRINGS: &[&str] = &["1e1100000", "1e-1100000"];
+
 #[test]
 fn parse_matches_mpfr_on_canonical_strings() {
     for &p in SWEEP_PRECISIONS {
@@ -64,6 +81,40 @@ fn parse_matches_mpfr_on_canonical_strings() {
                 );
             }
         }
+    }
+}
+
+/// Bit-exact parse comparison at the ADR-0031 widened boundary
+/// (between the prior 1e6 cap and the new ~5.785e7 cap). Single
+/// precision `p = 113`: the property the test pins is that pfloat
+/// and rug/MPFR produce the same correctly rounded value at the
+/// boundary; matching across the full sweep precision ladder would
+/// multiply the per-string cost (a few hundred ms of `pow5`) without
+/// adding coverage.
+#[test]
+fn parse_matches_mpfr_at_widened_boundary() {
+    let p: u32 = 113;
+    let mode = RoundingMode::NearestEven;
+    for &s in BOUNDARY_STRINGS {
+        let bf_r = {
+            let (parsed, _status) = BigFloat::parse_str(s, p, mode)
+                .unwrap_or_else(|e| panic!("pfloat parse failed for {s:?}: {e:?}"));
+            bigfloat_to_rug(&parsed)
+        };
+        let rug_r = {
+            let parsed = rug::Float::parse(s)
+                .unwrap_or_else(|e| panic!("rug parse failed for {s:?}: {e:?}"));
+            let (r, _ord) = rug::Float::with_val_round(
+                p,
+                parsed,
+                mpfr_round_of(mode).expect("NE has an MPFR equivalent"),
+            );
+            r
+        };
+        assert_eq!(
+            bf_r, rug_r,
+            "parse({s:?}) at p={p}: pfloat={bf_r}, rug={rug_r}"
+        );
     }
 }
 
