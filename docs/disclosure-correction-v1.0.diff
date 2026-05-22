@@ -1,0 +1,13 @@
+--- a/README.md
++++ b/README.md
+@@ -24,8 +24,8 @@
+ worst case rounding tables run as integration tests, in differential tests against a trusted reference oracle on a separate CI lane, and in fuzz coverage of parser entry points. CI runs the usual lints and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks carry a written justification at the call site.
+ 
+ **Scope.** pfloat is a personal project. The intended consumer is the broader Rust scientific and embedded ecosystem (anyone who needs more than `f64` with correctly rounded results and no C
+-toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate has not reached 1.0 and is unpublished; the design, the
+-architecture decision records, and the CI scaffolding are in place, but the algorithmic kernels are not yet implemented. The repository remains public for users who want to read or follow the
++toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is at v1.0; the design, the architecture decision
++records, the CI scaffolding, and the algorithmic kernels are in place. The repository remains public for users who want to read or follow the
+ work.
+ 
+ **What this does not promise.** AI collaboration does not transfer responsibility. The author is accountable for what ships under his name. The disciplines above narrow the failure surface; they
