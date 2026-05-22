@@ -62,6 +62,22 @@ v1.0 covers the MPFR-equivalent surface:
 - `gmp-mpfr-sys` runs as a feature-gated dev-dependency on a separate Linux CI lane for differential testing. The default lane stays pure Rust.
 - `cargo-fuzz` covers every parser entry.
 
+## Conformance evidence
+
+Per-bucket counts of pfloat's verification harnesses. Each bucket
+is asserted independently by `scripts/conformance-counts.sh` and
+gated in CI; one bucket shrinking while another grows cannot hide
+under an aggregate floor.
+
+- **Kani proof harnesses:** 354 `#[kani::proof]`
+  attributes across 61 files in `src/verify/`.
+- **Differential lanes:** 33 `tests/differential_*.rs`
+  files. CI sweep 10⁴ inputs per (op × precision × rounding
+  mode); `PFLOAT_DEEP=1` escalates to 10⁶ (ADR-0014).
+- **Fuzz targets:** 7 targets under `fuzz/fuzz_targets/`.
+- **Property tests:** 33 `tests/property_*.rs` files
+  (addsub agm ai bi ci classify digamma_beta div ei erf exp exp_family fma fmt gamma hyperbolic ik jn li ln log_family mul parse partial_cmp pow rounding si sqrt total_cmp trig trig_inverse yn zeta).
+
 ## License
 
 Dual-licensed under either:
