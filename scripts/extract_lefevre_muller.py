@@ -75,6 +75,7 @@ FUNCTIONS = [
     ("cosh", "cosh", mp.cosh),
     ("asinh", "asinh", mp.asinh),
     ("acosh", "acosh", mp.acosh),
+    ("atanh", "atanh", mp.atanh),
 ]
 
 

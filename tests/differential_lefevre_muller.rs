@@ -192,3 +192,10 @@ fn acosh_corpus() {
         check("acosh", |x| x.acosh(NE), case);
     }
 }
+
+#[test]
+fn atanh_corpus() {
+    for case in ATANH_CASES {
+        check("atanh", |x| x.atanh(NE), case);
+    }
+}
