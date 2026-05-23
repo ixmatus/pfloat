@@ -20,10 +20,16 @@
 //! which is correctly-rounded for the vast majority of inputs (and
 //! always correct in the round-toward-zero / round-toward-±∞ modes
 //! that don't have tie cases). Pathological round-to-nearest tie
-//! cases at the boundary of the rounding ULP could miss; the
-//! Lefèvre–Muller worst-case tables for `exp` cover the known hard
-//! arguments at common precisions and can be wired in later as
-//! Phase 5 verification.
+//! cases at the boundary of the rounding ULP are exercised by
+//! `tests/differential_lefevre_muller.rs`, which sources hard-to-
+//! round inputs from the CORE-MATH project's worst-case-rounding
+//! database (a curated extension of the Lefèvre–Muller table the
+//! ARITH-15 2001 paper introduced); the kernel matches an
+//! mpmath-derived oracle at binary64 `NearestEven` across the
+//! canonical hard-to-round block. The corpus deliberately
+//! excludes the underflow-boundary stress block at the head of
+//! CORE-MATH's `exp.wc` (those exercise subnormal-rounding,
+//! a separate concern queued for a v1.x slice).
 
 use crate::big::BigFloat;
 use crate::class::Class;

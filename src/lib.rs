@@ -107,8 +107,10 @@
 //! so the residual `|r| ≤ ln(2)/2`, evaluate the Taylor series, and
 //! compose with a free exponent shift for the `2^k` factor. Fixed
 //! 64-bit guard above target precision; full Ziv-strategy retry
-//! deferred. Lefèvre–Muller worst-case verification wires in during
-//! Phase 5.
+//! deferred. Lefèvre–Muller worst-case verification ships in
+//! `tests/differential_lefevre_muller.rs`, asserting the kernel's
+//! binary64 result matches an mpmath-derived oracle on a subset
+//! of the CORE-MATH hard-to-round-case corpus.
 //!
 //! 3b: [`BigFloat::ln`](BigFloat::ln) (and `FixedFloat<PREC>::ln`).
 //! Range-reduce by the binary exponent
