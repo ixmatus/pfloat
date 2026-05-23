@@ -100,3 +100,84 @@ fn sqrt_enclosure_handles_infinity_input() {
     assert!(lo.is_infinite() && lo.is_sign_positive());
     assert!(hi.is_infinite() && hi.is_sign_positive());
 }
+
+/// Every MPFR-primary `FnId` produces a non-empty bracket
+/// (`lo <= hi`) on a representative input. The directed-rounding
+/// guarantee should hold uniformly across the surface.
+#[test]
+fn mpfr_primary_enclosures_are_well_formed() {
+    let o = MpfrOracle;
+    let p = 64;
+    // (FnId, input as f32) pairs chosen to be in each function's
+    // domain. Negative-input domain restrictions:
+    //   sqrt, ln, log1p, log2, log10, gamma (poles), Ei (x > 0),
+    //   acosh (x >= 1), atanh (|x| < 1), asin/acos (|x| <= 1).
+    // 0.5 falls in every domain except acosh; we use 1.5 for that.
+    let half = 0.5_f32.to_bits();
+    let two = 2.0_f32.to_bits();
+    let small = 0.25_f32.to_bits();
+    let cases: Vec<(FnId, u32)> = vec![
+        (FnId::Sqrt, half),
+        (FnId::Exp, half),
+        (FnId::Exp2, half),
+        (FnId::Exp10, half),
+        (FnId::Expm1, half),
+        (FnId::Ln, half),
+        (FnId::Log1p, half),
+        (FnId::Log2, half),
+        (FnId::Log10, half),
+        (FnId::Sin, half),
+        (FnId::Cos, half),
+        (FnId::Tan, half),
+        (FnId::Asin, half),
+        (FnId::Acos, half),
+        (FnId::Atan, half),
+        (FnId::Sinh, half),
+        (FnId::Cosh, half),
+        (FnId::Tanh, half),
+        (FnId::Asinh, half),
+        (FnId::Acosh, two),
+        (FnId::Atanh, half),
+        (FnId::Erf, half),
+        (FnId::Erfc, half),
+        (FnId::Gamma, half),
+        (FnId::Lgamma, half),
+        (FnId::Digamma, half),
+        (FnId::Zeta, two),
+        (FnId::Ei, half),
+        (FnId::Ai, half),
+        (FnId::BesselJ0, half),
+        (FnId::BesselJ1, half),
+        (FnId::BesselJn(3), half),
+        (FnId::BesselY0, half),
+        (FnId::BesselY1, half),
+        (FnId::BesselYn(3), half),
+    ];
+    for (id, x_bits) in cases {
+        let Enclosure { lo, hi } = o.enclose(id, x_bits, p);
+        // NaN endpoints can occur only if MPFR's primitive returns
+        // NaN, which is not expected for any of these in-domain
+        // inputs.
+        assert!(
+            !lo.is_nan() && !hi.is_nan(),
+            "NaN endpoint for {id:?} at f32 {x_bits:#010x}: lo={lo}, hi={hi}"
+        );
+        // Bracket well-formedness: lo <= hi at every working
+        // precision; the directed-rounding contract guarantees this.
+        assert!(
+            lo <= hi,
+            "lo > hi for {id:?} at f32 {x_bits:#010x}: lo={lo}, hi={hi}"
+        );
+    }
+    let _ = small; // placeholder for future small-input cases
+}
+
+/// The Arb-primary `FnId` variants must `unimplemented!()` rather
+/// than silently fall through; the MPFR backend should not pretend
+/// to cover functions MPFR has no primitive for.
+#[test]
+#[should_panic(expected = "Arb backend (next slice)")]
+fn arb_only_fnids_panic_under_mpfr_backend() {
+    let o = MpfrOracle;
+    let _ = o.enclose(FnId::BesselI0, 0.5_f32.to_bits(), 64);
+}
