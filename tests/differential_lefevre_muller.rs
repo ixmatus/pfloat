@@ -157,3 +157,10 @@ fn expm1_corpus() {
         check("expm1", |x| x.expm1(NE), case);
     }
 }
+
+#[test]
+fn log1p_corpus() {
+    for case in LOG1P_CASES {
+        check("log1p", |x| x.log1p(NE), case);
+    }
+}
