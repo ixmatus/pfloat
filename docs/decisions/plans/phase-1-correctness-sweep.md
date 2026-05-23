@@ -374,6 +374,41 @@ Phase 1 is done when:
 
 Only then does Phase 2 (libm spinoff) begin.
 
+## Slice p1.1 + p1.2 closure (2026-05-23)
+
+Slice p1.1 extended the slice 8b L-M tier from nine functions to
+twenty (added `exp10`, `expm1`, `log1p`, `sinh`, `cosh`, `asinh`,
+`acosh`, `atanh`, `erf`, `erfc`, `gamma` clean; deferred `log2`,
+`log10`, `tanh`, `lgamma` behind their fix slice).
+
+Slice p1.2 closed the five-finding `has-errors` class on the v1.0
+surface:
+
+- Lifted `pow`'s Ziv interval-test driver (ADR-0022) into
+  `src/math/ziv.rs` as a shared `pub(crate) fn ziv_round`. Pure
+  refactor.
+- Wired `exp`, `ln`, `tanh`, `lgamma` through `ziv_round`. `log2`
+  and `log10` inherit via the existing `ln_round` composition.
+- Reinstated CORE-MATH's `exp.wc` leading underflow block as the
+  regression guard for the slice 8b documented `exp` underflow
+  defect. The L-M corpus generator's marker-scan filter was
+  removed entirely; the `domain_ok` filter handles per-function
+  edge cases (±0 dropped; `log2`/`log10` reject `x ≤ 0`; `lgamma`
+  rejects negative integers).
+- Test driver compares at the f64 bit-pattern level rather than
+  BigFloat-level (required for binary64 subnormal expected outputs
+  whose p=53 BigFloat representation carries more precision than
+  the binary64 source). Inputs constructed bit-exact via
+  `bf53_of_bits` (integer mantissa plus chained 2^30 mul/div
+  scalings).
+
+The L-M corpus now covers twenty-four functions at 1200 bit-exact
+cases. The five known `has-errors` findings on the v1.0 surface
+(documented exp underflow plus log2/log10/tanh/lgamma corpus
+deferrals) are closed. The exhaustive `f32` sweep (planned p1.6 -
+p1.8) will surface any remaining latent trips; the corpus tier
+catches the obvious ones.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the

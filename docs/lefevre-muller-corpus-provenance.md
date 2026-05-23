@@ -93,24 +93,27 @@ proportionate to a Rust crate's size budget. pfloat ships a
 representative subset:
 
 - One Rust data block per covered function (approximately 50 cases
-  per function, sampled from the CORE-MATH `.wc` blocks that
-  exercise the hardest rounding decisions).
+  per function, sampled from each CORE-MATH `.wc` file from its
+  first data line onward, mixing leading domain-edge / underflow
+  blocks with the canonical hard-to-round block so the corpus
+  exercises both the precision-stress and the IEEE-boundary regimes).
 - The pfloat-supported binary64 surface that has a CORE-MATH analog
   and a passing pfloat kernel at `p = 53` `NearestEven`: `exp`, `ln`
   (CORE-MATH `log`), `sin`, `cos`, `tan`, `atan`, `asin`, `acos`,
-  `exp2`, `exp10`, `expm1`, `log1p`, `sinh`, `cosh`, `asinh`,
-  `acosh`, `atanh`, `erf`, `erfc`, `gamma` (CORE-MATH `tgamma`).
-  Twenty functions as of slice p1.1; the original nine landed in
-  slice 8b, eleven more in slice p1.1.
-- Four functions whose CORE-MATH `.wc` data is available but whose
-  pfloat kernel surfaces a `has-errors` finding at `p = 53` `NE` on
-  at least one hard-to-round input are deferred to slice p1.2:
-  `log2`, `log10`, `tanh`, `lgamma`. The pattern across all four is
-  a 1-ULP miss at `p = 53` traceable to the elementary kernels'
-  fixed-64-bit-guard convention (slice 3a, predating the Ziv retry
-  the Phase 1 plan upgrades). The corpus addition for each of these
-  is staged behind its kernel fix; the bead queue carries the
-  pairing.
+  `exp2`, `exp10`, `expm1`, `log1p`, `log2`, `log10`, `sinh`,
+  `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `erf`, `erfc`, `gamma`
+  (CORE-MATH `tgamma`), `lgamma`. Twenty-four functions as of slice
+  p1.2; the original nine landed in slice 8b, eleven more in slice
+  p1.1, and the four `log2` / `log10` / `tanh` / `lgamma` additions
+  in slice p1.2 paired with the Ziv-retry kernel upgrade that
+  closed the five-finding `has-errors` class.
+- Slice p1.2's L-M corpus surface also reinstates the leading
+  `# the following inputs exercise underflow or overflow` block at
+  the head of CORE-MATH's `exp.wc` (excluded at slice 8b as a
+  documented kernel limitation). The exp underflow input
+  `0xc0874385446d71c3` now sits in `EXP_CASES` as the regression
+  guard for the slice 8b documented defect that the slice p1.2
+  Ziv-retry upgrade closed.
 - Multi-argument functions in CORE-MATH (`atan2`, `pow`) and
   reciprocal/root primitives ADR-0032 reserves for the Phase 2 libm
   shell (`cbrt`, `hypot`, `rootn`) are intentionally absent from
@@ -123,7 +126,9 @@ representative subset:
   independently by evaluating the function at `p = 200` bits via
   `mpmath` and rounding to binary64 under `NearestEven`. The
   differential test then asserts pfloat's own kernel rounds to the
-  same binary64 value.
+  same binary64 value (compared at the f64 bit-pattern level, so
+  the assertion is correct for both normal-range and subnormal
+  binary64 outputs).
 - The subset and its mpmath-computed expected outputs are committed
   as a static Rust constant in the test file; the
   CORE-MATH-original `.wc` files are not vendored, only sampled.

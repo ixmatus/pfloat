@@ -150,18 +150,27 @@ pfloat Phase 1 (the correctness sweep) is in flight. In-repo
 Phase 8 slice 8b shipped the foundational artifacts (the
 conformance-evidence script and CI gate, the disclosure-correction
 diff for the eventual v1.0 tag, the CORE-MATH-sourced L-M
-differential tier on nine functions). Slice 8c (the v1.0 tag +
-`cargo publish` slice) is parked behind Phase 1 per ADR-0033:
-the slice-8b exercise surfaced a known wrong-rounding case in
-pfloat's `exp` underflow path and exposed how thin the tier-2
-specials' differential rigor really is. Shipping a v1.0 with
-those gaps would commit them to a crates.io version that cannot
-be replaced after publication, so Phase 1's exhaustive `f32`
-audit and per-function status table become the v1.0 ship
-criterion rather than v1.x cleanup. ADR-0032 (libm reciprocal
-and root kernels stay direct primary, not aliased) and ADR-0033
-(this re-sequencing) are the two Phase 1 / Phase 2 discrete
-decisions discharged so far. Phase 2 and beyond remain queued.
+differential tier on nine functions). Slice p1.1 added eleven more
+functions to the L-M tier; slice p1.2 closed the five-finding
+`has-errors` class (exp underflow plus `log2` / `log10` / `tanh` /
+`lgamma` 1-ULP mis-roundings) by lifting `pow`'s Ziv interval-test
+driver into a shared `src/math/ziv.rs` module and wiring `exp`,
+`ln`, `tanh`, and `lgamma` through it. `log2` and `log10` inherit
+via the existing `ln_round` composition. The L-M corpus now covers
+twenty-four functions at 1200 bit-exact cases.
+
+Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
+Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
+wrong-rounding case in pfloat's `exp` underflow path (closed at
+slice p1.2) and exposed how thin the tier-2 specials' differential
+rigor really is. Shipping a v1.0 with those gaps would commit
+them to a crates.io version that cannot be replaced after
+publication, so Phase 1's exhaustive `f32` audit and per-function
+status table become the v1.0 ship criterion rather than v1.x
+cleanup. ADR-0032 (libm reciprocal and root kernels stay direct
+primary, not aliased) and ADR-0033 (this re-sequencing) are the
+two Phase 1 / Phase 2 discrete decisions discharged so far.
+Phase 2 and beyond remain queued.
 
 ## Related
 
