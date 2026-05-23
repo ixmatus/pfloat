@@ -77,6 +77,7 @@ FUNCTIONS = [
     ("acosh", "acosh", mp.acosh),
     ("atanh", "atanh", mp.atanh),
     ("erf", "erf", mp.erf),
+    ("erfc", "erfc", mp.erfc),
 ]
 
 

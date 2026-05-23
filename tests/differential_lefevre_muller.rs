@@ -207,3 +207,11 @@ fn erf_corpus() {
         check("erf", |x| x.erf(NE), case);
     }
 }
+
+#[cfg(feature = "specials")]
+#[test]
+fn erfc_corpus() {
+    for case in ERFC_CASES {
+        check("erfc", |x| x.erfc(NE), case);
+    }
+}
