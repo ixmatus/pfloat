@@ -331,6 +331,11 @@ name = "oracle_verify_smoke"
 path = "tests/oracle_verify_smoke.rs"
 required-features = ["differential-mpfr"]
 
+[[test]]
+name = "oracle_driver_smoke"
+path = "tests/oracle_driver_smoke.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
