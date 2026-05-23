@@ -215,3 +215,11 @@ fn erfc_corpus() {
         check("erfc", |x| x.erfc(NE), case);
     }
 }
+
+#[cfg(feature = "specials")]
+#[test]
+fn gamma_corpus() {
+    for case in GAMMA_CASES {
+        check("gamma", |x| x.gamma(NE), case);
+    }
+}
