@@ -341,6 +341,15 @@ name = "oracle_smoke_gate"
 path = "tests/oracle_smoke_gate.rs"
 required-features = ["differential-mpfr"]
 
+# Slice p1.3.8: Phase 1 Oracle sweep runner. Manual / release CI
+# only; not built per push. Per ADR-0034 this is the artifact for
+# the long-running exhaustive sweep that produces the v1.0
+# per-function status table.
+[[example]]
+name = "oracle_sweep"
+path = "examples/oracle_sweep.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
