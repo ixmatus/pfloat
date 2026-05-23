@@ -20,9 +20,14 @@
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 // Consumers use different subsets; suppress unused-warnings under
-// any single crate's compilation.
+// any single crate's compilation. The `unused_imports` allow
+// applies to the `pub use` re-exports below, which any one
+// consumer may or may not reach into.
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
+pub mod mpfr;
 pub mod types;
 
+pub use mpfr::MpfrOracle;
 pub use types::{Enclosure, FnId, OracleBackend, Verdict};
