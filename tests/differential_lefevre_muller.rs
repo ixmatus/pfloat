@@ -171,3 +171,10 @@ fn sinh_corpus() {
         check("sinh", |x| x.sinh(NE), case);
     }
 }
+
+#[test]
+fn cosh_corpus() {
+    for case in COSH_CASES {
+        check("cosh", |x| x.cosh(NE), case);
+    }
+}

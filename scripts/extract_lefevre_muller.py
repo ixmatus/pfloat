@@ -72,6 +72,7 @@ FUNCTIONS = [
     ("expm1", "expm1", mp.expm1),
     ("log1p", "log1p", mp.log1p),
     ("sinh", "sinh", mp.sinh),
+    ("cosh", "cosh", mp.cosh),
 ]
 
 
