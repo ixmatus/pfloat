@@ -9,6 +9,16 @@
 //! precision, the formula collapses to `1/1 = 1` and the sign-
 //! flipped result is `±1` correctly.
 //!
+//! For `|x|` small enough that the cubic correction in the Taylor
+//! expansion `tanh(|x|) = |x| − |x|³/3 + O(|x|⁵)` falls below the
+//! Ziv driver's error guard, the kernel short circuits to `|x|`
+//! with the input's sign (slice p1.4, closes pf-7d7). Without the
+//! short circuit the composition collapses for tiny `|x|`: at
+//! working precision `w`, when `2|x| < 2^−w`, `exp(−2|x|)` rounds
+//! to exactly `1`, the numerator becomes exactly `0`, and the Ziv
+//! interval test certifies `0` because `half_width(0)` is also
+//! `0`. The short circuit threshold is derived in `tanh_at_w`.
+//!
 //! Correctly rounded under every IEEE rounding mode via the shared
 //! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022).
 //! The composition `(1 − e^{−2|x|}) / (1 + e^{−2|x|})` runs at the
@@ -127,6 +137,39 @@ fn tanh_at_w(abs_x: &BigFloat, sign: Sign, working_prec: u32) -> BigFloat {
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
+
+    // Tiny input short circuit. Taylor: `tanh(|x|) = |x| − |x|³/3 +
+    // O(|x|⁵)`, so returning `|x|` in place of `tanh(|x|)` carries
+    // absolute error bounded by `|x|³/3` for `|x| < 1`. The Ziv
+    // driver's contract (`ziv_round`) bounds the kernel's error by
+    // `|y| · 2^−(working_prec − ZIV_ERROR_GUARD)` with
+    // `ZIV_ERROR_GUARD = 24`, so the short circuit is valid when
+    // `|x|² / 3 ≤ 2^−(working_prec − 24)`. Worst case at exponent
+    // `e` is `|x|² < 2^(2e+2)`, giving the conservative threshold
+    // `e ≤ −ceil((working_prec − 22) / 2)`. At `working_prec = 88`
+    // (first Ziv pass at target 24) the threshold is `-33`, which
+    // covers the entire f32 subnormal range `e ∈ [−149, −126]`;
+    // at every higher Ziv retry the threshold tightens further but
+    // still covers the same range, so the short circuit fires at
+    // the first pass for every f32 subnormal input.
+    //
+    // Without this short circuit the standard composition collapses
+    // for tiny `|x|`: at working precision `w`, when `2|x| < 2^−w`,
+    // `exp(−2|x|)` rounds to exactly `1`, the numerator becomes
+    // exactly `0`, and the Ziv interval test certifies `0` because
+    // `half_width(0)` is also `0` (slice p1.3 sweep, closes
+    // pf-7d7).
+    let short_circuit_exp: i64 = -((i64::from(working_prec) - 22 + 1) / 2);
+    if let Class::Normal { exponent, .. } = &abs_x_w.class {
+        if *exponent <= short_circuit_exp {
+            return if matches!(sign, Sign::Negative) {
+                abs_x_w.negated()
+            } else {
+                abs_x_w
+            };
+        }
+    }
+
     let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
     let (two_x, _) = abs_x_w.mul(&two, RoundingMode::NearestEven);
     let neg_two_x = two_x.negated();
@@ -245,5 +288,47 @@ mod tests {
         let (r, status) = sn.tanh(RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
+    }
+
+    #[test]
+    fn tanh_tiny_input_round_to_nearest_returns_input() {
+        // Slice p1.4 short circuit (closes pf-7d7). For `|x|` whose
+        // binary exponent is below the Ziv driver's error guard,
+        // `tanh(x)` rounds to `x` at target precision under either
+        // round-to-nearest tie rule: the cubic Taylor correction
+        // `x³/3` for x = ±2⁻¹⁰⁰ is ≈ 2⁻³⁰² , far below the p=53
+        // half-ULP threshold ≈ 2⁻¹⁵³. Pre-fix, the cancellation
+        // path returned `0` instead, and the Ziv interval test
+        // certified the wrong value because `half_width(0) = 0`.
+        //
+        // Directed modes (`TowardPositive`, `TowardZero`,
+        // `TowardNegative`) legitimately pick the neighboring
+        // representable that brackets the true value (sign of the
+        // cubic correction matters), so they are covered by the
+        // oracle_sweep MPFR regression, not by this point test.
+        let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+        let mut x = BigFloat::try_from_i64_exact(1, 200).unwrap();
+        for _ in 0..100 {
+            x = x.div(&two, RoundingMode::NearestEven).0;
+        }
+        let x53 = x
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+        for &mode in &[RoundingMode::NearestEven, RoundingMode::NearestAway] {
+            let (r, _) = x53.tanh(mode);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Equal),
+                "tanh(2^-100) under {mode:?} = {r}, expected {x53}"
+            );
+            let neg = x53.negated();
+            let (r_neg, _) = neg.tanh(mode);
+            assert_eq!(
+                r_neg.partial_cmp(&neg).0,
+                Some(Ordering::Equal),
+                "tanh(-2^-100) under {mode:?} = {r_neg}, expected {neg}"
+            );
+        }
     }
 }
