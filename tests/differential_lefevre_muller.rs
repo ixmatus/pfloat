@@ -199,3 +199,11 @@ fn atanh_corpus() {
         check("atanh", |x| x.atanh(NE), case);
     }
 }
+
+#[cfg(feature = "specials")]
+#[test]
+fn erf_corpus() {
+    for case in ERF_CASES {
+        check("erf", |x| x.erf(NE), case);
+    }
+}
