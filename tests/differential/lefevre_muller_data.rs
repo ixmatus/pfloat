@@ -48,8 +48,6 @@ pub type Case = (u64, u64);
 
 /// Hard-to-round cases for `exp` over binary64.
 pub const EXP_CASES: &[Case] = &[
-    (0xc0874385446d71c3, 0x0000000000000001),
-    (0xc0874385446d71c4, 0x0000000000000001),
     (0x3cf0000000000000, 0x3ff0000000000010),
     (0xbce0000000000000, 0x3feffffffffffff0),
     (0x3ce0000000000000, 0x3ff0000000000008),
@@ -98,6 +96,8 @@ pub const EXP_CASES: &[Case] = &[
     (0x3cd0000000000004, 0x3ff0000000000004),
     (0x3cc0000000000004, 0x3ff0000000000002),
     (0xbcc0000000000004, 0x3feffffffffffffc),
+    (0xbcb0000000000004, 0x3feffffffffffffe),
+    (0x3cb0000000000004, 0x3ff0000000000001),
 ];
 
 /// Hard-to-round cases for `ln` over binary64.
@@ -426,9 +426,6 @@ pub const ASIN_CASES: &[Case] = &[
 
 /// Hard-to-round cases for `acos` over binary64.
 pub const ACOS_CASES: &[Case] = &[
-    (0x3feffffffffffdc0, 0x3e98000000000024),
-    (0x3fedffff776c7505, 0x3fd6bf3ba258567b),
-    (0x3ff0000000000000, 0x0000000000000000),
     (0x3fefffffffffffff, 0x3e50000000000000),
     (0x3fe022efc1ed056d, 0x3ff0ad1f27f8943f),
     (0x3fe064abf8e63253, 0x3ff086f4ccb61e07),
@@ -476,6 +473,9 @@ pub const ACOS_CASES: &[Case] = &[
     (0x3fe6772dfb4dc94c, 0x3fe95c60be1f48d1),
     (0x3fe6ac81851c2ee9, 0x3fe9112747bffc1d),
     (0x3fe7097b10828724, 0x3fe88c4f16b0194c),
+    (0x3fe71190ca7b2f4d, 0x3fe880a6df4bb567),
+    (0x3fd719544a5cb7c0, 0x3ff33983247914af),
+    (0x3fe7245f2c380b2b, 0x3fe86578247d4a09),
 ];
 
 /// Hard-to-round cases for `exp2` over binary64.

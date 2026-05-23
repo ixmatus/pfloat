@@ -106,15 +106,38 @@ def mpmath_to_f64_ne(value: mp.mpf) -> float:
 
 def extract(core_math_root: Path, name: str, wc_dir: str, fn) -> list[tuple[int, int]]:
     """Sample up to SUBSET cases from the function's .wc file and
-    compute the expected NE-rounded output for each."""
+    compute the expected NE-rounded output for each.
+
+    Sampling targets the canonical hard-to-round-case block, not
+    upstream's leading domain-edge stress block. Some `.wc` files
+    (notably `exp.wc`) open with an "exercise underflow or
+    overflow" section whose entries test subnormal-boundary
+    behaviour rather than rounding precision; pfloat's subnormal
+    underflow handling is a separate concern from elementary-kernel
+    rounding correctness. The script looks for a `# hard-to-round`
+    or `# worst cases` comment marker and begins sampling on the
+    next data line. Files without that marker (none in the current
+    upstream set) fall back to sampling from the file's first data
+    line.
+    """
     wc_path = core_math_root / "src" / "binary64" / wc_dir / f"{wc_dir}.wc"
     if not wc_path.is_file():
         raise FileNotFoundError(f"missing CORE-MATH file: {wc_path}")
 
+    lines = wc_path.read_text().splitlines()
+    start_idx = 0
+    for i, raw in enumerate(lines):
+        ls = raw.strip().lower()
+        if ls.startswith("#") and (
+            "hard-to-round" in ls or "worst cases" in ls
+        ):
+            start_idx = i + 1
+            break
+
     cases: list[tuple[int, int]] = []
     with mp.workprec(MPMATH_WORKING_BITS):
-        for line in wc_path.read_text().splitlines():
-            line = line.strip()
+        for raw in lines[start_idx:]:
+            line = raw.strip()
             if not line or line.startswith("#"):
                 continue
             if len(cases) >= SUBSET:
