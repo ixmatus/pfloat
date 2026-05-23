@@ -71,6 +71,7 @@ FUNCTIONS = [
     ("exp10", "exp10", lambda x: mp.power(10, x)),
     ("expm1", "expm1", mp.expm1),
     ("log1p", "log1p", mp.log1p),
+    ("sinh", "sinh", mp.sinh),
 ]
 
 

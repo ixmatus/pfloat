@@ -164,3 +164,10 @@ fn log1p_corpus() {
         check("log1p", |x| x.log1p(NE), case);
     }
 }
+
+#[test]
+fn sinh_corpus() {
+    for case in SINH_CASES {
+        check("sinh", |x| x.sinh(NE), case);
+    }
+}
