@@ -185,3 +185,10 @@ fn asinh_corpus() {
         check("asinh", |x| x.asinh(NE), case);
     }
 }
+
+#[test]
+fn acosh_corpus() {
+    for case in ACOSH_CASES {
+        check("acosh", |x| x.acosh(NE), case);
+    }
+}
