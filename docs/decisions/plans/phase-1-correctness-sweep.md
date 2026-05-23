@@ -1,6 +1,6 @@
 # Phase 1: pfloat correctness sweep
 
-- **Status**: accepted plan, queued behind in repo Phase 8 (v1.0 tag).
+- **Status**: accepted plan, runs to completion before the v1.0 tag (re-sequenced 2026-05-22 per ADR-0033; was originally queued behind v1.0).
 - **Date**: 2026-05-22.
 
 ## Why this phase
@@ -471,28 +471,53 @@ rather than re vetting and re importing it. The corpus is the
 durable artifact; the basic differential tier in 8b plus the
 worst case adversarial seed in Phase 1 is the program.
 
-**Sequencing relative to the v1.0 tag.** The honest
-reconciliation between Phase 1 and the in repo Phase 8 v1.0
-tag:
+**Sequencing relative to the v1.0 tag (revised 2026-05-22 per
+ADR-0033).** Phase 1 runs to completion before the v1.0 tag, not
+after. The original sequencing (Phase 1 as v1.0 → v1.1 work)
+was reversed after slice 8b surfaced two findings that re-weighted
+the credibility-vs-timeline trade-off:
 
-- v1.0 ships with the count only `## Conformance evidence`
-  section (the Phase 8b artifact). The disclosure text says
-  explicitly: "exhaustive `f32` correctness audit in flight;
-  the per function rounding status table is the next minor."
-- Phase 1 sweep is v1.0 → v1.1 work, not pre v1.0. v1.0 stands
-  alone as "implementation complete, conformance evidence
-  describes the kinds of verification we run." v1.1 is
-  "exhaustive `f32` audit complete, per function status table
-  replaces the count only section."
-- `has-errors` findings in the sweep become v1.1 fixes, not
-  v1.0 blockers; v1.0 ships under the stake "we run these kinds
-  of verification, the exhaustive audit is the next thing."
+- pfloat's `exp` kernel mis-rounds inputs at the binary64
+  underflow boundary (the slice-8b L-M corpus excluded CORE-MATH's
+  underflow block to keep the suite green; `src/math/exp.rs` lines
+  23-30 carry the durable note). A library claiming
+  correctly-rounded transcendentals cannot honestly ship 1.0 with
+  a known wrong-rounding case in its headline kernel.
+- The tier-2 specials' differential verification posture
+  (mpmath table at `p ≤ 256` plus identity cross-ties) is
+  structurally weaker than the README's correct-rounding claim
+  implies. The Arb backend specified above closes that gap, but
+  only once it is actually integrated and the sweep is run.
 
-The alternative (v1.0 waits for the sweep) is coherent but the
-CPU budget above suggests a six to twelve month extension at
-minimum, and pfloat has no published 0.x users would have to
-wait through. The honest reconciliation above is the chosen
-path.
+The published 1.0 on crates.io is immutable (yank-only, no
+replace). It is the version users will quote, link to in their
+own changelogs, and judge the project's permacomputing-horizon
+discipline against permanently. The credibility cost of
+"shipped a wrong-rounding case in the headline kernel" is
+permanent in a way the timeline cost of the audit is not.
+
+Revised reconciliation:
+
+- v1.0 ships when every frozen unary function has a definitive
+  `rounding_status` (correctly-rounded or honestly-downgraded
+  faithful); no function is `has-errors`. The per-function status
+  table replaces the count-only `## Conformance evidence` section
+  at the v1.0 cut.
+- Slice 8c (the v1.0 tag + `cargo publish` slice) is parked
+  indefinitely behind Phase 1. The 8c beads stay on file; the
+  disclosure-correction diff artifact at
+  `docs/disclosure-correction-v1.0.diff` stays in tree (the two
+  factual corrections it makes are still required at the eventual
+  tag, just later).
+- `has-errors` findings in the sweep are v1.0 blockers, not v1.1
+  fixes. The exp-underflow defect is the first known one; the
+  CORE-MATH corpus expansion across all pfloat-supported binary64
+  functions will surface more.
+
+The accepted timeline cost (six to twelve months per the CPU
+budget above) is borne entirely by the project; pfloat has no
+published 0.x consumers paying a migration cost. ADR-0033 is the
+durable record of this re-sequencing.
 
 ## Appendix A: Path to performance, post correctness
 
