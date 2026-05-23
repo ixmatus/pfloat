@@ -143,3 +143,10 @@ fn exp2_corpus() {
         check("exp2", |x| x.exp2(NE), case);
     }
 }
+
+#[test]
+fn exp10_corpus() {
+    for case in EXP10_CASES {
+        check("exp10", |x| x.exp10(NE), case);
+    }
+}
