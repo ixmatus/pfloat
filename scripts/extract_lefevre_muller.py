@@ -71,6 +71,8 @@ FUNCTIONS = [
     ("exp10", "exp10", lambda x: mp.power(10, x)),
     ("expm1", "expm1", mp.expm1),
     ("log1p", "log1p", mp.log1p),
+    ("log2", "log2", lambda x: mp.log(x, 2)),
+    ("log10", "log10", mp.log10),
     ("sinh", "sinh", mp.sinh),
     ("cosh", "cosh", mp.cosh),
     ("asinh", "asinh", mp.asinh),
@@ -107,7 +109,7 @@ def domain_ok(name: str, x: float) -> bool:
         return False
     if name == "exp2" and (x > 1023.0 or x < -1074.0):
         return False
-    if name == "ln" and x <= 0.0:
+    if name in ("ln", "log2", "log10") and x <= 0.0:
         return False
     if name in ("asin", "acos") and abs(x) > 1.0:
         return False
