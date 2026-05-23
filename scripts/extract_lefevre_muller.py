@@ -69,6 +69,7 @@ FUNCTIONS = [
     ("acos", "acos", mp.acos),
     ("exp2", "exp2", lambda x: mp.power(2, x)),
     ("exp10", "exp10", lambda x: mp.power(10, x)),
+    ("expm1", "expm1", mp.expm1),
 ]
 
 
