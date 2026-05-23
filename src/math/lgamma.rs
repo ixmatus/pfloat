@@ -14,6 +14,15 @@
 //!   lgamma(x+n) − ln(product)`. `z_min` is sized so the truncated
 //!   Stirling series clears `target_precision + 32` bits.
 //! - For `x ≥ z_min`: direct Stirling.
+//!
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022).
+//! The Stirling-plus-product-shift composition for small positive
+//! `x` and the reflection composition for negative non-integer `x`
+//! both run at the working precision the Ziv driver supplies; the
+//! Ziv interval test handles the composition error analytically.
+//! The pre-Ziv `+512` cap on the working-precision guard is dropped:
+//! the Ziv loop now owns guard growth (64, 128, 256, 512, 1024).
 
 use core::cmp::Ordering;
 
@@ -30,6 +39,7 @@ use crate::mantissa::limbs_for;
 
 use super::gamma_stirling::stirling_lgamma;
 use super::pi_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `lgamma(self)` rounded under `mode` to `self.precision`.
@@ -117,17 +127,33 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         Class::Normal { .. } => {}
     }
 
-    // Negative branch: check for integer pole, else reflect.
+    // Negative integer pole, before any working-precision work.
+    if matches!(x.sign(), Sign::Negative) && is_integer(x) {
+        let inf =
+            BigFloat::try_new_infinity(Sign::Positive, target_precision).expect("precision >= 1");
+        auto_raise(Status::DIV_BY_ZERO);
+        return (inf, Status::DIV_BY_ZERO);
+    }
+
+    // Negative non-integer and positive finite both feed the Ziv
+    // driver. The closure dispatches on the sign at each retry.
+    let z_min = z_min_for_target(target_precision);
+    ziv_round(
+        |working_prec| lgamma_at_w(x, z_min, working_prec),
+        target_precision,
+        mode,
+    )
+}
+
+/// Evaluate `lgamma(x)` at the supplied working precision via the
+/// reflection formula (for negative non-integer `x`) or the
+/// Stirling-with-upward-shift composition (for positive `x`). The
+/// caller's special-case handling has peeled off NaN, ±0, ±∞, and
+/// the negative-integer pole. Returns the unrounded value; the Ziv
+/// driver handles rounding to the caller's target precision and
+/// mode.
+fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     if matches!(x.sign(), Sign::Negative) {
-        if is_integer(x) {
-            let inf = BigFloat::try_new_infinity(Sign::Positive, target_precision)
-                .expect("precision >= 1");
-            auto_raise(Status::DIV_BY_ZERO);
-            return (inf, Status::DIV_BY_ZERO);
-        }
-        let working_prec = target_precision
-            .saturating_add(64)
-            .min(target_precision.saturating_add(512));
         let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
         // y = 1 − x, positive since x < 0.
         let (y, _) = one.sub(x, RoundingMode::NearestEven);
@@ -142,18 +168,10 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
             .expect("precision >= 1");
         let (mid, _) = ln_pi.sub(&ln_sin, RoundingMode::NearestEven);
         let (result, _) = mid.sub(&lgamma_y, RoundingMode::NearestEven);
-        let (rounded, status) = result
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
+        return result;
     }
 
     // Positive branch.
-    let z_min = z_min_for_target(target_precision);
-    let working_prec = target_precision
-        .saturating_add(64)
-        .min(target_precision.saturating_add(512));
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -175,7 +193,7 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         1u32 << ((e_x + 1) as u32)
     };
 
-    let result_full_prec = if approx_x >= z_min {
+    if approx_x >= z_min {
         stirling_lgamma(&x_w, working_prec)
     } else {
         // Number of upward shifts so x + n ≥ z_min.
@@ -185,13 +203,7 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         let ln_prod = product_ln(&x_w, shifts, working_prec);
         let (diff, _) = lgamma_z.sub(&ln_prod, RoundingMode::NearestEven);
         diff
-    };
-
-    let (rounded, status) = result_full_prec
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    }
 }
 
 /// Picks the shift target `z_min` such that Stirling truncated at

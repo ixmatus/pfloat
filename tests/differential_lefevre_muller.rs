@@ -319,3 +319,11 @@ fn gamma_corpus() {
         check("gamma", |x| x.gamma(NE), case);
     }
 }
+
+#[cfg(feature = "specials")]
+#[test]
+fn lgamma_corpus() {
+    for case in LGAMMA_CASES {
+        check("lgamma", |x| x.lgamma(NE), case);
+    }
+}

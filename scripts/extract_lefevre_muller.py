@@ -82,6 +82,12 @@ FUNCTIONS = [
     ("erf", "erf", mp.erf),
     ("erfc", "erfc", mp.erfc),
     ("gamma", "tgamma", mp.gamma),
+    # lgamma uses log(abs(gamma())) rather than mpmath.loggamma to
+    # avoid the imaginary-component-on-negatives path mpmath's
+    # loggamma takes (which would return mpc and the script's
+    # post-evaluation mpf check would drop the case). On negative
+    # integers gamma diverges; domain_ok filters those out.
+    ("lgamma", "lgamma", lambda x: mp.log(abs(mp.gamma(x)))),
 ]
 
 
@@ -112,6 +118,10 @@ def domain_ok(name: str, x: float) -> bool:
         return False
     if name in ("ln", "log2", "log10") and x <= 0.0:
         return False
+    if name == "lgamma":
+        # lgamma has poles at non-positive integers.
+        if x < 0.0 and x == math.floor(x):
+            return False
     if name in ("asin", "acos") and abs(x) > 1.0:
         return False
     return True
