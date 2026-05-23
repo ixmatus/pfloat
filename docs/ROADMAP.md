@@ -88,8 +88,8 @@ required, not aliased`.
 
 ## Phase 3: pfloat adoption polish
 
-The polish that earns 1.x adoption. Sequenced after the in repo
-Phase 8 v1.0 tag and after the Phase 1 status table.
+The polish that earns 1.x adoption. Sequenced after the v1.0 tag
+(which itself depends on the Phase 1 status table per ADR-0033).
 
 - The per function rounding status table (Phase 1's output)
   published in README and docs.
@@ -146,13 +146,22 @@ the warning against the opposite approach.
 
 ## Currently in flight
 
-pfloat in repo Phase 8 (v1.0 tag preparation). Per slice detail
-in the project's per slice plans. Phase 1 and everything past it
-is queued, not in flight. ADR-0032 is the only discrete decision
-that has already been discharged from a future phase, captured
-early because the discussion that produced it happened mid Phase
-8 and the reminder needed to be durable before the libm phase
-opens.
+pfloat Phase 1 (the correctness sweep) is in flight. In-repo
+Phase 8 slice 8b shipped the foundational artifacts (the
+conformance-evidence script and CI gate, the disclosure-correction
+diff for the eventual v1.0 tag, the CORE-MATH-sourced L-M
+differential tier on nine functions). Slice 8c (the v1.0 tag +
+`cargo publish` slice) is parked behind Phase 1 per ADR-0033:
+the slice-8b exercise surfaced a known wrong-rounding case in
+pfloat's `exp` underflow path and exposed how thin the tier-2
+specials' differential rigor really is. Shipping a v1.0 with
+those gaps would commit them to a crates.io version that cannot
+be replaced after publication, so Phase 1's exhaustive `f32`
+audit and per-function status table become the v1.0 ship
+criterion rather than v1.x cleanup. ADR-0032 (libm reciprocal
+and root kernels stay direct primary, not aliased) and ADR-0033
+(this re-sequencing) are the two Phase 1 / Phase 2 discrete
+decisions discharged so far. Phase 2 and beyond remain queued.
 
 ## Related
 
