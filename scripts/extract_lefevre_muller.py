@@ -68,6 +68,17 @@ FUNCTIONS = [
     ("asin", "asin", mp.asin),
     ("acos", "acos", mp.acos),
     ("exp2", "exp2", lambda x: mp.power(2, x)),
+    ("exp10", "exp10", lambda x: mp.power(10, x)),
+    ("expm1", "expm1", mp.expm1),
+    ("log1p", "log1p", mp.log1p),
+    ("sinh", "sinh", mp.sinh),
+    ("cosh", "cosh", mp.cosh),
+    ("asinh", "asinh", mp.asinh),
+    ("acosh", "acosh", mp.acosh),
+    ("atanh", "atanh", mp.atanh),
+    ("erf", "erf", mp.erf),
+    ("erfc", "erfc", mp.erfc),
+    ("gamma", "tgamma", mp.gamma),
 ]
 
 

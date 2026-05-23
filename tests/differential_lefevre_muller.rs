@@ -143,3 +143,83 @@ fn exp2_corpus() {
         check("exp2", |x| x.exp2(NE), case);
     }
 }
+
+#[test]
+fn exp10_corpus() {
+    for case in EXP10_CASES {
+        check("exp10", |x| x.exp10(NE), case);
+    }
+}
+
+#[test]
+fn expm1_corpus() {
+    for case in EXPM1_CASES {
+        check("expm1", |x| x.expm1(NE), case);
+    }
+}
+
+#[test]
+fn log1p_corpus() {
+    for case in LOG1P_CASES {
+        check("log1p", |x| x.log1p(NE), case);
+    }
+}
+
+#[test]
+fn sinh_corpus() {
+    for case in SINH_CASES {
+        check("sinh", |x| x.sinh(NE), case);
+    }
+}
+
+#[test]
+fn cosh_corpus() {
+    for case in COSH_CASES {
+        check("cosh", |x| x.cosh(NE), case);
+    }
+}
+
+#[test]
+fn asinh_corpus() {
+    for case in ASINH_CASES {
+        check("asinh", |x| x.asinh(NE), case);
+    }
+}
+
+#[test]
+fn acosh_corpus() {
+    for case in ACOSH_CASES {
+        check("acosh", |x| x.acosh(NE), case);
+    }
+}
+
+#[test]
+fn atanh_corpus() {
+    for case in ATANH_CASES {
+        check("atanh", |x| x.atanh(NE), case);
+    }
+}
+
+#[cfg(feature = "specials")]
+#[test]
+fn erf_corpus() {
+    for case in ERF_CASES {
+        check("erf", |x| x.erf(NE), case);
+    }
+}
+
+#[cfg(feature = "specials")]
+#[test]
+fn erfc_corpus() {
+    for case in ERFC_CASES {
+        check("erfc", |x| x.erfc(NE), case);
+    }
+}
+
+#[cfg(feature = "specials")]
+#[test]
+fn gamma_corpus() {
+    for case in GAMMA_CASES {
+        check("gamma", |x| x.gamma(NE), case);
+    }
+}

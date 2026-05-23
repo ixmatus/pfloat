@@ -92,14 +92,32 @@ the full corpus verbatim is neither warranted as a test surface nor
 proportionate to a Rust crate's size budget. pfloat ships a
 representative subset:
 
-- One Rust data block per covered function (approximately 50-100
-  cases per function, sampled from the CORE-MATH `.wc` blocks that
+- One Rust data block per covered function (approximately 50 cases
+  per function, sampled from the CORE-MATH `.wc` blocks that
   exercise the hardest rounding decisions).
-- The pfloat-supported binary64 surface that has a CORE-MATH
-  analog: `exp`, `log`, `sin`, `cos`, `tan`, `atan`, `asin`, `acos`,
-  `exp2`. Functions outside pfloat's v1.0 elementary-transcendental
-  set (e.g. `sinh`, `cosh`, `hypot`) ship in v1.x as the kernels
-  land.
+- The pfloat-supported binary64 surface that has a CORE-MATH analog
+  and a passing pfloat kernel at `p = 53` `NearestEven`: `exp`, `ln`
+  (CORE-MATH `log`), `sin`, `cos`, `tan`, `atan`, `asin`, `acos`,
+  `exp2`, `exp10`, `expm1`, `log1p`, `sinh`, `cosh`, `asinh`,
+  `acosh`, `atanh`, `erf`, `erfc`, `gamma` (CORE-MATH `tgamma`).
+  Twenty functions as of slice p1.1; the original nine landed in
+  slice 8b, eleven more in slice p1.1.
+- Four functions whose CORE-MATH `.wc` data is available but whose
+  pfloat kernel surfaces a `has-errors` finding at `p = 53` `NE` on
+  at least one hard-to-round input are deferred to slice p1.2:
+  `log2`, `log10`, `tanh`, `lgamma`. The pattern across all four is
+  a 1-ULP miss at `p = 53` traceable to the elementary kernels'
+  fixed-64-bit-guard convention (slice 3a, predating the Ziv retry
+  the Phase 1 plan upgrades). The corpus addition for each of these
+  is staged behind its kernel fix; the bead queue carries the
+  pairing.
+- Multi-argument functions in CORE-MATH (`atan2`, `pow`) and
+  reciprocal/root primitives ADR-0032 reserves for the Phase 2 libm
+  shell (`cbrt`, `hypot`, `rootn`) are intentionally absent from
+  this corpus. They stay on differential + property tests as their
+  v1.0 verification posture; the post-v1.0 rigor track is the
+  multi-argument exhaustive sweep, separate from the Phase 1 unary
+  surface.
 - Inputs are transcribed from CORE-MATH `.wc` files. Outputs are
   NOT transcribed — pfloat computes each expected binary64 result
   independently by evaluating the function at `p = 200` bits via
