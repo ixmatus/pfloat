@@ -312,6 +312,44 @@ name = "differential_zeta"
 path = "tests/differential_zeta.rs"
 required-features = ["differential-mpfr"]
 
+# Slice p1.3: Phase 1 Oracle harness smoke tests. Build behind the
+# existing `differential-mpfr` feature lane (rug dependency). The
+# harness types live in `tests/oracle/`; each consumer below imports
+# it via `mod oracle;` and exercises the surface it needs.
+[[test]]
+name = "oracle_types_smoke"
+path = "tests/oracle_types_smoke.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "oracle_mpfr_smoke"
+path = "tests/oracle_mpfr_smoke.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "oracle_verify_smoke"
+path = "tests/oracle_verify_smoke.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "oracle_driver_smoke"
+path = "tests/oracle_driver_smoke.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "oracle_smoke_gate"
+path = "tests/oracle_smoke_gate.rs"
+required-features = ["differential-mpfr"]
+
+# Slice p1.3.8: Phase 1 Oracle sweep runner. Manual / release CI
+# only; not built per push. Per ADR-0034 this is the artifact for
+# the long-running exhaustive sweep that produces the v1.0
+# per-function status table.
+[[example]]
+name = "oracle_sweep"
+path = "examples/oracle_sweep.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

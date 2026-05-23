@@ -156,8 +156,18 @@ functions to the L-M tier; slice p1.2 closed the five-finding
 `lgamma` 1-ULP mis-roundings) by lifting `pow`'s Ziv interval-test
 driver into a shared `src/math/ziv.rs` module and wiring `exp`,
 `ln`, `tanh`, and `lgamma` through it. `log2` and `log10` inherit
-via the existing `ln_round` composition. The L-M corpus now covers
-twenty-four functions at 1200 bit-exact cases.
+via the existing `ln_round` composition. The L-M corpus covers
+twenty-four functions at 1200 bit-exact cases. Slice p1.3 lands
+the Phase 1 Oracle harness: `Enclosure` + `OracleBackend` trait
+(ADR-0034), MPFR backend wiring 33 MPFR-primary `FnId` variants,
+`certified_round_f32` plus `verify_input` with Ziv-at-oracle
+precision doubling, per-push smoke gate, standalone runner
+binary, and a first sweep at 65536 binary32 subnormal-range
+inputs that produced an in-tree per-function TOML status table
+under `tests/oracle/status/`. The sweep returned 30 of 33
+functions correctly-rounded; three has-errors findings deferred
+to slice p1.4+ (tanh subnormal-cancellation defect, erf 1-ULP on
+111 inputs, J1 1-ULP on 25%).
 
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
