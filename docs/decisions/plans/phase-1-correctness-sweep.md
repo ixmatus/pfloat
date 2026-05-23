@@ -409,6 +409,82 @@ deferrals) are closed. The exhaustive `f32` sweep (planned p1.6 -
 p1.8) will surface any remaining latent trips; the corpus tier
 catches the obvious ones.
 
+## Slice p1.3 closure (2026-05-23)
+
+Slice p1.3 implemented the Phase 1 plan's steps 1-4 (surface
+freeze, Oracle trait + MPFR backend, verification core, run on
+MPFR-covered functions). The slice landed eleven unsigned branch
+commits closing the harness scaffold:
+
+- **Surface freeze + ADR-0034**: `docs/v1.0-surface.md` enumerates
+  the 47 frozen v1.0 unary surface entries (21 elementary + 10
+  specials + 4 Airy + 12 Bessel fixed-order); ADR-0034 records the
+  Oracle layer architecture (`Enclosure` bracket type,
+  `OracleBackend` trait, MPFR backend's RNDD / RNDU directed-
+  rounding bracket, `FnId` enum dispatch, Ziv-at-oracle
+  precision doubling, status table schema, regression corpus
+  capture, Arb-backend posture for the next slice, LGPL
+  isolation).
+- **Types and dispatch**: `tests/oracle/` ships `Enclosure`,
+  `OracleBackend`, `FnId` (47 entries), `Verdict`,
+  `MpfrOracle::enclose` with 35 MPFR-primary dispatch entries via
+  a `bracket!` macro plus an `lgamma_bracket` helper, and the
+  parallel pfloat-side `pfloat_kernel` dispatch routing all 47
+  FnIds.
+- **Verification core**: `convert.rs` adds `bf24_of_bits` (bit-
+  exact f32-to-BigFloat construction; mirrors slice-p1.2's
+  `bf53_of_bits` sized for binary32), `bf_to_f32_bits`, and
+  `round_f32` (rug Float to f32 under any of the five IEEE
+  rounding modes, with NearestAway synthesized to compensate for
+  MPFR's absent roundTiesToAway primitive). `verify.rs` adds
+  `START_PREC = 64`, `MAX_PREC = 1024`, `certified_round_f32`
+  (with NaN-aware (NaN, NaN) handling that returns
+  `Some(f32::NAN)`), and the `verify_input` Ziv-at-oracle loop.
+- **Driver and status emitter**: `driver.rs` adds the per-
+  function `run_function` runner with `std::panic::catch_unwind`
+  capture, `outcome_to_status_row` builder, and
+  `write_mismatch_corpus` binary serializer. `status.rs` ships
+  the `StatusRow` schema and hand-written TOML emitter matching
+  ADR-0034's schema verbatim.
+- **Smoke gate**: `tests/oracle_smoke_gate.rs` runs each of the
+  33 MPFR-primary `FnId` variants at 64 representative inputs
+  under NE on every `differential-mpfr` CI push; ~20 seconds in
+  debug, ~5 seconds in release. All 2112 verdicts return Ok at
+  slice close.
+- **Standalone runner**: `examples/oracle_sweep.rs` runs the same
+  harness at a larger budget for per-release sweeps;
+  configurable via `--function NAME`, `--exhaustive` /
+  `--sample N`, `--mode MODES`, output paths.
+- **First sweep in-tree**: 33 per-function TOML status rows in
+  `tests/oracle/status/` plus three binary regression corpora
+  in `tests/vectors/` from a 65536-input subnormal-range sweep
+  under NE. Output:
+    - 30 of 33 MPFR-primary FnIds: `correctly-rounded`.
+    - tanh: `has-errors` (65535 mismatches), pf-7d7. Root cause:
+      the `1 - exp(-2x)` cancellation underflows to exact 0 at
+      every working precision for subnormal inputs; the slice-
+      p1.2 `ziv_round` envelope cannot recover because
+      `half_width(0)` is 0 and the interval test certifies the
+      (wrong) 0.
+    - erf: `has-errors` (111 mismatches), pf-z0f. Likely the
+      slice-3a fixed-guard convention surviving in erf; the
+      slice-p1.2 Ziv upgrade did not extend to erf.
+    - J1: `has-errors` (16388 mismatches, all 1-ULP), pf-n5d.
+      Likely faithful-not-correctly-rounded in the small-
+      argument formula.
+- Three defect beads (pf-7d7, pf-z0f, pf-n5d) and one
+  deferred-feature bead (pf-r2b9: L-M corpus inputs as
+  adversarial seeds in the runner) are filed for slice p1.4+.
+
+Slice p1.3 ships the harness; p1.4 closes the three findings and
+extends the runner with L-M adversarial seeds. Phase 1's Arb
+backend (`ArbPrimary` and `ArbPlusTable` routes per
+ADR-0034) ships in a follow-up slice; until then the 12
+Arb-primary FnIds (`Si`, `Ci`, `Li`, `Bi`, `Ai_prime`,
+`Bi_prime`, modified Bessel `I` and `K` families) verify only
+through the existing differential lane plus identity cross
+checks.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the
