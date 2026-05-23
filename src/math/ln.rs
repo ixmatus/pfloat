@@ -19,10 +19,13 @@
 //! 4. Compose: `ln(x) = 2·atanh(u) + e · ln(2)`. Round to target
 //!    precision under the user's rounding mode.
 //!
-//! Like slice 3a's `exp`, slice 3b uses a fixed 64-bit guard above
-//! the target precision rather than full Ziv-strategy retry. Phase
-//! 6's worst-case-table verification will catch any tie-case
-//! misses.
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022).
+//! The driver supplies a working precision, [`ln_at_w`] evaluates the
+//! algorithm above at that precision, and the guard grows until the
+//! Ziv interval test certifies correct rounding at the target. The
+//! `log2` and `log10` kernels compose through `ln_round` and inherit
+//! the same correctness.
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -36,13 +39,15 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `ln(self)`: returns the natural logarithm rounded under
     /// `mode` to `self.precision`.
     ///
-    /// See [the module docs](self) for the algorithm and the slice
-    /// 3b accuracy notes.
+    /// Correctly rounded under every IEEE rounding mode via the
+    /// shared [`crate::math::ziv::ziv_round`] driver (slice p1.2,
+    /// ADR-0022). See [the module docs](self) for the algorithm.
     #[must_use]
     pub fn ln(&self, mode: RoundingMode) -> (Self, Status) {
         let target = self.precision;
@@ -138,8 +143,22 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         } => {}
     }
 
-    // x is finite positive normal.
-    let working_prec = target_precision.saturating_add(64);
+    // x is finite positive normal. Correctly rounded under `mode`
+    // via the Ziv interval test (ADR-0022).
+    ziv_round(
+        |working_prec| ln_at_w(x, working_prec),
+        target_precision,
+        mode,
+    )
+}
+
+/// Evaluate `ln(x)` at the supplied working precision via
+/// binary-exponent range reduction plus the atanh series. `x` must
+/// be finite positive normal (the caller's special-case handling
+/// peels off NaN, ±0, ±∞, and negatives before invoking this).
+/// Returns the unrounded value; the Ziv driver handles rounding to
+/// the caller's target precision and mode.
+fn ln_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -204,12 +223,7 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
     let e_big = BigFloat::try_from_i64_exact(e, working_prec).expect("precision >= 1");
     let (e_ln2, _) = e_big.mul(&ln2, RoundingMode::NearestEven);
     let (result, _) = ln_m.add(&e_ln2, RoundingMode::NearestEven);
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    result
 }
 
 #[cfg(test)]

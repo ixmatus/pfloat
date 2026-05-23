@@ -98,6 +98,8 @@ pub(crate) mod pow;
 pub(crate) mod sinh;
 #[cfg(feature = "exp-log")]
 pub(crate) mod tanh;
+#[cfg(feature = "exp-log")]
+pub(crate) mod ziv;
 
 #[cfg(feature = "trig")]
 pub(crate) mod acos;

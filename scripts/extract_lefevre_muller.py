@@ -71,14 +71,23 @@ FUNCTIONS = [
     ("exp10", "exp10", lambda x: mp.power(10, x)),
     ("expm1", "expm1", mp.expm1),
     ("log1p", "log1p", mp.log1p),
+    ("log2", "log2", lambda x: mp.log(x, 2)),
+    ("log10", "log10", mp.log10),
     ("sinh", "sinh", mp.sinh),
     ("cosh", "cosh", mp.cosh),
+    ("tanh", "tanh", mp.tanh),
     ("asinh", "asinh", mp.asinh),
     ("acosh", "acosh", mp.acosh),
     ("atanh", "atanh", mp.atanh),
     ("erf", "erf", mp.erf),
     ("erfc", "erfc", mp.erfc),
     ("gamma", "tgamma", mp.gamma),
+    # lgamma uses log(abs(gamma())) rather than mpmath.loggamma to
+    # avoid the imaginary-component-on-negatives path mpmath's
+    # loggamma takes (which would return mpc and the script's
+    # post-evaluation mpf check would drop the case). On negative
+    # integers gamma diverges; domain_ok filters those out.
+    ("lgamma", "lgamma", lambda x: mp.log(abs(mp.gamma(x)))),
 ]
 
 
@@ -91,16 +100,28 @@ def domain_ok(name: str, x: float) -> bool:
     """Reject inputs outside the function's f64-finite-output domain.
 
     pfloat returns ±∞ / NaN for domain-edge inputs; those are
-    covered by separate property tests, not this corpus.
+    covered by separate property tests, not this corpus. ±0 inputs
+    are also dropped: IEEE 754 fixes their result by sign-preservation
+    rules (e.g. log1p(-0) = -0, sin(-0) = -0), and the corpus is
+    for hard-to-round rounding cases, not sign-handling specials.
+    Some CORE-MATH `.wc` files (notably `log1p.wc`) include ±0 in a
+    leading "special values" block; this filter drops them
+    consistently.
     """
     if not math.isfinite(x):
+        return False
+    if x == 0.0:
         return False
     if name == "exp" and (x > 709.0 or x < -745.0):
         return False
     if name == "exp2" and (x > 1023.0 or x < -1074.0):
         return False
-    if name == "ln" and x <= 0.0:
+    if name in ("ln", "log2", "log10") and x <= 0.0:
         return False
+    if name == "lgamma":
+        # lgamma has poles at non-positive integers.
+        if x < 0.0 and x == math.floor(x):
+            return False
     if name in ("asin", "acos") and abs(x) > 1.0:
         return False
     return True
@@ -119,35 +140,31 @@ def extract(core_math_root: Path, name: str, wc_dir: str, fn) -> list[tuple[int,
     """Sample up to SUBSET cases from the function's .wc file and
     compute the expected NE-rounded output for each.
 
-    Sampling targets the canonical hard-to-round-case block, not
-    upstream's leading domain-edge stress block. Some `.wc` files
-    (notably `exp.wc`) open with an "exercise underflow or
-    overflow" section whose entries test subnormal-boundary
-    behaviour rather than rounding precision; pfloat's subnormal
-    underflow handling is a separate concern from elementary-kernel
-    rounding correctness. The script looks for a `# hard-to-round`
-    or `# worst cases` comment marker and begins sampling on the
-    next data line. Files without that marker (none in the current
-    upstream set) fall back to sampling from the file's first data
-    line.
+    Sampling walks the file from the first data line. Earlier
+    revisions of this script skipped a leading "exercise underflow
+    or overflow" block in `exp.wc` (and the analogous block in
+    other `.wc` files) via a `# hard-to-round` / `# worst cases`
+    comment-marker scan; slice p1.2 removed that scan so the leading
+    underflow inputs land in the corpus as the regression guard for
+    slice 8b's documented `exp` underflow defect (now closed by the
+    Ziv-retry upgrade across the exp/log primitives).
+
+    `float.fromhex` skips non-numeric tokens (NaN/snan/inf) via the
+    try/except below, `domain_ok` filters values outside the
+    function's representable range, and non-finite mpmath outputs
+    are dropped after evaluation — so the script remains robust to
+    files like `log1p.wc` whose leading block also carries special
+    values that are not valid corpus entries.
     """
     wc_path = core_math_root / "src" / "binary64" / wc_dir / f"{wc_dir}.wc"
     if not wc_path.is_file():
         raise FileNotFoundError(f"missing CORE-MATH file: {wc_path}")
 
     lines = wc_path.read_text().splitlines()
-    start_idx = 0
-    for i, raw in enumerate(lines):
-        ls = raw.strip().lower()
-        if ls.startswith("#") and (
-            "hard-to-round" in ls or "worst cases" in ls
-        ):
-            start_idx = i + 1
-            break
 
     cases: list[tuple[int, int]] = []
     with mp.workprec(MPMATH_WORKING_BITS):
-        for raw in lines[start_idx:]:
+        for raw in lines:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
@@ -164,6 +181,12 @@ def extract(core_math_root: Path, name: str, wc_dir: str, fn) -> list[tuple[int,
             try:
                 y = fn(mp.mpf(x))
             except (ValueError, ZeroDivisionError, mp.libmp.NoConvergence):
+                continue
+            # Some upstream leading blocks include inputs outside the
+            # real domain (e.g. log1p of a value < -1, which mpmath
+            # returns as a complex number). Drop those; they're not
+            # in the function's f64-real-output domain.
+            if not isinstance(y, mp.mpf):
                 continue
             y_f = mpmath_to_f64_ne(y)
             if not math.isfinite(y_f):
