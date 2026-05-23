@@ -16,8 +16,8 @@
 mod oracle;
 
 use oracle::{
-    bf24_of_bits, bf_to_f32_bits, certified_round_f32, round_f32, verify_input, Enclosure, FnId,
-    Kernel, MpfrOracle, Verdict, MAX_PREC, START_PREC,
+    bf24_of_bits, bf_to_f32_bits, certified_round_f32, pfloat_kernel, round_f32, verify_input,
+    Enclosure, FnId, Kernel, MpfrOracle, Verdict, MAX_PREC, START_PREC,
 };
 use pfloat::RoundingMode;
 use rug::float::Round;
@@ -169,12 +169,13 @@ fn certified_returns_none_when_endpoint_is_nan() {
 
 // --- verify_input end-to-end on sqrt ---
 
-fn sqrt_kernel(_f: FnId, input: u32, mode: RoundingMode) -> u32 {
-    // pfloat's sqrt at p=24 (binary32). Builds the f32 input via
-    // the bit-exact bridge so subnormal inputs are preserved.
-    let x = bf24_of_bits(input);
-    let (result, _) = x.sqrt(mode);
-    bf_to_f32_bits(&result)
+// Sqrt kernel routed through the canonical pfloat_kernel dispatch.
+// Switching from a single-purpose closure to the dispatch table is
+// what proves the slice p1.3.5 wiring compiles end-to-end for every
+// FnId; the per-function smoke gate at slice p1.3.7 exercises the
+// remaining 34 MPFR-primary entries in the same way.
+fn sqrt_kernel(f: FnId, input: u32, mode: RoundingMode) -> u32 {
+    pfloat_kernel(f, input, mode)
 }
 
 #[test]

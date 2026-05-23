@@ -28,10 +28,12 @@
 
 pub mod convert;
 pub mod mpfr;
+pub mod pfloat_kernels;
 pub mod types;
 pub mod verify;
 
 pub use convert::{bf24_of_bits, bf_to_f32_bits, round_f32};
 pub use mpfr::MpfrOracle;
+pub use pfloat_kernels::pfloat_kernel;
 pub use types::{Enclosure, FnId, OracleBackend, Verdict};
 pub use verify::{certified_round_f32, verify_input, Kernel, MAX_PREC, START_PREC};
