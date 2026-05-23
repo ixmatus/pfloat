@@ -289,6 +289,13 @@ fn atanh_corpus() {
     }
 }
 
+#[test]
+fn tanh_corpus() {
+    for case in TANH_CASES {
+        check("tanh", |x| x.tanh(NE), case);
+    }
+}
+
 #[cfg(feature = "specials")]
 #[test]
 fn erf_corpus() {

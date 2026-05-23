@@ -9,6 +9,13 @@
 //! precision, the formula collapses to `1/1 = 1` and the sign-
 //! flipped result is `±1` correctly.
 //!
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022).
+//! The composition `(1 − e^{−2|x|}) / (1 + e^{−2|x|})` runs at the
+//! working precision the Ziv driver supplies; the internal `exp`
+//! call is itself Ziv-driven, so the composition is correctly
+//! rounded under the outer envelope's interval test.
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `tanh(±0) = ±0`.
@@ -20,6 +27,8 @@ use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
+
+use super::ziv::ziv_round;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -98,9 +107,22 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
     let sign = x.sign();
     let abs_x = x.abs();
+    ziv_round(
+        |working_prec| tanh_at_w(&abs_x, sign, working_prec),
+        target_precision,
+        mode,
+    )
+}
+
+/// Evaluate `tanh(x)` at the supplied working precision via
+/// `tanh(|x|) = (1 − e^{−2|x|}) / (1 + e^{−2|x|})`, restoring the
+/// sign of the input on the result. The caller's special-case
+/// handling has already peeled off NaN, ±0, and ±∞. Returns the
+/// unrounded value; the Ziv driver handles rounding to the
+/// caller's target precision and mode.
+fn tanh_at_w(abs_x: &BigFloat, sign: Sign, working_prec: u32) -> BigFloat {
     let abs_x_w = abs_x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -113,16 +135,11 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     let (numer, _) = one.sub(&exp_neg, RoundingMode::NearestEven);
     let (denom, _) = one.add(&exp_neg, RoundingMode::NearestEven);
     let (result_abs, _) = numer.div(&denom, RoundingMode::NearestEven);
-    let result = if matches!(sign, Sign::Negative) {
+    if matches!(sign, Sign::Negative) {
         result_abs.negated()
     } else {
         result_abs
-    };
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    }
 }
 
 #[cfg(test)]

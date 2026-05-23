@@ -75,6 +75,7 @@ FUNCTIONS = [
     ("log10", "log10", mp.log10),
     ("sinh", "sinh", mp.sinh),
     ("cosh", "cosh", mp.cosh),
+    ("tanh", "tanh", mp.tanh),
     ("asinh", "asinh", mp.asinh),
     ("acosh", "acosh", mp.acosh),
     ("atanh", "atanh", mp.atanh),
