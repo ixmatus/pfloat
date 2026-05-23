@@ -312,6 +312,15 @@ name = "differential_zeta"
 path = "tests/differential_zeta.rs"
 required-features = ["differential-mpfr"]
 
+# Slice p1.3: Phase 1 Oracle harness smoke tests. Build behind the
+# existing `differential-mpfr` feature lane (rug dependency). The
+# harness types live in `tests/oracle/`; each consumer below imports
+# it via `mod oracle;` and exercises the surface it needs.
+[[test]]
+name = "oracle_types_smoke"
+path = "tests/oracle_types_smoke.rs"
+required-features = ["differential-mpfr"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
