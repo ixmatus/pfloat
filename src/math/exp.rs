@@ -15,21 +15,18 @@
 //! 4. Compose: `exp(x) = exp(r) · 2^k`. The `2^k` factor is a free
 //!    exponent shift on the `BigFloat` (no arithmetic needed).
 //!
-//! pfloat does not implement full Ziv-strategy retry yet: slice 3a
-//! computes with a fixed 64-bit guard above the target precision,
-//! which is correctly-rounded for the vast majority of inputs (and
-//! always correct in the round-toward-zero / round-toward-±∞ modes
-//! that don't have tie cases). Pathological round-to-nearest tie
-//! cases at the boundary of the rounding ULP are exercised by
-//! `tests/differential_lefevre_muller.rs`, which sources hard-to-
-//! round inputs from the CORE-MATH project's worst-case-rounding
-//! database (a curated extension of the Lefèvre–Muller table the
-//! ARITH-15 2001 paper introduced); the kernel matches an
-//! mpmath-derived oracle at binary64 `NearestEven` across the
-//! canonical hard-to-round block. The corpus deliberately
-//! excludes the underflow-boundary stress block at the head of
-//! CORE-MATH's `exp.wc` (those exercise subnormal-rounding,
-//! a separate concern queued for a v1.x slice).
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022): the
+//! kernel function [`exp_at_w`] evaluates the algorithm above at the
+//! working precision the driver supplies, and the driver grows the
+//! guard until the Ziv interval test certifies that the rounded
+//! target-precision value lies in the bracket of all working-
+//! precision evaluations. CORE-MATH's worst-case-rounding corpus
+//! (sourced from the Lefèvre–Muller ARITH-15 2001 table) including
+//! the leading underflow block exercises the boundary cases in
+//! `tests/differential_lefevre_muller.rs`. Slice p1.2 closed slice
+//! 8b's documented exp underflow defect: the corpus's underflow
+//! stress block now lands as the regression guard.
 
 use crate::big::BigFloat;
 use crate::class::Class;
@@ -44,15 +41,15 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `exp(self)`: returns `e^x` rounded under `mode` to
     /// `self.precision`.
     ///
-    /// See [the module docs](self) for the algorithm. Slice 3a
-    /// uses a fixed 64-bit guard; pathological round-to-nearest
-    /// tie cases at the rounding ULP boundary may miss. Phase 5
-    /// will wire in the Lefèvre–Muller worst-case test corpus.
+    /// Correctly rounded under every IEEE rounding mode via the
+    /// shared [`crate::math::ziv::ziv_round`] driver (slice p1.2,
+    /// ADR-0022). See [the module docs](self) for the algorithm.
     #[must_use]
     pub fn exp(&self, mode: RoundingMode) -> (Self, Status) {
         let target = self.precision;
@@ -128,9 +125,22 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    // Working precision: target + 64 bits of guard.
-    let working_prec = target_precision.saturating_add(64);
+    // Correctly rounded under `mode` via the Ziv interval test
+    // (ADR-0022). The driver supplies a working precision, the
+    // closure evaluates exp at that precision, and the driver grows
+    // the guard until correct rounding is certified.
+    ziv_round(
+        |working_prec| exp_at_w(x, working_prec),
+        target_precision,
+        mode,
+    )
+}
 
+/// Evaluate `exp(x)` at the supplied working precision via
+/// range-reduction + Taylor series + power-of-two scale. Returns the
+/// unrounded value; the Ziv driver handles rounding to the caller's
+/// target precision and mode.
+fn exp_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -178,13 +188,7 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     }
 
     // exp(x) = sum × 2^k. Apply k as a free exponent shift.
-    let scaled = shift_exponent(sum, k);
-
-    let (rounded, status) = scaled
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    shift_exponent(sum, k)
 }
 
 /// Round a `BigFloat` to the nearest `i64` (banker's rounding for

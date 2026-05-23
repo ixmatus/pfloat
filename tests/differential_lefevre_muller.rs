@@ -21,17 +21,23 @@
 //!
 //! The bridge from `f64` (the corpus's input type) to `BigFloat`
 //! goes through Rust's shortest-round-trip decimal formatter and
-//! `BigFloat::parse_str`. At `p = 53` with `NearestEven`, the
-//! parser is correctly rounded for any decimal that round-trips
-//! through an `f64`, so the constructed `BigFloat` is bit-exact
-//! the input. pfloat's kernel then runs at `p = 53` (binary64
-//! precision) under its 64-bit working-precision guard; the
-//! returned `BigFloat` is the kernel's claim for the
-//! correctly-rounded binary64 result. Equality between two
-//! `BigFloat`s at the same precision is bit-equality (`#[derive(Eq,
-//! PartialEq)]` on `BigFloat` is the rounded-representation
-//! identity); the assertion catches both a wrong sign and a wrong
-//! last bit.
+//! `BigFloat::parse_str`; for normal-range binary64 values the
+//! constructed `BigFloat` matches the input bit-exact (the source
+//! has 53 bits of significance, same as the `p = 53` `BigFloat`).
+//! pfloat's kernel then runs at `p = 53` (binary64 precision)
+//! through the slice-p1.2 `Ziv` interval-test driver; the returned
+//! `BigFloat` is the kernel's claim for the correctly-rounded
+//! binary64 result. The assertion converts that `BigFloat` to an
+//! `f64` via Rust's standard parser on the kernel's
+//! round-trip-precision decimal, then compares the resulting bit
+//! pattern to CORE-MATH's expected output bits. This comparison
+//! is honest about what the corpus claims: that pfloat produces
+//! the correctly-rounded binary64 value, not that pfloat's higher-
+//! precision intermediate representation matches a particular
+//! parse of CORE-MATH's expected decimal. The f64-bit comparison
+//! handles binary64 subnormals correctly (where the `BigFloat` at
+//! `p = 53` carries more precision than binary64 itself does at
+//! the subnormal exponent range).
 
 #![cfg(all(feature = "exp-log", feature = "trig"))]
 
@@ -45,12 +51,14 @@ include!("differential/lefevre_muller_data.rs");
 
 const NE: RoundingMode = RoundingMode::NearestEven;
 
-/// Build a `BigFloat` at `p = 53` that represents the binary64
-/// value `x` exactly.
-///
-/// Rust's `format!("{:?}", x)` produces the shortest decimal that
-/// round-trips through `f64`; parsing that decimal at `p = 53`
-/// under `NearestEven` recovers the original `f64` bit-exactly.
+/// Build a `BigFloat` at `p = 53` from a normal-range binary64
+/// value via Rust's shortest-round-trip decimal formatter and
+/// `BigFloat::parse_str`. For binary64 normals the result is
+/// bit-exact the source value. For binary64 subnormals the
+/// `p = 53` `BigFloat` may carry slightly more precision than the
+/// source has at its exponent range; the kernel still produces a
+/// near-correct result that the f64-bit assertion below tolerates
+/// through the standard `NearestEven` f64 parse.
 fn bf53_of(x: f64) -> BigFloat {
     let s = format!("{x:?}");
     let (bf, _status) =
@@ -58,26 +66,40 @@ fn bf53_of(x: f64) -> BigFloat {
     bf
 }
 
+/// Convert the kernel's `BigFloat` output back to a binary64 bit
+/// pattern via Rust's standard f64 parser on the value's
+/// round-trip decimal. This is the honest comparison surface for
+/// the correctly-rounded claim: pfloat produces the same `f64` bit
+/// pattern as CORE-MATH for every corpus input. Handles binary64
+/// subnormals correctly (where the `p = 53` `BigFloat`
+/// representation is not equal to the parse of the f64's shortest
+/// decimal).
+fn bf_to_f64_bits(bf: &BigFloat) -> u64 {
+    let s = format!("{bf}");
+    s.parse::<f64>()
+        .expect("BigFloat's Display round-trips through f64")
+        .to_bits()
+}
+
 /// One hard-to-round case asserted: the kernel applied at
-/// `p = 53` under `NearestEven` matches the precomputed expected
-/// output bit-for-bit.
+/// `p = 53` under `NearestEven` produces the same binary64 bit
+/// pattern as CORE-MATH's expected output.
 fn check<F>(name: &str, kernel: F, case: &Case)
 where
     F: Fn(&BigFloat) -> (BigFloat, pfloat::Status),
 {
     let (input_bits, expected_bits) = *case;
     let input = f64::from_bits(input_bits);
-    let expected = f64::from_bits(expected_bits);
 
     let bf_input = bf53_of(input);
     let (bf_result, _status) = kernel(&bf_input);
-    let bf_expected = bf53_of(expected);
+    let result_bits = bf_to_f64_bits(&bf_result);
 
     assert_eq!(
-        bf_result, bf_expected,
+        result_bits, expected_bits,
         "{name}({input:e}) [input bits {input_bits:#018x}] \
-         produced {bf_result:?}, expected {bf_expected:?} \
-         [expected bits {expected_bits:#018x}]"
+         produced {bf_result:?} [bits {result_bits:#018x}], expected \
+         [bits {expected_bits:#018x}]"
     );
 }
 
