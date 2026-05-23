@@ -52,10 +52,18 @@ pub const MAX_PREC: u32 = 1024;
 pub type Kernel<'a> = dyn Fn(FnId, u32, RoundingMode) -> u32 + 'a;
 
 /// Returns the unique `f32` both endpoints of `enc` round to under
-/// `mode`, or `None` when they straddle a rounding boundary (or
-/// when either endpoint is NaN, treated as inconclusive for the
-/// f32-rounding check).
+/// `mode`, or `None` when they straddle a rounding boundary.
+///
+/// When both endpoints are NaN (the function value is mathematically
+/// undefined: `acosh(x)` for `x < 1`, `ln(x)` for `x < 0`,
+/// `gamma(x)` at a non-positive integer, etc.), the bracket
+/// certifies a NaN result: `Some(f32::NAN)`. The verifier compares
+/// to the pfloat kernel's output via NaN-aware equality so NaN
+/// outputs match regardless of payload bit pattern.
 pub fn certified_round_f32(enc: &Enclosure, mode: RoundingMode) -> Option<f32> {
+    if enc.lo.is_nan() && enc.hi.is_nan() {
+        return Some(f32::NAN);
+    }
     let lo_r = round_f32(&enc.lo, mode)?;
     let hi_r = round_f32(&enc.hi, mode)?;
     if lo_r.to_bits() == hi_r.to_bits() {
@@ -87,7 +95,12 @@ pub fn verify_input(
         let enc = oracle.enclose(f, input, prec);
         if let Some(expected) = certified_round_f32(&enc, mode) {
             let got = kernel(f, input, mode);
-            return if got == expected.to_bits() {
+            // NaN-aware equality: any pfloat NaN bit pattern
+            // matches the oracle's NaN result; the NaN payload's
+            // bit-exact representation is not part of the
+            // correct-rounding claim.
+            let nan_match = expected.is_nan() && f32::from_bits(got).is_nan();
+            return if nan_match || got == expected.to_bits() {
                 Verdict::Ok
             } else {
                 Verdict::Mismatch {
