@@ -1,0 +1,14 @@
+function           = "Si"
+order              = ""
+kernel_kind        = "primary"
+domain_coverage    = "sampled(65536)"
+oracle             = "Arb"
+oracle_independence = "independent"
+rounding_modes     = "RNE"
+rounding_status    = "correctly-rounded"
+worst_ulp          = 0
+mismatch_count     = 0
+inconclusive_count = 1
+panic_count        = 0
+vectors            = ""
+lm_seeds_run       = 0
