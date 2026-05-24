@@ -266,6 +266,32 @@ non-parametric Arb-primary rows correctly-rounded, with
 `BesselI1` and the parametric `BesselIn`/`BesselKn` orders the
 remaining pre-v1.0 surface.
 
+Slice p1.7 lands ADR-0035 and the shared certified-rounding
+routine. The slice does not yet ship the worker rewrite; it
+records the architecture decision and plants the load-bearing
+foundation. The diagnostic pass on pf-6a4e (BesselI1 14030
+mismatches) traced the 14030 mismatches to silent defects in the
+Arb backend, not in pfloat's kernel: the worker encoded f32
+inputs through Python's float `repr` (which truncates to 16
+significant digits for f32 subnormals, losing the 105-sig-fig
+exact decimal), and the Rust verifier's decimal-parse step
+collapsed bracket endpoints to a single binary value at low Ziv
+working precision, silently certifying the wrong f32 neighbor.
+**pf-6a4e is reclassified as oracle defects, not kernel defects;
+pfloat's `BesselI1` kernel was correct on all 14030 inputs the
+old corpus flagged.** ADR-0035 refines ADR-0034's protocol: the
+worker reports the certified f32 bit pattern directly, runs the
+Ziv-at-oracle loop in-process (where ball arithmetic stays in
+binary with no decimal bridge), and the harness adds two more
+independent oracles (`mpmath` for cross-check, Maxima for a
+sampling-layer third opinion) so any silent single-oracle bug
+shows as visible three-way disagreement. The slice p1.7 ships
+the design document and the shared `certified_round_f32`
+routine (Python, exact-rational input, all five IEEE modes,
+property-tested across the f32 boundary classes); the worker
+rewrite, the re-sweep, and the new oracle workers belong to
+slice p1.8 and follow-on slices.
+
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
 wrong-rounding case in pfloat's `exp` underflow path (closed at

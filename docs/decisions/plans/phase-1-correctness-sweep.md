@@ -758,6 +758,111 @@ slice p1.5 plan these get parametric status rows once the named
 rows close). pf-cvs (1.x smallvec) and the five deferred 8c.*
 beads remain parked behind p1.exit per ADR-0033.
 
+## Slice p1.7 closure (2026-05-24)
+
+Slice p1.7 is a foundational slice. It does not ship a worker
+rewrite or a re-sweep; it lands the ADR for the protocol change
+and the load-bearing shared routine the new workers will all
+import. The slice produced two commits and one ADR.
+
+The slice began as a diagnostic pass on pf-6a4e (BesselI1 14030
+reported mismatches on f32 subnormal inputs). The diagnosis
+probe (`tests/oracle_i1_probe.rs`, kept untracked as a working
+artifact for the slice p1.8 re-verification) bucketed the
+14030-input corpus by f32 binary exponent, probed representative
+inputs through the pfloat kernel at p = 24, 53, 64, 113, 200,
+320, 500, and probed the Arb oracle at Ziv-at-oracle precisions
+64, 128, 256, 512, 1024. The kernel's decimal representation
+was identical at every precision; the Arb oracle's bracket
+endpoints converged correctly at high precision but the Rust
+verifier's `rug::Float::parse` step collapsed the endpoints to
+the same binary value at low working precision (the decimal
+bracket width was many orders of magnitude below the binary
+ULP of the parse target), and `to_f32_round(Round::Nearest)`
+then tied to even on the f32 midpoint.
+
+A second probe (`tests/oracle_rug_f32_probe.rs`) cross-checked
+rug's parse + to_f32_round behavior at the smallest-subnormal
+boundary, and a direct Python check against `arb(repr(v))` vs
+`arb(exact_bits)` showed that the worker was additionally
+losing sub-f64 precision on the input encoding step: Python's
+`repr` for `2^-149` returns `"1.401298464324817e-45"` (16 sig
+figs) while the exact decimal carries 105 sig figs; Arb parses
+the `repr` decimal LITERALLY at high precision, perturbing the
+input by up to ~7e-62 at the f32-subnormal scale. For
+`BesselI1(x) ≈ x/2` on subnormal inputs the output sits exactly
+on the f32-subnormal-grid midpoint between two neighbors, and
+the worker's input perturbation flipped the NE rounding
+direction of the output. **The 14030 reported mismatches were
+oracle defects in two separate layers, not pfloat kernel
+defects.** pf-6a4e is reclassified accordingly; slice p1.7
+closes it with a forward reference to slice p1.8's worker
+rewrite that implements the architectural cure.
+
+The architectural decision lives in ADR-0035:
+
+- **Worker reports the certified f32 directly.** No decimal
+  bracket on the wire; no Rust-side parse step; no Ziv loop on
+  the Rust side for Arb-primary FnIds.
+- **Shared library-agnostic certified-rounding routine.** Lives
+  at `scripts/oracle_workers/certified_rounding.py`. Takes
+  ``(lower, upper, mode)`` as exact ``Fraction`` rationals and a
+  rounding mode string ("NE" / "RNA" / "RZ" / "RP" / "RM");
+  returns ``Some(f32_bit_pattern)`` iff every value in
+  ``[lower, upper]`` rounds to the same f32 under the mode;
+  otherwise ``None``. Each oracle worker (Arb in slice p1.8;
+  mpmath in slice p1.9; Maxima in slice p1.10) will compute the
+  function in its native arbitrary-precision arithmetic, extract
+  the result's exact rational bracket, and call this routine.
+- **Three-way agreement.** Arb (full sweep), mpmath (full
+  sweep, cross-check), Maxima (sampling layer for hand-derived
+  corpus + tie-breaking) must all certify the same f32 for every
+  input where they are queried. Per-push CI gate stays
+  MPFR-only and Python-free.
+- **Pinned worker-output corpus.** Lands at slice p1.10 in
+  ``tests/oracle/pinned/``; the per-push gate diffs live worker
+  output against the pin and fails on any mismatch.
+
+The shared routine ships at slice p1.7.2. The implementation:
+
+- ``_f32_bits_of_rational(x, direction)`` does directed rounding
+  of an exact rational to f32 across six directions (DOWN, UP,
+  ZERO, AWAY, NEAREST_EVEN, NEAREST_AWAY). Handles normal
+  regime, subnormal regime, the normal/subnormal transition at
+  2^-126, the overflow boundary at f32_max + 2^103, signed
+  zero, and mantissa-carry into the next binade. All work is
+  in exact arithmetic.
+- ``certified_round_f32(lower, upper, mode)`` wraps the above.
+  For each IEEE mode the check is "round both endpoints under
+  the mode; if they agree, certify; else return None." This
+  works because each mode is monotone (non-decreasing).
+- ``test_certified_rounding.py`` is a standalone test runner
+  (no pytest/hypothesis dep). Four layers: boundary classes
+  (including the literal pf-6a4e truth case I1(2^-149) =
+  2^-150 + 2^-451 NE-rounds to mantissa 1), differential
+  against Python ``struct.pack`` for NE, 1000 random rationals
+  cross-checked against an independent reference rounding
+  algorithm, certified-rounding bracket tests (tight brackets
+  certify, wide-straddle brackets return None, RZ on a positive
+  bracket certifies). 17 test groups pass; mutation test
+  confirmed (flipping the NE tie direction triggered 10+
+  specific failures including the load-bearing 2^-150 case).
+
+The slice landed two commits as one signed merge:
+
+- **slice p1.7.1 (ADR-0035, `64d246f`).** The design.
+- **slice p1.7.2 (`2af9f7e`, closes pf-js8y).** The shared
+  routine plus the standalone test runner.
+- **slice p1.7.prov.** ROADMAP + this plan refresh.
+
+After the slice the Phase 1 surface state is structurally
+unchanged (the worker is unchanged; the status table is
+unchanged; pf-6a4e is closed by reclassification not by a code
+change), but the architectural foundation for closing the silent
+oracle-defect class is in place. Slice p1.8 implements the
+worker rewrite and the re-sweep; slices p1.9 and p1.10 add the
+second and third oracles plus the pinned corpus.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the
