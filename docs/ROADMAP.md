@@ -219,18 +219,21 @@ graph.
 
 The first f32 sweep through the Arb backend at 65536 inputs per
 function surfaced five `has-errors` findings on the ten
-non-parametric Arb-primary `FnId`s, filed as three fork beads for
-follow-up slices: Arb returns NaN for the limit-at-zero inputs
-where pfloat returns the mathematical limit (Ci(+0) = -∞,
-K0(+0) = K1(+0) = +∞; three mismatches across three functions);
+non-parametric Arb-primary `FnId`s; the slice closed three of
+those in-flight via the Arb worker special-casing the limit-at-+0
+inputs (`Ci(+0) = -∞`, `K0(+0) = K1(+0) = +∞`) so the Arb
+oracle aligns with the IEEE / pfloat convention. The two
+remaining findings are filed as fork beads for follow-up slices:
 `BesselI1` exhibits the same small-argument midpoint trap that
 `BesselJ1` did in slice p1.4 (14030 of 65536 f32 subnormal
-inputs); and `li` carries one 1-ULP mismatch plus one
-inconclusive at f32 subnormals (root cause not yet diagnosed).
-The other five Arb-primary rows (`Si`, `Bi`, `Ai_prime`,
-`Bi_prime`, `BesselI0`) read `correctly-rounded`. The slice
-ships the backend infrastructure plus the diagnostic sweep; the
-kernel-side and oracle-convention fixes belong to slice p1.6+.
+inputs; pf-6a4e), and `li` carries one 1-ULP mismatch plus one
+inconclusive at f32 subnormals (pf-716u, root cause not yet
+diagnosed). The other eight Arb-primary rows (`Si`, `Ci`, `Bi`,
+`Ai_prime`, `Bi_prime`, `BesselI0`, `K0`, `K1`) read
+`correctly-rounded`. The slice ships the backend infrastructure
+plus the diagnostic sweep with the convention-divergence fix;
+the kernel-side fixes for `BesselI1` and `li` belong to slice
+p1.6+.
 
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known

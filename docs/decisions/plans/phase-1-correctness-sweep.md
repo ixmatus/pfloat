@@ -642,13 +642,31 @@ unsigned branch commits:
     inconclusive at another): root cause not yet diagnosed;
     could be a subnormal-midpoint trap class or a kernel
     precision issue in pfloat's `li`.
+- **Arb worker special-case for limit-NaN inputs (slice
+  p1.5.6, closes pf-b5se).** `scripts/arb_oracle_worker.py`
+  short-circuits at f32 `+0` for `ci` and `k` to emit the
+  IEEE limit (`-inf` for `ci`, `+inf` for `K_n`) so the Arb
+  oracle's NaN-at-limit divergence from pfloat's
+  mathematical-limit convention closes for `Ci`, `K0`, `K1`.
+  Re-sweeping each of the three flips the row to
+  `correctly-rounded` and deletes the regression corpus.
+  pf-6a4e (`BesselI1`) and pf-716u (`li`) remain open as
+  fork beads; the initial fix attempt for pf-6a4e (Rust-side
+  directed parse + per-function precision bump) made the
+  mismatch count worse rather than closing it, so the fix
+  belongs to a slice that can investigate the Ziv-at-oracle
+  interaction with worker-emitted decimal brackets more
+  carefully.
 - **prov docs (slice p1.5.prov).** ROADMAP and this plan
   refresh; memory state refresh in
   `~/.claude/projects/-Users-parnell-Development-pfloat/memory/project_slice_6m_state.md`.
 
-The Arb backend infrastructure ships clean. The five
-has-errors rows have regression corpora under
-`tests/vectors/`; closure of those rows belongs to slice p1.6+
+The Arb backend infrastructure ships clean. After slice
+p1.5.6's worker special-case the five-finding has-errors set
+narrows to two (`BesselI1` 14030 mismatches as pf-6a4e, `li`
+1 mismatch + 1 inconclusive as pf-716u). Both remaining
+findings have regression corpora under `tests/vectors/`;
+closure belongs to slice p1.6+
 (pf-b5se / pf-6a4e / pf-716u). The per-push smoke gate stays
 MPFR-only and Python-free.
 
