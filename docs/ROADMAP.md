@@ -266,31 +266,93 @@ non-parametric Arb-primary rows correctly-rounded, with
 `BesselI1` and the parametric `BesselIn`/`BesselKn` orders the
 remaining pre-v1.0 surface.
 
-Slice p1.7 lands ADR-0035 and the shared certified-rounding
-routine. The slice does not yet ship the worker rewrite; it
-records the architecture decision and plants the load-bearing
-foundation. The diagnostic pass on pf-6a4e (BesselI1 14030
-mismatches) traced the 14030 mismatches to silent defects in the
-Arb backend, not in pfloat's kernel: the worker encoded f32
-inputs through Python's float `repr` (which truncates to 16
-significant digits for f32 subnormals, losing the 105-sig-fig
-exact decimal), and the Rust verifier's decimal-parse step
-collapsed bracket endpoints to a single binary value at low Ziv
-working precision, silently certifying the wrong f32 neighbor.
-**pf-6a4e is reclassified as oracle defects, not kernel defects;
-pfloat's `BesselI1` kernel was correct on all 14030 inputs the
-old corpus flagged.** ADR-0035 refines ADR-0034's protocol: the
-worker reports the certified f32 bit pattern directly, runs the
-Ziv-at-oracle loop in-process (where ball arithmetic stays in
-binary with no decimal bridge), and the harness adds two more
-independent oracles (`mpmath` for cross-check, Maxima for a
-sampling-layer third opinion) so any silent single-oracle bug
-shows as visible three-way disagreement. The slice p1.7 ships
-the design document and the shared `certified_round_f32`
-routine (Python, exact-rational input, all five IEEE modes,
-property-tested across the f32 boundary classes); the worker
-rewrite, the re-sweep, and the new oracle workers belong to
-slice p1.8 and follow-on slices.
+Slices p1.7 through p1.10 implement ADR-0035's full verification
+stack and close pf-6a4e for real. The slice p1.7 diagnostic
+re-classified the 14030 BesselI1 mismatches as oracle defects
+(the worker encoded f32 inputs through Python's float `repr`,
+which truncates to 16 significant digits for f32 subnormals; the
+Rust verifier's decimal-parse step then collapsed bracket
+endpoints to a single binary value at low Ziv working precision,
+silently certifying the wrong f32 neighbor). **pf-6a4e was
+oracle defects, not pfloat kernel defects, on the inputs the
+slice p1.5 sweep had reported.** ADR-0035 refined ADR-0034's
+protocol by replacing the decimal bridge with a
+worker-reports-certified-f32-directly contract and adding two
+more independent oracles for three-way agreement.
+
+Slice p1.7 plants the load-bearing foundation: ADR-0035 itself,
+plus the shared `certified_round_f32` routine (Python, exact
+rational input, all five IEEE modes, exhaustively property
+tested across the f32 boundary classes including the literal
+pf-6a4e truth case `I1(2^-149) = 2^-150 + 2^-451`). Mutation
+test confirmed: flipping the NE tie-to-even direction in the
+routine triggers ten-plus specific failures including the
+load-bearing 2^-150 midpoint case.
+
+Slice p1.8 implements the protocol on the Arb side: the worker
+decodes f32 inputs via exact integer mantissa + power-of-two
+scale (no Python float, no `repr`), runs the Ziv-at-oracle loop
+in-process at precisions 64 to 8192, extracts exact rational
+bounds via `arb.lower().fmpq()` / `arb.upper().fmpq()`, and
+hands off to the shared routine. The Rust `OracleBackend` trait
+gains a `mode` parameter and an `is_authoritative` shortcut so
+the verifier short-circuits its outer Ziv loop for authoritative
+backends. Mid-slice the new protocol exposed 16386 real pfloat
+defects on BesselI1 (the slice p1.5 sweep had reported only
+14030 because the buggy oracle coincidentally agreed with
+pfloat's wrong answer on a subset). The same-shape fix as pf-z0f
+and pf-n5d closed them: route `BesselI1` and `BesselIn` through
+`BESSEL_TINY_VERIFICATION_PRECISION = 320`. Re-sweep at 65536
+inputs per function returned **all 10 non-parametric Arb-primary
+FnIds correctly-rounded**: Si, Ci, li, Bi, Ai_prime, Bi_prime,
+BesselI0, BesselI1, BesselK0, BesselK1.
+
+Slice p1.9 adds mpmath as the ADR-0035 Tier 2 cross-check.
+mpmath is a BSD-licensed pure-Python multi-precision library
+with no shared code lineage with FLINT/Arb; the worker uses the
+same protocol (so the shared routine and response parser are
+reused) and runs the Ziv loop with a conservative
+`|y| * 2^-(prec - 64)` bracket margin around mpmath's high
+precision result. The cross-check test
+`tests/oracle_arb_mpmath_agreement.rs` runs 160 (input, FnId)
+pairs across the smoke gate; **0 divergences**. The two
+independent libraries agreeing on every sampled input is the
+defense against the silent-single-oracle-bug class that the
+slice p1.7 episode demonstrated.
+
+Slice p1.10 lands the ADR-0035 Tier 5 pinned worker-output
+corpus and the Tier 6 Maxima sampling oracle. The pinned corpus
+under `tests/oracle/pinned/` is the durable contract: one TOML
+file per FnId, each entry pinning `(input_bits, mode,
+certified_bits)` plus a provenance note explaining how the
+value was derived (hand-derived from first principles,
+two-oracle agreement, or future Maxima triple-check). 22 entries
+seed the corpus initially; the per-push gate
+`tests/oracle_pinned_corpus.rs` diffs the live Arb worker
+against every entry and fails on any divergence. The Maxima
+oracle is scaffolded via a nix-shell wrapper
+(`scripts/maxima_oracle_worker.sh` with
+`#!nix-shell -i bash -p maxima python3`) so the test harness
+can invoke Maxima without requiring a system install; the
+three-way agreement test runs on demand (Maxima per-request
+latency is ~1 second so it stays out of per-push). Maxima
+coverage gaps (the internal hypergeometric trips "Exceeded
+maximum allowed fpprec" on extreme subnormal `bessel_i`; `li`
+needs `ei(log(x))` composition because Maxima has no direct
+logarithmic-integral primitive) are handled as INC abstentions
+rather than failures.
+
+After slices p1.7 through p1.10 the in-tree status table reads
+33 MPFR-primary plus **10 of 10 non-parametric Arb-primary rows
+correctly-rounded** (the slice p1.6 prose's "9 of 10" reflected
+the buggy single-oracle protocol; the corrected ADR-0035
+protocol plus the I1/In kernel verification precision bump
+returns the true 10-of-10). The per-push CI gate stays
+MPFR-only and Python-free; the per-slice gate exercises the
+Arb worker (smoke + pinned corpus diff). The per-release
+sweep cadence exercises Arb + mpmath two-oracle agreement at
+full 65536-input coverage, plus three-way agreement on the
+pinned corpus.
 
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known

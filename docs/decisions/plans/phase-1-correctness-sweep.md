@@ -863,6 +863,142 @@ oracle-defect class is in place. Slice p1.8 implements the
 worker rewrite and the re-sweep; slices p1.9 and p1.10 add the
 second and third oracles plus the pinned corpus.
 
+## Slice p1.8 closure (2026-05-24)
+
+Slice p1.8 implements ADR-0035's worker protocol on the Arb
+side and discharges pf-6a4e's kernel-side defect (which the new
+protocol exposed). Three commits in the slice plus the
+consolidated prov.
+
+- **slice p1.8.1 (closes pf-fljq).** The ADR-0035 protocol
+  shift. `scripts/arb_oracle_worker.py` is rewritten end to
+  end: exact-bits f32 input encoding via integer mantissa +
+  power-of-two scale (closes the input-side precision loss
+  class); Ziv loop in-process at precisions 64 to 8192; exact
+  rational bracket extraction via `arb.lower().fmpq()` /
+  `arb.upper().fmpq()`; shared `certified_round_f32` routine
+  for the f32 rounding decision. Wire format becomes
+  `OK <f32_bits_hex>` / `INC` / `ERR <msg>`. Rust-side trait
+  gains a `mode` parameter and an `is_authoritative` shortcut
+  (`ArbOracle` returns `true`; `MpfrOracle` keeps the default
+  `false`); the verifier short-circuits its outer Ziv loop for
+  authoritative backends.
+- **slice p1.8.2 (closes pf-1x1b's kernel half).**
+  `verification_precision(FnId::BesselI1)` and
+  `verification_precision(FnId::BesselIn(_))` bump to
+  `BESSEL_TINY_VERIFICATION_PRECISION = 320`. The new protocol
+  surfaced 16386 real pfloat defects on BesselI1 (the slice
+  p1.5 sweep had reported only 14030 because the buggy oracle
+  coincidentally agreed with pfloat's wrong answer on a
+  subset). The same midpoint-tie shape as pf-z0f / pf-n5d; same
+  fix.
+- **slice p1.8.3 (closes pf-1x1b's harness half + pf-ibu4).**
+  Re-sweep at 65536 inputs for all 10 non-parametric Arb-primary
+  FnIds. All 10 return correctly-rounded under the new protocol
+  (Si 4s, Ci 18s, li 672s, Bi 219s, Ai_prime 221s, Bi_prime
+  219s, I0 2s, I1 14s, K0 19s, K1 18s in release on macOS
+  arm64). The slice p1.6 li closure re-verifies clean. The
+  stale I1_regression.bin (from the mid-slice 16386-mismatch
+  run) is deleted.
+
+After the slice the in-tree Arb-primary status table reads
+**10 of 10 correctly-rounded** (the slice p1.6 prose's "9 of 10"
+was an undercount even before the ADR-0035 audit). The Rust
+verifier's outer Ziv-at-oracle loop runs only for non
+authoritative backends (MPFR); the Arb path is single-call.
+
+## Slice p1.9 closure (2026-05-24)
+
+Slice p1.9 adds the ADR-0035 Tier 2 cross-check: a second
+independent oracle whose agreement with Arb on every sampled
+input defends against the silent-single-oracle-bug class.
+
+- **scripts/mpmath_oracle_worker.py.** Same wire protocol as
+  the Arb worker. mpmath's `iv` interval-arithmetic context
+  lacks attributes several of our special functions need
+  (`si`, `ci`, `li`, `airyai`, `airybi`, `besseli`, `besselk`
+  all fail under `iv`); the worker uses `mpmath.mp` (point
+  arithmetic) at increasing precision plus a conservative
+  `|y| * 2^-(prec - 64)` relative-error bracket. mpmath at
+  prec=200 collapses the BesselI1(2^-149) sub-midpoint
+  correction; prec >= 400 captures it. The Ziv loop typically
+  settles at prec=512.
+- **scripts/setup_arb_oracle.sh.** Installs mpmath alongside
+  python-flint in the same venv (no second venv); idempotent.
+- **tests/oracle/mpmath.rs.** `MpmathOracle` mirrors
+  `ArbOracle`'s shape (subprocess ownership, request /
+  response, single-point Enclosure); reuses `ArbError`,
+  `fnid_to_worker_args`, and `parse_response_external`.
+- **tests/oracle_arb_mpmath_agreement.rs.** Per-slice
+  cross-check: 10 functions x 16 inputs = 160 (input, FnId)
+  pairs. Arb and mpmath workers MUST agree on the certified
+  f32. 0 divergences in the slice's first run.
+
+Closes pf-sgqq. Per-push gate unchanged.
+
+## Slice p1.10 closure (2026-05-24)
+
+Slice p1.10 lands the remaining ADR-0035 verification-stack
+pieces: Tier 5 pinned worker-output corpus and Tier 6 Maxima
+sampling oracle.
+
+- **tests/oracle/pinned/.** One TOML file per non-parametric
+  Arb-primary FnId (10 files). 22 initial entries with
+  provenance notes (hand-derived from first principles, or
+  two-oracle agreement). README documents the file format and
+  the regeneration ritual.
+- **tests/oracle_pinned_corpus.rs.** Per-slice gate: reads
+  every pinned TOML, runs the live Arb worker, asserts every
+  certified f32 matches the pinned value. Hand-written minimal
+  TOML parser scoped to the pin schema (avoids a toml crate
+  dep). Any divergence halts with per-entry diagnostic. The
+  pin file is the durable contract: a push that changes worker
+  output must update the pin with a provenance note.
+- **scripts/maxima_oracle_worker.sh.** nix-shell wrapper
+  (`#!nix-shell -i bash -p maxima python3`); forwards `$@` to
+  the inner Python helper. Pulls Maxima from nixpkgs without
+  requiring a system install.
+- **scripts/maxima_oracle_worker.py.** Inner worker: invokes
+  Maxima per request via `maxima --very-quiet --batch-string`;
+  ~500ms-1s per request. Function dispatch:
+  `expintegral_si`/`expintegral_ci`, `expintegral_ei(log(x))`
+  for `li` (Maxima has no direct logarithmic-integral
+  primitive), `airy_bi`/`airy_dai`/`airy_dbi`, `bessel_i`/
+  `bessel_k`. Ziv loop in decimal digits 100 -> 200 -> ... ->
+  2000. Coverage gaps (bessel_i at extreme subnormals trips
+  "Exceeded maximum allowed fpprec"; the symbolic
+  hypergeometric falls out) handled by INC return.
+- **tests/oracle/maxima.rs.** `MaximaOracle` mirrors the other
+  authoritative oracles, invokes the .sh launcher.
+- **tests/oracle_three_way_agreement.rs.** `#[ignore]` by
+  default (Maxima per-request latency makes the test slow);
+  runs on demand at slice-close cadence. Maxima INC counts as
+  "abstain" not "disagree": Arb + mpmath agreement at that
+  entry is the load-bearing check; Maxima provides additional
+  corroboration where its coverage reaches.
+
+Closes pf-xtb9.
+
+## Slice p1.11.prose (2026-05-24)
+
+The consolidated prose roll-up for slices p1.7 through p1.10.
+
+- ROADMAP.md "Currently in flight" section: rewrites the
+  paragraph that previously described "slice p1.7 lands ADR
+  + routine" into a four-slice walk covering p1.7 (design +
+  foundation), p1.8 (Arb implementation + I1 kernel bump),
+  p1.9 (mpmath Tier 2), p1.10 (Maxima Tier 6 + pinned
+  corpus). Corrects the "8 of 10" / "9 of 10" prose miscount
+  carried from slice p1.6 (the slice p1.6 close should have
+  recorded 9 of 10, and the slice p1.8 close updates it to
+  the true 10 of 10 under the ADR-0035 protocol).
+- This plan: append slice p1.8 / p1.9 / p1.10 closure
+  sections.
+
+Closes pf-sm21 (and supersedes the older pf-izn0 and pf-rhly
+prose beads which slices p1.6 and p1.7 had filed for a later
+prose pass).
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the
