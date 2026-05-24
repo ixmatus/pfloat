@@ -23,6 +23,15 @@
 //!
 //! ADR-0023 records the design and the coefficient provenance.
 //!
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.4, ADR-0022).
+//! The regime decision (tiny / Miller / asymptotic) is fixed at
+//! kernel entry from the input's binary exponent; the Ziv driver's
+//! working precision flows into the chosen evaluator. This brings
+//! `J0`, `J1`, `Jn` onto the same correctness scaffolding the slice
+//! p1.2 pattern wires around `exp`, `ln`, `tanh`, `lgamma`, and
+//! `erf` (the latter via slice p1.4.3).
+//!
 //! Special cases:
 //!
 //! - `J₀(±0) = 1`, `Jₙ(±0) = 0` for `n ≠ 0` (exact, DLMF 10.2.2).
@@ -32,6 +41,7 @@
 //!   limit; the conservative total result is `+0`, `Status::OK`.
 //! - `Jₙ(NaN) = NaN`; `sNaN` raises `INVALID`.
 
+use super::ziv::ziv_round;
 use super::{pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -197,14 +207,18 @@ fn bessel_j_kernel(
     let negate = (m % 2 == 1) && ((n < 0) ^ x.is_sign_negative());
     let ax = x.abs();
 
-    let value = bessel_j_eval_normal(m, &ax, target_precision);
-    let value = if negate { value.negated() } else { value };
-
-    let (rounded, status) = value
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    ziv_round(
+        |working_prec| {
+            let v = bessel_j_eval_normal(m, &ax, working_prec);
+            if negate {
+                v.negated()
+            } else {
+                v
+            }
+        },
+        target_precision,
+        mode,
+    )
 }
 
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
