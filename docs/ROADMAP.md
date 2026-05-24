@@ -197,6 +197,41 @@ verification posture records the adversarial-seed count. The
 33 in-tree status rows now all read `correctly-rounded` and no
 in-tree regression corpora remain.
 
+Slice p1.5 added the second oracle backend (Arb via a long-lived
+`python-flint` subprocess, ADR-0034), closing the verification
+gap for the twelve `FnId`s MPFR cannot cover (`Si`, `Ci`, `li`,
+`Bi`, `Ai_prime`, `Bi_prime`, `BesselI{0,1,n}`, `BesselK{0,1,n}`).
+The Python worker reads requests over its stdin and emits
+`(lo, hi)` decimal-mantissa enclosures over its stdout; the Rust
+`ArbOracle` owns the subprocess via a `Mutex` for interior
+mutability around the `OracleBackend::enclose(&self, ...)`
+receiver. A new `MetaOracle` dispatcher routes each `FnId` to
+either the MPFR or Arb backend depending on a static map, so the
+runner sees one `OracleBackend` handle. The venv that hosts
+`python-flint` lives at
+`${PFLOAT_ARB_ORACLE_VENV:-${HOME}/.cache/pfloat-arb-oracle/venv}`
+and is set up via `scripts/setup_arb_oracle.sh`; `python-flint`
+is not packaged in nixpkgs (only the C library `flint` is) so the
+setup goes through `python3 -m venv` and `pip install
+python-flint`. LGPL isolation is preserved by the subprocess
+posture: FLINT and Arb never enter the shipped Rust crate's link
+graph.
+
+The first f32 sweep through the Arb backend at 65536 inputs per
+function surfaced five `has-errors` findings on the ten
+non-parametric Arb-primary `FnId`s, filed as three fork beads for
+follow-up slices: Arb returns NaN for the limit-at-zero inputs
+where pfloat returns the mathematical limit (Ci(+0) = -∞,
+K0(+0) = K1(+0) = +∞; three mismatches across three functions);
+`BesselI1` exhibits the same small-argument midpoint trap that
+`BesselJ1` did in slice p1.4 (14030 of 65536 f32 subnormal
+inputs); and `li` carries one 1-ULP mismatch plus one
+inconclusive at f32 subnormals (root cause not yet diagnosed).
+The other five Arb-primary rows (`Si`, `Bi`, `Ai_prime`,
+`Bi_prime`, `BesselI0`) read `correctly-rounded`. The slice
+ships the backend infrastructure plus the diagnostic sweep; the
+kernel-side and oracle-convention fixes belong to slice p1.6+.
+
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
 wrong-rounding case in pfloat's `exp` underflow path (closed at

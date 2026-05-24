@@ -577,6 +577,81 @@ inline BigFloat storage; do not pick up under the Phase 1
 posture) remains the only open work bead aside from the
 slice 8c.* parked items.
 
+## Slice p1.5 closure (2026-05-23)
+
+Slice p1.5 added the second oracle backend (Arb via
+`python-flint` subprocess; ADR-0034 designed the shape, this
+slice planted it). The twelve `FnId`s the MPFR backend cannot
+cover (`Si`, `Ci`, `li`, `Bi`, `Ai_prime`, `Bi_prime`,
+`BesselI{0,1,n}`, `BesselK{0,1,n}`) now have an enclosure-bracket
+oracle rather than relying on the L-M differential lane plus
+identity / Wronskian cross-ties alone. The slice landed six
+unsigned branch commits:
+
+- **scripts and feature gate (slice p1.5.1, closes pf-t2dg).**
+  `scripts/arb_oracle_worker.py` is the long-lived worker
+  reading the line protocol; `scripts/setup_arb_oracle.sh`
+  creates the venv idempotently at
+  `${PFLOAT_ARB_ORACLE_VENV:-${HOME}/.cache/pfloat-arb-oracle/venv}`;
+  `Cargo.toml` adds the `differential-arb` feature implying
+  `differential-mpfr`.
+- **ArbOracle (slice p1.5.2, closes pf-fbof).**
+  `tests/oracle/arb.rs` carries the `ArbOracle` struct and the
+  `OracleBackend` impl. Owns the subprocess via
+  `Mutex<ArbWorker>`; restart on first failed read; panic on
+  second failure (caught by the driver's `catch_unwind`).
+- **MetaOracle dispatcher (slice p1.5.3, closes pf-xkov).**
+  `tests/oracle/meta.rs` routes each `FnId` to either the
+  MPFR or Arb backend via a static map. Without the
+  `differential-arb` feature, Arb-primary `FnId`s receive a
+  NaN enclosure so the verifier reports them as
+  `OracleInconclusive` honestly rather than silently
+  succeeding under the wrong backend. The runner uses
+  `MetaOracle` so there is no `--oracle` flag; the per-row
+  status TOML's `oracle` field is populated via
+  `oracle_name_for(f)` so each row carries the actual backend
+  name, not the dispatcher's.
+- **Opt-in Arb smoke gate (slice p1.5.4, closes pf-dmdd).**
+  `tests/oracle_arb_smoke.rs` runs the ten non-parametric
+  Arb-primary `FnId`s at 16 inputs each (NE only). Gated on
+  `differential-arb` so the per-push CI lane (which builds
+  under `differential-mpfr` only) does not require the Python
+  venv. ~3 seconds debug.
+- **Full Arb sweep + 10 status rows + 3 fork beads (slice
+  p1.5.5, closes pf-bni8).** Ran each Arb-primary function at
+  65536 inputs in parallel (the serial sweep got stuck on
+  zeta, which is the slice p1.4 known-slow MPFR-primary
+  function). Five rows read `correctly-rounded` (`Si`, `Bi`,
+  `Ai_prime`, `Bi_prime`, `BesselI0`); five read `has-errors`,
+  filed as three fork beads:
+  - **pf-b5se** (Arb oracle convention divergence at the limit
+    point): `Ci(+0)`, `K0(+0)`, `K1(+0)`. Arb returns NaN
+    treating the function as indeterminate at the limit;
+    pfloat returns the mathematical limit (`-∞` for `Ci`,
+    `+∞` for `K`) per the IEEE 754 convention most libm
+    implementations follow. Fix candidate: special-case the
+    `+0` input in `scripts/arb_oracle_worker.py` to emit the
+    limit.
+  - **pf-6a4e** (`BesselI1` small-argument midpoint trap):
+    14030 / 65536 f32 subnormal inputs mis-round 1 ULP. Same
+    J1-class trap from slice p1.4. Fix candidate: bump
+    `BesselI1` / `BesselIn` to
+    `BESSEL_TINY_VERIFICATION_PRECISION = 320` (parallel to
+    the slice p1.4.5 `BesselJ` fix).
+  - **pf-716u** (`li` 1-ULP at a subnormal input + 1
+    inconclusive at another): root cause not yet diagnosed;
+    could be a subnormal-midpoint trap class or a kernel
+    precision issue in pfloat's `li`.
+- **prov docs (slice p1.5.prov).** ROADMAP and this plan
+  refresh; memory state refresh in
+  `~/.claude/projects/-Users-parnell-Development-pfloat/memory/project_slice_6m_state.md`.
+
+The Arb backend infrastructure ships clean. The five
+has-errors rows have regression corpora under
+`tests/vectors/`; closure of those rows belongs to slice p1.6+
+(pf-b5se / pf-6a4e / pf-716u). The per-push smoke gate stays
+MPFR-only and Python-free.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the
