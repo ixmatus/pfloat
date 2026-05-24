@@ -103,13 +103,25 @@ impl MetaOracle {
     /// stays for signature parity with the `differential-arb` arm
     /// where it dispatches to the owned `ArbOracle`.
     #[cfg(feature = "differential-arb")]
-    fn enclose_arb(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure {
-        self.arb.enclose(f, input, working_prec)
+    fn enclose_arb(
+        &self,
+        f: FnId,
+        input: u32,
+        mode: pfloat::RoundingMode,
+        working_prec: u32,
+    ) -> Enclosure {
+        self.arb.enclose(f, input, mode, working_prec)
     }
 
     #[cfg(not(feature = "differential-arb"))]
     #[allow(clippy::unused_self)]
-    fn enclose_arb(&self, _f: FnId, _input: u32, working_prec: u32) -> Enclosure {
+    fn enclose_arb(
+        &self,
+        _f: FnId,
+        _input: u32,
+        _mode: pfloat::RoundingMode,
+        working_prec: u32,
+    ) -> Enclosure {
         let nan = Float::with_val(working_prec, Special::Nan);
         Enclosure {
             lo: nan.clone(),
@@ -119,12 +131,35 @@ impl MetaOracle {
 }
 
 impl OracleBackend for MetaOracle {
-    fn enclose(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure {
+    fn enclose(
+        &self,
+        f: FnId,
+        input: u32,
+        mode: pfloat::RoundingMode,
+        working_prec: u32,
+    ) -> Enclosure {
         if is_arb_primary(f) {
-            self.enclose_arb(f, input, working_prec)
+            self.enclose_arb(f, input, mode, working_prec)
         } else {
-            self.mpfr.enclose(f, input, working_prec)
+            self.mpfr.enclose(f, input, mode, working_prec)
         }
+    }
+
+    /// Authoritative iff the dispatched backend would be
+    /// authoritative for the `FnId` being queried. Without
+    /// information about WHICH `FnId` is being asked, default to
+    /// `false` so the verifier runs its Ziv loop, which is correct
+    /// for MPFR-primary inputs; the Arb-primary path then short
+    /// circuits at the first iteration because the Arb worker
+    /// returns a single-point enclosure that certifies immediately.
+    ///
+    /// Note: this is a per-instance default; once
+    /// [`OracleBackend`] gains a per-call authority signal (a
+    /// follow-up slice; ADR-0035 calls this out as an
+    /// optimization) the dispatcher can per-FnId-route the
+    /// authority flag.
+    fn is_authoritative(&self) -> bool {
+        false
     }
 
     fn name(&self) -> &'static str {

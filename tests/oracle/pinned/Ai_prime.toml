@@ -1,0 +1,10 @@
+# Pinned worker output for Ai_prime (Airy Ai derivative) (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x3f800000"
+mode           = "NE"
+certified_bits = "0xbe22f78c"
+provenance     = """
+two-oracle agreement: Ai'(1.0) ≈ -0.159147441018...
+Both Arb and mpmath certify 0xbe22f78c under NE.
+"""

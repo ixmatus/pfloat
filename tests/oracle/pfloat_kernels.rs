@@ -85,16 +85,21 @@ const ERF_VERIFICATION_PRECISION: u32 = 53;
 
 /// Verification precision for the small-argument-Bessel family. The
 /// Maclaurin series for `J_m(x)` near zero is
-/// `(x/2)^m / m! · (1 − x²/(4·(m+1)) + …)`, so the first correction
-/// term sits at relative magnitude `2^(2·e_x − 2)`. For `f32`
-/// subnormal inputs at `e_x = -149` this puts the correction near
-/// `2^-298`, well below the default `p = 53` ULP. Without enough
-/// target precision to retain the correction past the kernel's
-/// final round, the result lands on the exact f32-subnormal-grid
-/// midpoint and the conversion ties to even instead of tracking
-/// the true sub-midpoint position. `320 > 298 + 22` carries the
-/// correction past the round with comfortable Ziv-guard headroom
-/// (slice p1.4 closes pf-n5d).
+/// `(x/2)^m / m! · (1 − x²/(4·(m+1)) + …)`; the modified Bessel
+/// `I_m(x)` has the identical structure with `+` for every term
+/// instead of alternating signs:
+/// `(x/2)^m / m! · (1 + x²/(4·(m+1)) + …)`. The first correction
+/// term sits at relative magnitude `2^(2·e_x − 2)` for both
+/// families. For `f32` subnormal inputs at `e_x = -149` this puts
+/// the correction near `2^-298`, well below the default `p = 53`
+/// ULP. Without enough target precision to retain the correction
+/// past the kernel's final round, the result lands on the exact
+/// f32-subnormal-grid midpoint and the conversion ties to even
+/// instead of tracking the true sub-midpoint position.
+/// `320 > 298 + 22` carries the correction past the round with
+/// comfortable Ziv-guard headroom (slice p1.4 closes pf-n5d for
+/// `J1`; slice p1.8 closes the analogous case for `I1` once the
+/// ADR-0035 oracle protocol surfaces the real defect set).
 const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 
 /// Pick the verification precision for an `FnId`. The default is
@@ -111,13 +116,22 @@ const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 ///   on the correct neighbor. Slice p1.6 adds `Li` here (closes the
 ///   pf-716u li subnormal mismatch at input 0x0000708b).
 ///
-/// - Bessel `J1` and `Jn` at `p = 320`: the Maclaurin sub-midpoint
-///   cubic correction term for the small-argument-Bessel family needs
-///   the wider precision; see [`BESSEL_TINY_VERIFICATION_PRECISION`]
-///   for the derivation.
+/// - Bessel `J1` / `Jn` and `I1` / `In` at `p = 320`: the Maclaurin
+///   sub-midpoint cubic correction term for the small-argument
+///   Bessel family (both ordinary `J` and modified `I`, which share
+///   the same series structure modulo sign alternation) needs the
+///   wider precision; see [`BESSEL_TINY_VERIFICATION_PRECISION`]
+///   for the derivation. Slice p1.8 adds `I1` and `In` here once
+///   the ADR-0035 oracle protocol exposed the analogous defect set
+///   for `I1` (the slice p1.5 sweep's 14030 reported mismatches
+///   were oracle defects; the new sweep's 16386 are real kernel
+///   defects of the same midpoint-tie shape that pf-z0f / pf-n5d
+///   already documented).
 fn verification_precision(f: FnId) -> u32 {
     match f {
-        FnId::BesselJ1 | FnId::BesselJn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
+        FnId::BesselJ1 | FnId::BesselJn(_) | FnId::BesselI1 | FnId::BesselIn(_) => {
+            BESSEL_TINY_VERIFICATION_PRECISION
+        }
         FnId::Erf | FnId::Li => ERF_VERIFICATION_PRECISION,
         _ => DEFAULT_VERIFICATION_PRECISION,
     }

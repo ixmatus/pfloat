@@ -1,0 +1,21 @@
+# Pinned worker output for BesselK0 (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0x7f800000"
+provenance     = """
+hand-derived: K_0(+0) = +inf (logarithmic singularity at 0).
+Slice p1.5.6 worker special-case emits +inf for this input to
+align Arb's NaN-at-limit behavior with pfloat's IEEE limit
+convention.
+"""
+
+[[entry]]
+input_bits     = "0x3f800000"
+mode           = "NE"
+certified_bits = "0x3ed79084"
+provenance     = """
+two-oracle agreement: K_0(1.0) ≈ 0.421024438241...
+Both Arb and mpmath certify 0x3ed79084 under NE.
+"""

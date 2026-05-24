@@ -48,7 +48,18 @@ macro_rules! bracket {
 }
 
 impl OracleBackend for MpfrOracle {
-    fn enclose(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure {
+    // `mode` is unused: the MPFR backend produces a mode-agnostic
+    // bracket via directed Round::Down and Round::Up evaluations;
+    // the verifier rounds the bracket to the caller's mode itself.
+    // The parameter exists only for trait-signature parity with
+    // the ADR-0035 Arb backend.
+    fn enclose(
+        &self,
+        f: FnId,
+        input: u32,
+        _mode: pfloat::RoundingMode,
+        working_prec: u32,
+    ) -> Enclosure {
         // Convert the f32 bit pattern exactly into a high-precision
         // Float; an f32 is representable without rounding at any
         // precision >= 24, so working_prec >= 64 (Phase 1's

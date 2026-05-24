@@ -1,0 +1,28 @@
+# Pinned worker output for Si (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0x00000000"
+provenance     = """
+exact: Si(+0) = 0. The worker emits exact zero.
+"""
+
+[[entry]]
+input_bits     = "0x00000001"
+mode           = "NE"
+certified_bits = "0x00000001"
+provenance     = """
+hand-derived: Si(2^-149) = 2^-149 - (2^-149)^3 / 18 + ...
+≈ 2^-149 (the correction is below 2^-447, far below ULP).
+NE rounds to mantissa 1 = 0x00000001 (input itself).
+"""
+
+[[entry]]
+input_bits     = "0x3f000000"
+mode           = "NE"
+certified_bits = "0x3efc7893"
+provenance     = """
+two-oracle agreement: Si(0.5) ≈ 0.493107418043...
+Both Arb and mpmath certify 0x3efc7893 under NE.
+"""

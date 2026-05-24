@@ -90,9 +90,20 @@ pub fn verify_input(
     mode: RoundingMode,
     kernel: &Kernel<'_>,
 ) -> Verdict {
+    // Authoritative backends (ADR-0035; the Arb backend) carry their
+    // own internal Ziv loop and return a single-point enclosure at
+    // the certified `f32`. The verifier's outer Ziv-at-oracle loop
+    // would never refine the answer for those backends, so we
+    // short-circuit and ask exactly once. Non-authoritative backends
+    // (the MPFR backend, where the bracket tightens with
+    // `working_prec`) run the doubling loop as before.
+    if oracle.is_authoritative() {
+        let enc = oracle.enclose(f, input, mode, START_PREC);
+        return finalize(input, mode, &enc, kernel(f, input, mode), f);
+    }
     let mut prec = START_PREC;
     loop {
-        let enc = oracle.enclose(f, input, prec);
+        let enc = oracle.enclose(f, input, mode, prec);
         if let Some(expected) = certified_round_f32(&enc, mode) {
             let got = kernel(f, input, mode);
             // NaN-aware equality: any pfloat NaN bit pattern
@@ -115,5 +126,32 @@ pub fn verify_input(
             return Verdict::OracleInconclusive { input, mode };
         }
         prec = (prec * 2).min(MAX_PREC);
+    }
+}
+
+/// Finalize the verdict for an authoritative backend's single-point
+/// enclosure. Mirrors the comparison path inside the Ziv loop but
+/// is split out so the short-circuit branch above stays one line.
+fn finalize(
+    input: u32,
+    mode: RoundingMode,
+    enc: &super::types::Enclosure,
+    got: u32,
+    _f: FnId,
+) -> Verdict {
+    if let Some(expected) = certified_round_f32(enc, mode) {
+        let nan_match = expected.is_nan() && f32::from_bits(got).is_nan();
+        if nan_match || got == expected.to_bits() {
+            Verdict::Ok
+        } else {
+            Verdict::Mismatch {
+                input,
+                mode,
+                expected: expected.to_bits(),
+                got,
+            }
+        }
+    } else {
+        Verdict::OracleInconclusive { input, mode }
     }
 }

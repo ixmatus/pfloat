@@ -1,0 +1,32 @@
+# Pinned worker output for li (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0x00000000"
+provenance     = """
+exact: li(+0) = 0 by definition (not a pole; ln 0 = -inf and
+Ei(-inf) = 0). Worker emits exact zero.
+"""
+
+[[entry]]
+input_bits     = "0x40000000"
+mode           = "NE"
+certified_bits = "0x3f85c7ed"
+provenance     = """
+two-oracle agreement: li(2.0) ≈ 1.045163780117...
+Both Arb and mpmath certify 0x3f85c7ed under NE.
+"""
+
+[[entry]]
+input_bits     = "0x0000708b"
+mode           = "NE"
+certified_bits = "0x80000133"
+provenance     = """
+slice p1.6 closure (pf-716u): li(0x0000708b ≈ 4.04e-41) certifies
+mantissa -307 = 0x80000133. The kernel-side verification precision
+bump to p=53 for Li (slice p1.6.2) closed the bridge-level
+defect; the oracle's certified expected matches under the ADR-0035
+protocol (slice p1.8 re-verification confirms). Both Arb and
+mpmath agree.
+"""

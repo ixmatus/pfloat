@@ -1,0 +1,19 @@
+# Pinned worker output for BesselK1 (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0x7f800000"
+provenance     = """
+hand-derived: K_1(+0) = +inf (DLMF 10.30.2). Slice p1.5.6 worker
+special-case emits +inf for this input.
+"""
+
+[[entry]]
+input_bits     = "0x3f800000"
+mode           = "NE"
+certified_bits = "0x3f1a1698"
+provenance     = """
+two-oracle agreement: K_1(1.0) ≈ 0.601907230197...
+Both Arb and mpmath certify 0x3f1a1698 under NE.
+"""

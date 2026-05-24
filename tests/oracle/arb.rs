@@ -1,18 +1,22 @@
-//! Arb oracle backend: the second [`OracleBackend`] implementation,
-//! sized for the twelve `FnId`s the MPFR backend cannot cover
-//! (`Si`, `Ci`, `Li`, `Bi`, `Ai_prime`, `Bi_prime`,
-//! `BesselI{0,1,n}`, `BesselK{0,1,n}`).
+//! Arb oracle backend: the [`OracleBackend`] implementation for the
+//! twelve `FnId`s the MPFR backend cannot cover (`Si`, `Ci`, `Li`,
+//! `Bi`, `Ai_prime`, `Bi_prime`, `BesselI{0,1,n}`,
+//! `BesselK{0,1,n}`).
+//!
 //! Evaluations happen out-of-process in a long-lived `python-flint`
 //! worker; the worker reads one request per line on its stdin and
-//! emits one enclosure per line on its stdout. This module owns the
-//! subprocess, the request / response protocol, and the conversion
-//! between Arb's decimal enclosure mantissas and rug's [`Float`] for
-//! the [`Enclosure`] type.
+//! emits one certified `f32` bit pattern per line on its stdout.
+//! This module owns the subprocess, the request / response protocol,
+//! and the construction of the single-point [`Enclosure`] the
+//! verifier rounds at the caller's mode.
 //!
-//! See ADR-0034 for the design (the "Arb backend posture (next
-//! slice)" section is exactly this slice). FLINT and Arb are both
-//! LGPL; keeping them in a Python subprocess means they never
-//! enter the shipped Rust crate's link graph.
+//! See ADR-0034 for the framing (two-backend layering, LGPL
+//! isolation via subprocess) and ADR-0035 for the refined protocol
+//! (worker reports certified f32 directly, no decimal bridge). The
+//! slice p1.7 reclassification of pf-6a4e showed the decimal
+//! bracket protocol was correctness-load-bearing in two ways that
+//! were silently broken; ADR-0035 records the cure and slice p1.8
+//! implements it.
 //!
 //! ## Venv resolution
 //!
@@ -22,16 +26,23 @@
 //! [`scripts/setup_arb_oracle.sh`](../../scripts/setup_arb_oracle.sh)
 //! helper creates and verifies the venv idempotently.
 //!
-//! ## Worker protocol
+//! ## Worker protocol (ADR-0035)
 //!
-//! Request: `<fn_id> <order_or_dash> <input_bits_hex> <working_prec>`.
-//! Response: `OK <lo_decimal> <hi_decimal>` or `ERR <message>`.
-//! Endpoints come back as `<mantissa>e<exp>` decimals (parsed by
-//! rug's `Float::parse` accepting scientific notation) or as
-//! `nan` / `inf` / `-inf` for non-finite cases. The Python worker
-//! adds a `+/-1` absorption to the decimal mantissas so the
-//! resulting rug `Float` endpoints still rigorously bracket the
-//! true value after the binary-from-decimal parse.
+//! Request: `<fn_id> <order_or_dash> <input_bits_hex> <mode>`.
+//!
+//! Response: `OK <f32_bits_hex>` (the certified f32 bit pattern as
+//! 8 lowercase hex chars), `INC` (the worker's internal Ziv loop
+//! could not certify a unique f32 at its maximum precision), or
+//! `ERR <message>` (an error processing the request).
+//!
+//! The worker runs the Ziv-at-oracle loop in-process (ball
+//! arithmetic stays in binary, no decimal bridge); the
+//! [`ArbOracle::enclose`] response is wrapped as a single-point
+//! [`Enclosure`] at the certified `f32` (or NaN endpoints for
+//! `INC`, which the verifier surfaces as `OracleInconclusive`).
+//! [`ArbOracle::is_authoritative`] returns `true` so the verifier
+//! short-circuits its outer Ziv loop and accepts the worker's
+//! single answer.
 
 #![cfg(all(unix, feature = "differential-arb"))]
 
@@ -42,6 +53,8 @@ use std::sync::Mutex;
 
 use rug::float::Special;
 use rug::Float;
+
+use pfloat::RoundingMode;
 
 use super::types::{Enclosure, FnId, OracleBackend};
 
@@ -229,9 +242,10 @@ impl ArbOracle {
 }
 
 impl OracleBackend for ArbOracle {
-    fn enclose(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure {
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure {
         let (fn_id, order) = fnid_to_worker_args(f);
-        let request = format!("{fn_id} {order} {input:08x} {working_prec}");
+        let mode_str = mode_to_str(mode);
+        let request = format!("{fn_id} {order} {input:08x} {mode_str}");
         let response = self
             .request(&request)
             .unwrap_or_else(|e| panic!("Arb oracle request `{request}` failed: {e}"));
@@ -246,13 +260,37 @@ impl OracleBackend for ArbOracle {
     fn name(&self) -> &'static str {
         "Arb"
     }
+
+    /// `true`: the worker's internal Ziv loop produces a single
+    /// certified `f32` per call, and further calls at higher
+    /// `working_prec` would not change the answer. The verifier
+    /// short-circuits its outer Ziv-at-oracle loop and accepts the
+    /// worker's first response. ADR-0035.
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+}
+
+/// Wire form of a [`RoundingMode`] for the worker protocol.
+fn mode_to_str(mode: RoundingMode) -> &'static str {
+    match mode {
+        RoundingMode::NearestEven => "NE",
+        RoundingMode::NearestAway => "RNA",
+        RoundingMode::TowardZero => "RZ",
+        RoundingMode::TowardPositive => "RP",
+        RoundingMode::TowardNegative => "RM",
+    }
 }
 
 /// Map a `FnId` to the worker's `(fn_id, order_or_dash)` tuple.
 /// Panics on a non-Arb-primary `FnId` because the dispatcher
 /// (`MetaOracle` in slice p1.5.3) is responsible for routing those
 /// to `MpfrOracle` instead.
-fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
+///
+/// Exposed under `pub(super)` so the mpmath oracle (which speaks
+/// the same worker protocol modulo the script path) can reuse the
+/// FnId-to-string mapping.
+pub(super) fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
     match f {
         FnId::Si => ("si", "-".to_string()),
         FnId::Ci => ("ci", "-".to_string()),
@@ -271,6 +309,21 @@ fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
 }
 
 /// Parse one worker response line into an [`Enclosure`].
+///
+/// Under the ADR-0035 protocol the response is one of:
+///
+/// - `OK <f32_bits_hex>`: the certified `f32` bit pattern. The
+///   enclosure returned is a single-point bracket at that `f32`
+///   value (both endpoints equal). The verifier's
+///   `certified_round_f32` on the single point under any rounding
+///   mode returns the same `f32`.
+/// - `INC`: the worker's Ziv loop could not certify a unique `f32`
+///   at its max precision. We return an Enclosure with NaN
+///   endpoints; the verifier's NaN-aware certified-rounding then
+///   reports `OracleInconclusive` because the pfloat kernel's
+///   non-NaN output cannot match a NaN certified answer.
+/// - `ERR <message>`: an error processing the request. Propagated
+///   as a `Result::Err` for the caller to panic.
 fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
     let mut parts = line.split_whitespace();
     let tag = parts.next().ok_or_else(|| "empty response".to_string())?;
@@ -278,29 +331,59 @@ fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
         let msg: String = parts.collect::<Vec<_>>().join(" ");
         return Err(format!("worker reported: {msg}"));
     }
+    if tag == "INC" {
+        let nan = Float::with_val(working_prec, Special::Nan);
+        return Ok(Enclosure {
+            lo: nan.clone(),
+            hi: nan,
+        });
+    }
     if tag != "OK" {
         return Err(format!("unexpected response tag: {tag}"));
     }
-    let lo_str = parts
-        .next()
-        .ok_or_else(|| "missing lo endpoint".to_string())?;
-    let hi_str = parts
-        .next()
-        .ok_or_else(|| "missing hi endpoint".to_string())?;
-    let lo = parse_float_endpoint(lo_str, working_prec)?;
-    let hi = parse_float_endpoint(hi_str, working_prec)?;
-    Ok(Enclosure { lo, hi })
+    let bits_str = parts.next().ok_or_else(|| "missing f32 bits".to_string())?;
+    if parts.next().is_some() {
+        return Err(format!(
+            "trailing data after f32 bits in response: `{line}`"
+        ));
+    }
+    let bits = u32::from_str_radix(bits_str, 16)
+        .map_err(|e| format!("parse `{bits_str}` as u32 hex: {e}"))?;
+    let value = f32_to_float_endpoint(bits, working_prec);
+    Ok(Enclosure {
+        lo: value.clone(),
+        hi: value,
+    })
 }
 
-/// Parse one decimal-or-special endpoint into a rug `Float` at
-/// `working_prec` bits.
-fn parse_float_endpoint(s: &str, working_prec: u32) -> Result<Float, String> {
-    match s {
-        "nan" => Ok(Float::with_val(working_prec, Special::Nan)),
-        "inf" => Ok(Float::with_val(working_prec, Special::Infinity)),
-        "-inf" => Ok(Float::with_val(working_prec, Special::NegInfinity)),
-        _ => Float::parse(s)
-            .map(|inc| Float::with_val(working_prec, inc))
-            .map_err(|e| format!("parse `{s}`: {e}")),
+/// Wrapper that exposes [`parse_response`] across modules; the
+/// mpmath oracle uses identical response parsing because both
+/// workers speak the same wire protocol.
+pub(super) fn parse_response_external(line: &str, working_prec: u32) -> Result<Enclosure, String> {
+    parse_response(line, working_prec)
+}
+
+/// Construct a rug `Float` at the requested working precision
+/// holding the exact value of an f32 bit pattern. Handles `+0` /
+/// `-0` / `+inf` / `-inf` / NaN as the Float special variants;
+/// finite values lift through `f32::from_bits` and `Float::with_val`
+/// which preserves the exact value at any `working_prec >= 24`.
+fn f32_to_float_endpoint(bits: u32, working_prec: u32) -> Float {
+    let exp_field = (bits >> 23) & 0xFF;
+    let mant = bits & 0x007F_FFFF;
+    if exp_field == 0xFF {
+        if mant == 0 {
+            // Infinity.
+            if (bits >> 31) & 1 == 1 {
+                return Float::with_val(working_prec, Special::NegInfinity);
+            }
+            return Float::with_val(working_prec, Special::Infinity);
+        }
+        // NaN.
+        return Float::with_val(working_prec, Special::Nan);
     }
+    // Finite: f32 -> f32 round-trip via from_bits is exact, and
+    // Float::with_val at any precision >= 24 holds the value
+    // without rounding (f32 has at most 24 bits of precision).
+    Float::with_val(working_prec, f32::from_bits(bits))
 }

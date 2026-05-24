@@ -1,0 +1,61 @@
+# Pinned worker output for BesselI1 (ADR-0035 Tier 5).
+# Initial entries from slice p1.7's pf-6a4e diagnostic + slice
+# p1.10's hand-derived corpus. Each entry documents how the
+# certified bit pattern was derived from first principles or from
+# multi-oracle agreement.
+
+[[entry]]
+input_bits     = "0x00000001"
+mode           = "NE"
+certified_bits = "0x00000001"
+provenance     = """
+hand-derived: I1(2^-149) = (2^-149)/2 + ((2^-149)/2)^3/2 + ...
+= 2^-150 + 2^-451 + (higher-order terms below 2^-700).
+2^-150 is exactly the midpoint between f32 mantissa 0 (= +0) and
+mantissa 1 (= 2^-149). The +2^-451 correction puts the truth
+slightly ABOVE the midpoint; NE rounds away from zero -> mantissa
+1 = 0x00000001. The slice p1.5 sweep mis-certified this as
+0x00000000 due to oracle defects in the decimal-bridge protocol;
+ADR-0035 cure verified at slice p1.8.
+"""
+
+[[entry]]
+input_bits     = "0x00000005"
+mode           = "NE"
+certified_bits = "0x00000003"
+provenance     = """
+hand-derived: I1(5 * 2^-149) ≈ 2.5 * 2^-149 + correction
+≈ midpoint(mantissa 2, mantissa 3) + 2^-(small).
+Truth is sub-midpoint-correction above midpoint -> mantissa 3 =
+0x00000003. Confirmed by Arb + mpmath agreement at slice p1.9.
+"""
+
+[[entry]]
+input_bits     = "0x00000009"
+mode           = "NE"
+certified_bits = "0x00000005"
+provenance     = """
+hand-derived: I1(9 * 2^-149) ≈ 4.5 * 2^-149 + (4.5 * 2^-149)^3/2
+≈ midpoint(mantissa 4, mantissa 5) + ~1.25e-133.
+Slightly above the midpoint -> mantissa 5 = 0x00000005. The slice
+p1.5 sweep mis-certified as 0x00000004. The pf-6a4e diagnostic
+walk in ADR-0035 uses this input as the canonical example.
+"""
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0x00000000"
+provenance     = """
+exact: I1(+0) = 0 (DLMF 10.30.1). Sign positive. The worker
+emits exact zero; certified_round_f32 returns +0.
+"""
+
+[[entry]]
+input_bits     = "0x3f800000"
+mode           = "NE"
+certified_bits = "0x3f10ae44"
+provenance     = """
+two-oracle agreement at slice p1.9: I1(1.0) ≈ 0.565159103992485...
+Both Arb and mpmath workers certify 0x3f10ae44 under NE.
+"""
