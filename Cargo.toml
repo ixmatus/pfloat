@@ -126,6 +126,20 @@ kani = []
 # and `integrals` for slice 6m's `differential_{ei,si,ci,li}.rs`.
 differential-mpfr = ["std", "fmt", "big", "specials", "agm", "integrals", "airy", "bessel", "zeta"]
 
+# Arb oracle backend via a long-lived `python-flint` subprocess. The
+# Phase 1 Oracle harness (ADR-0034) uses two backends in parallel:
+# MPFR (in-process, via `rug`) for the standard surface, and Arb for
+# the twelve FnIds MPFR cannot cover (Si, Ci, Li, Bi, Ai_prime,
+# Bi_prime, BesselI{0,1,n}, BesselK{0,1,n}). The subprocess posture
+# keeps FLINT and Arb (both LGPL) out of the shipped Rust crate's
+# link graph. The Python venv is set up out of tree via
+# `scripts/setup_arb_oracle.sh`; the Rust side resolves it from
+# `${PFLOAT_ARB_ORACLE_VENV}` with a default of
+# `${HOME}/.cache/pfloat-arb-oracle/venv`. Implies
+# `differential-mpfr` because the `Enclosure` endpoint type is
+# `rug::Float` for both backends.
+differential-arb = ["differential-mpfr"]
+
 [dev-dependencies]
 # Property-based testing for the integration suite under `tests/`.
 proptest = { version = "1", default-features = false, features = ["std"] }
