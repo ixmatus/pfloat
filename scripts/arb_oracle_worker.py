@@ -191,6 +191,22 @@ def handle_request(line: str) -> str:
     except ValueError:
         return f"ERR malformed input_bits_hex: {input_hex}"
 
+    # Special case: at f32 +0, Arb returns NaN for functions whose
+    # IEEE-conventional value at +0 is the mathematical limit
+    # (ci(+0) = -inf; K_n(+0) = +inf for any order). pfloat follows
+    # the IEEE convention, so the Arb oracle's NaN-vs-limit
+    # divergence here is an oracle-side bug, not a kernel-side bug;
+    # special-casing here aligns the oracle with the IEEE
+    # convention. Negative zero (0x80000000) is out of the f32 sweep
+    # range that starts at 0; ci(-0) and K_n(-0) are domain errors
+    # for both pfloat and Arb (both return NaN) so no special case
+    # is needed there.
+    if input_hex == "00000000":
+        if fn_id == "ci":
+            return "OK -inf -inf"
+        if fn_id == "k":
+            return "OK inf inf"
+
     ctx.prec = working_prec
     try:
         x_arb = arb_from_f32(x_f)
