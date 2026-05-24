@@ -16,6 +16,10 @@ use oracle::{Enclosure, FnId, MpfrOracle, OracleBackend};
 use rug::float::Round;
 use rug::Float;
 
+use pfloat::RoundingMode;
+
+const NE: RoundingMode = RoundingMode::NearestEven;
+
 #[test]
 fn mpfr_backend_name_is_mpfr() {
     let o = MpfrOracle;
@@ -28,7 +32,7 @@ fn sqrt_enclosure_straddles_nearest_value() {
     // sqrt(2) at p=64 NRD/NRU brackets the irrational, the
     // canonical hard-to-round example.
     let two_bits = 2.0_f32.to_bits();
-    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, two_bits, 64);
+    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, two_bits, NE, 64);
     let middle = {
         let x = Float::with_val(64, 2.0_f32);
         Float::with_val_round(64, x.sqrt_ref(), Round::Nearest).0
@@ -42,7 +46,7 @@ fn sqrt_enclosure_exact_value_collapses_to_zero_width() {
     let o = MpfrOracle;
     // sqrt(4) = 2 exactly at any precision >= 2 bits.
     let four_bits = 4.0_f32.to_bits();
-    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, four_bits, 64);
+    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, four_bits, NE, 64);
     assert_eq!(lo, hi, "exact sqrt should produce zero-width bracket");
     let two = Float::with_val(64, 2.0);
     assert_eq!(lo, two);
@@ -55,11 +59,11 @@ fn sqrt_enclosure_tightens_with_precision() {
     let Enclosure {
         lo: lo_64,
         hi: hi_64,
-    } = o.enclose(FnId::Sqrt, two_bits, 64);
+    } = o.enclose(FnId::Sqrt, two_bits, NE, 64);
     let Enclosure {
         lo: lo_128,
         hi: hi_128,
-    } = o.enclose(FnId::Sqrt, two_bits, 128);
+    } = o.enclose(FnId::Sqrt, two_bits, NE, 128);
     // The 128-bit bracket must lie inside the 64-bit one (or be
     // tighter on at least one side). The directed rounding modes
     // guarantee monotone refinement.
@@ -86,7 +90,7 @@ fn sqrt_enclosure_tightens_with_precision() {
 fn sqrt_enclosure_handles_zero_input() {
     let o = MpfrOracle;
     let zero_bits = 0.0_f32.to_bits();
-    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, zero_bits, 64);
+    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, zero_bits, NE, 64);
     let zero = Float::with_val(64, 0.0);
     assert_eq!(lo, zero);
     assert_eq!(hi, zero);
@@ -96,7 +100,7 @@ fn sqrt_enclosure_handles_zero_input() {
 fn sqrt_enclosure_handles_infinity_input() {
     let o = MpfrOracle;
     let inf_bits = f32::INFINITY.to_bits();
-    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, inf_bits, 64);
+    let Enclosure { lo, hi } = o.enclose(FnId::Sqrt, inf_bits, NE, 64);
     assert!(lo.is_infinite() && lo.is_sign_positive());
     assert!(hi.is_infinite() && hi.is_sign_positive());
 }
@@ -154,7 +158,7 @@ fn mpfr_primary_enclosures_are_well_formed() {
         (FnId::BesselYn(3), half),
     ];
     for (id, x_bits) in cases {
-        let Enclosure { lo, hi } = o.enclose(id, x_bits, p);
+        let Enclosure { lo, hi } = o.enclose(id, x_bits, NE, p);
         // NaN endpoints can occur only if MPFR's primitive returns
         // NaN, which is not expected for any of these in-domain
         // inputs.
@@ -179,5 +183,5 @@ fn mpfr_primary_enclosures_are_well_formed() {
 #[should_panic(expected = "Arb backend (next slice)")]
 fn arb_only_fnids_panic_under_mpfr_backend() {
     let o = MpfrOracle;
-    let _ = o.enclose(FnId::BesselI0, 0.5_f32.to_bits(), 64);
+    let _ = o.enclose(FnId::BesselI0, 0.5_f32.to_bits(), NE, 64);
 }

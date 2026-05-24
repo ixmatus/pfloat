@@ -1,136 +1,163 @@
 #!/usr/bin/env python3
-"""Long-lived Arb oracle worker for the pfloat Phase 1 Oracle harness.
+"""Long-lived Arb oracle worker for the pfloat Phase 1 Oracle harness
+under the ADR-0035 protocol.
 
 The worker reads requests from stdin (one per line) and writes
 responses to stdout (one per line). Each request specifies an
 ``FnId``, an optional order, an ``f32`` input bit pattern, and a
-working precision in bits; each response is an Arb enclosure
-``[lo, hi]`` formatted as two decimals.
+rounding mode; each response is the certified ``f32`` bit pattern
+(or ``INC`` if the worker's Ziv loop cannot certify even at the
+maximum Arb precision).
+
+ADR-0035 replaces the slice p1.5 decimal-bridge protocol with the
+worker-reports-certified-f32-directly architecture:
+
+- The worker decodes the f32 input via exact integer mantissa and
+  power-of-two scale (see ``arb_from_f32_bits``); no Python ``repr``
+  truncation. This closes the input-side precision-loss class that
+  caused the 14030 silent BesselI1 mismatches in slice p1.5.
+- The worker runs the Ziv-at-oracle loop in-process: at increasing
+  Arb working precision, compute the function's ball, extract the
+  exact rational lower/upper bounds, hand off to the shared
+  ``certified_round_f32`` routine. No decimal-bridge crosses the
+  subprocess boundary. This closes the bracket-collapse class that
+  caused the wrong f32 to silently certify at low Ziv precision.
+- The shared ``certified_round_f32`` routine
+  (``scripts/oracle_workers/certified_rounding.py``) is the
+  load-bearing piece, library-agnostic and exhaustively
+  property-tested in isolation.
 
 Protocol
 --------
 
 Request (one per line)::
 
-    <fn_id> <order_or_dash> <input_bits_hex> <working_prec>
+    <fn_id> <order_or_dash> <input_bits_hex> <mode>
 
 where:
 
 - ``fn_id`` is one of ``si``, ``ci``, ``li``, ``bi``,
   ``ai_prime``, ``bi_prime``, ``i`` (Bessel I, with order), or
   ``k`` (Bessel K, with order).
-- ``order_or_dash`` is ``-`` for non-parametric variants
-  (``si``, ``ci``, ``li``, ``bi``, ``ai_prime``, ``bi_prime``)
-  and the integer order for Bessel ``i`` and ``k`` (``0``,
-  ``1``, or any other ``int``).
+- ``order_or_dash`` is ``-`` for non-parametric variants and the
+  integer order for Bessel ``i`` / ``k``.
 - ``input_bits_hex`` is the binary32 input as an 8-character
-  lowercase hex string (little-endian byte order matches
-  ``struct.unpack('<f', ...)``).
-- ``working_prec`` is the requested Arb working precision in
-  bits, set on ``flint.ctx.prec`` before the evaluation.
+  lowercase hex string of the f32 bit pattern (the natural
+  human-readable big-endian representation: ``3f800000`` = 1.0).
+- ``mode`` is one of ``NE``, ``RNA``, ``RZ``, ``RP``, ``RM``
+  (IEEE 754 rounding modes).
 
 The worker recognises one extra request, ``ready?``, which it
-answers with ``OK ready`` so the Rust side can confirm the
-worker has started.
+answers with ``OK ready`` so the Rust side can confirm the worker
+has started.
 
 Response (one per line)::
 
-    OK <lo_decimal> <hi_decimal>
+    OK <f32_bits_hex>
 
-or::
+(the certified f32 bit pattern as 8 lowercase hex chars), or::
+
+    INC
+
+(the worker's Ziv loop reached its maximum precision without
+certifying a unique f32 — the bracket straddles a rounding
+boundary at every attempted precision), or::
 
     ERR <message>
 
-where each ``*_decimal`` is either:
+(an error occurred while processing the request).
 
-- a scientific-notation decimal ``<mantissa>e<exponent>`` (the
-  mantissa is an integer in decimal), or
-- ``nan``, ``inf``, or ``-inf`` for non-finite endpoints.
+Ziv loop
+--------
 
-The Rust side parses each via ``rug::Float::parse`` and assembles
-the ``Enclosure`` for the verifier.
-
-Bracket construction
---------------------
-
-For each result the worker extracts the integer enclosure via
-``arb.mid_rad_10exp(n)``, which returns ``(mid_mantissa,
-rad_mantissa, exp)`` such that the ball is ``[mid_mantissa
-+/- rad_mantissa] * 10^exp``. The endpoints then are::
-
-    lo = (mid - rad - 1) * 10^exp
-    hi = (mid + rad + 1) * 10^exp
-
-The ``-1`` / ``+1`` absorb any sub-LSB rounding the Rust ``Float``
-parser introduces converting decimal to binary, so the resulting
-``rug::Float`` enclosure rigorously contains the true value at
-the verifier's working precision. ``n`` is sized to carry the
-requested binary precision (``n = working_prec * 0.31 + 5``)
-so the decimal conversion does not itself widen the bracket
-beyond Arb's native ball radius.
-
-When ``rad == 0`` the Arb result is an exact decimal at the
-chosen ``n``: the value equals ``mid * 10^exp`` exactly, and
-mid_rad_10exp's documented post-condition guarantees rad accounts
-for any decimal-rounding error in the conversion. The ``+/-1``
-absorbed-rounding safety is purely decorative in that case and
-artificially widens the bracket from a single point to
-``[-10^exp, +10^exp]``, which the verifier reports as
-``OracleInconclusive`` when both endpoints round to different
-``f32`` values (the bracket ``[-1, +1]`` around an exact zero
-straddles every ``f32`` boundary). Slice p1.6 skips the
-``+/-1`` widening when ``rad == 0`` so exact results emit a
-single-point bracket: ``li(0) = 0``, ``si(0) = 0``,
-``i1(0) = 0`` all certify cleanly at the verifier.
+Internal precision sequence: ``64, 128, 256, 512, 1024, 2048,
+4096, 8192``. At each precision the worker computes the function
+in Arb's ball arithmetic, extracts exact rational bounds via
+``arb.lower().fmpq()`` and ``arb.upper().fmpq()``, and calls
+``certified_round_f32(lower, upper, mode)``. If the routine
+returns ``Some(f32_bits)`` the worker emits ``OK <bits>``; if it
+returns ``None`` the worker doubles precision and retries. The
+8192-bit cap is well above the slice p1.5 Rust-side cap of 1024
+because the worker pays only the in-process ball-arithmetic cost
+(no decimal-bridge cost), so much higher precision is cheap.
 
 LGPL isolation
 --------------
 
 FLINT and Arb are LGPL. The worker is an out-of-process Python
 subprocess driven by the pfloat oracle harness; FLINT and Arb
-never enter the shipped Rust crate's link graph (ADR-0034). The
-venv that hosts python-flint lives outside the pfloat repo (per
-``scripts/setup_arb_oracle.sh``).
+never enter the shipped Rust crate's link graph (ADR-0034 +
+ADR-0035). The venv that hosts ``python-flint`` lives outside the
+pfloat repo (per ``scripts/setup_arb_oracle.sh``).
 """
 
-import struct
+import os
 import sys
+from fractions import Fraction
+from typing import Optional
 
-from flint import arb, ctx
+# Import the shared certified-rounding routine. The
+# ``scripts/oracle_workers/`` package is sibling to this script
+# (under ``scripts/``); we add the package directory to sys.path
+# explicitly so the import works regardless of how the worker is
+# invoked.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, "oracle_workers"))
+
+from certified_rounding import certified_round_f32  # noqa: E402
+
+from flint import arb, ctx  # noqa: E402
 
 
-def f32_from_hex(hex8: str) -> float:
-    """Decode an 8-character hex string as a binary32 value (returned
-    as a Python ``float``; the f32 value is exactly representable in
-    f64 so no precision is lost in the cast). The hex string is the
-    natural human-readable big-endian representation of the f32 bit
-    pattern (`3f800000` = 1.0), matching what ``format!(\"{:08x}\",
-    f32::to_bits(v))`` emits on the Rust side."""
-    bits = int(hex8, 16)
-    return struct.unpack(">f", struct.pack(">I", bits))[0]
+# Ziv-at-oracle internal precision sequence and cap.
+ZIV_START_PREC = 64
+ZIV_MAX_PREC = 8192
 
 
-def arb_from_f32(v: float) -> arb:
-    """Lift a Python ``float`` (carrying an exact f32 value) to an
-    Arb point. NaN and infinity get the Arb special values; finite
-    values go through ``arb(str(v))`` so the decimal expansion (which
-    round-trips through f64 and therefore through f32) is parsed
-    exactly."""
-    if v != v:
+def arb_from_f32_bits(bits: int) -> arb:
+    """Lift the exact f32 value with bit pattern ``bits`` to an Arb
+    point at the current ``ctx.prec``. The construction goes through
+    integer mantissa and a power-of-two scale, both of which Arb
+    represents exactly: ``value = signed_mantissa * 2^scale_exp``
+    with no rounding.
+
+    Handles all f32 special classes: ``+0`` / ``-0`` -> exact Arb
+    zero (Arb has no signed-zero distinction; the sign is the f32
+    side's concern, not the worker's); ``+inf`` / ``-inf`` -> Arb
+    special infinities; quiet/signaling NaN -> Arb NaN.
+    """
+    sign = (bits >> 31) & 1
+    exp_field = (bits >> 23) & 0xFF
+    mant = bits & 0x7FFFFF
+    if exp_field == 0xFF:
+        if mant == 0:
+            return arb("-inf") if sign else arb("inf")
         return arb("nan")
-    if v == float("inf"):
-        return arb("inf")
-    if v == float("-inf"):
-        return arb("-inf")
-    return arb(repr(v))
+    if exp_field == 0 and mant == 0:
+        return arb(0)
+    if exp_field == 0:
+        # Subnormal: value = (-1)^sign * mant * 2^-149
+        int_mant = mant
+        scale_exp = -149
+    else:
+        # Normal: value = (-1)^sign * (1.mant) * 2^(exp_field - 127)
+        #               = (mant | 0x800000) * 2^(exp_field - 150)
+        int_mant = mant | 0x800000
+        scale_exp = exp_field - 127 - 23
+    if scale_exp >= 0:
+        value = arb(int_mant) * arb(2) ** scale_exp
+    else:
+        value = arb(int_mant) / arb(2) ** (-scale_exp)
+    return -value if sign else value
 
 
 def dispatch(fn_id: str, order_or_dash: str, x: arb) -> arb:
     """Run the requested function on ``x`` and return the Arb result.
 
-    Bessel I and K take an integer order; the other six variants are
-    non-parametric and ignore ``order_or_dash`` (the request format
-    sends ``-`` for them so the line tokenisation stays uniform)."""
+    Bessel ``i`` / ``k`` take an integer order; the other six
+    variants are non-parametric and ignore ``order_or_dash`` (the
+    request format sends ``-`` for them so the line tokenisation
+    stays uniform)."""
     if fn_id == "si":
         return x.si()
     if fn_id == "ci":
@@ -150,96 +177,174 @@ def dispatch(fn_id: str, order_or_dash: str, x: arb) -> arb:
     raise ValueError(f"unknown fn_id: {fn_id}")
 
 
-def format_endpoint(value: arb, lower: bool) -> str:
-    """Format one endpoint of an Arb result for the wire.
+def arb_ball_to_rational_bounds(b: arb) -> tuple[Optional[Fraction], Optional[Fraction]]:
+    """Extract exact rational lower / upper bounds from an Arb ball.
 
-    ``lower=True`` emits the lower bound of ``value``'s ball;
-    ``lower=False`` emits the upper bound. Returns either a
-    ``<mantissa>e<exp>`` decimal or one of ``nan``, ``inf``,
-    ``-inf``."""
-    if value.is_nan():
-        return "nan"
-    if not value.is_finite():
-        # Arb represents ±inf as a ball whose midpoint is ±inf;
-        # at this branch we know the value is +inf or -inf.
-        # `value > 0` is robust because Arb's comparison returns
-        # True only when the bracket lies entirely on the chosen
-        # side of zero.
-        return "inf" if value > 0 else "-inf"
+    Returns ``(None, None)`` for NaN balls (caller dispatches NaN
+    out-of-band; this is not a rounding question).
 
-    # Heuristic: request enough decimal digits to carry the current
-    # working precision plus a small headroom for the +/-1
-    # safety adjustment.
-    n_digits = max(20, int(ctx.prec * 0.31) + 5)
-    mid, rad, exp = value.mid_rad_10exp(n_digits)
-    # mid and rad come back as fmpz (FLINT big integers); convert
-    # through ``int`` to Python integers so arithmetic and the
-    # f-string formatter behave normally.
-    mid_i = int(mid)
-    rad_i = int(rad)
-    # Exact result: rad == 0 means the value equals mid * 10^exp
-    # exactly at the chosen n_digits, so no parser-rounding safety
-    # widening is required. Emit a single-point bracket
-    # ``[mid, mid] * 10^exp`` instead of ``[mid-1, mid+1] * 10^exp``
-    # so the verifier sees the exact value rather than a 2-ULP
-    # decimal ball that may straddle an f32 boundary (e.g. the
-    # ``[-1, +1]`` ball around an exact zero straddles every f32
-    # boundary). Slice p1.6 closes li(0), si(0), i1(0) inconclusive.
-    if rad_i == 0:
-        return f"{mid_i}e{exp}"
-    if lower:
-        mantissa = mid_i - rad_i - 1
-    else:
-        mantissa = mid_i + rad_i + 1
-    return f"{mantissa}e{exp}"
+    For finite balls, ``b.lower()`` and ``b.upper()`` return arbs
+    that are conservative bounds (lower's upper-end is the original
+    ball's lower-end; upper's lower-end is the original ball's
+    upper-end). Both convert to exact rationals via ``.fmpq()``,
+    which represents the bound as ``p / q`` with arbitrary-precision
+    integers. We pull ``p`` and ``q`` into Python ints and wrap in
+    ``Fraction`` for the shared routine.
+
+    For infinite endpoints (the upper bound is +inf or the lower is
+    -inf), ``.fmpq()`` raises; the caller handles the infinity case
+    separately by examining the ball's structure."""
+    if b.is_nan():
+        return (None, None)
+    lo_arb = b.lower()
+    hi_arb = b.upper()
+    # Both lower() and upper() return arbs whose magnitudes are
+    # finite when the ball is finite. .fmpq() works on finite-valued
+    # arbs; for the inf-bound case the caller short-circuits via
+    # the is_finite check upstream.
+    lo_q = lo_arb.fmpq()
+    hi_q = hi_arb.fmpq()
+    return (
+        Fraction(int(lo_q.p), int(lo_q.q)),
+        Fraction(int(hi_q.p), int(hi_q.q)),
+    )
+
+
+# f32 bit patterns for the special values the worker returns
+# directly without going through the rounding routine.
+_F32_POS_ZERO = 0x0000_0000
+_F32_NEG_ZERO = 0x8000_0000
+_F32_POS_INF = 0x7F80_0000
+_F32_NEG_INF = 0xFF80_0000
+# Canonical quiet NaN bit pattern (sign bit clear, exponent all 1s,
+# quiet bit (MSB of mantissa) set; per IEEE 754 the payload of an
+# oracle-emitted NaN is unspecified, so we pick a canonical value).
+_F32_QUIET_NAN = 0x7FC0_0000
+
+
+def special_case_at_zero(fn_id: str, sign: int) -> Optional[int]:
+    """Handle the f32 ``+0`` / ``-0`` input cases for functions
+    whose mathematical limit at zero is a definite infinity or NaN.
+
+    Mirrors the slice p1.5.6 worker special case (Ci(+0) = -inf,
+    K_n(+0) = +inf) which slipped in to align Arb's NaN-at-limit
+    behavior with pfloat's IEEE-convention mathematical-limit
+    behavior. The slice p1.7 reclassification confirms these are
+    the correct convention; the worker preserves the alignment.
+
+    Returns ``None`` for cases where the standard Ziv path should
+    handle the input.
+    """
+    if fn_id == "ci":
+        return _F32_NEG_INF  # ci(+0) = -inf
+    if fn_id == "k":
+        return _F32_POS_INF  # K_n(+0) = +inf (any order)
+    # Other functions at +/-0: li(0) = 0, si(0) = 0, bi(0) = a
+    # specific finite value, etc. The standard path computes them.
+    return None
 
 
 def handle_request(line: str) -> str:
-    """Process one request line. Returns the response line (without
-    trailing newline)."""
+    """Process one request line. Returns the response line
+    (without trailing newline)."""
     line = line.strip()
     if line == "ready?":
         return "OK ready"
     parts = line.split()
     if len(parts) != 4:
         return f"ERR malformed request: expected 4 tokens, got {len(parts)}"
-    fn_id, order, input_hex, working_prec_s = parts
+    fn_id, order, input_hex, mode = parts
+
+    if mode not in ("NE", "RNA", "RZ", "RP", "RM"):
+        return f"ERR malformed mode: {mode}"
+
     try:
-        working_prec = int(working_prec_s)
-    except ValueError:
-        return f"ERR malformed working_prec: {working_prec_s}"
-    if working_prec < 1:
-        return f"ERR working_prec must be >= 1, got {working_prec}"
-    try:
-        x_f = f32_from_hex(input_hex)
+        input_bits = int(input_hex, 16)
     except ValueError:
         return f"ERR malformed input_bits_hex: {input_hex}"
+    if not 0 <= input_bits <= 0xFFFF_FFFF:
+        return f"ERR input_bits out of u32 range: {input_hex}"
 
-    # Special case: at f32 +0, Arb returns NaN for functions whose
-    # IEEE-conventional value at +0 is the mathematical limit
-    # (ci(+0) = -inf; K_n(+0) = +inf for any order). pfloat follows
-    # the IEEE convention, so the Arb oracle's NaN-vs-limit
-    # divergence here is an oracle-side bug, not a kernel-side bug;
-    # special-casing here aligns the oracle with the IEEE
-    # convention. Negative zero (0x80000000) is out of the f32 sweep
-    # range that starts at 0; ci(-0) and K_n(-0) are domain errors
-    # for both pfloat and Arb (both return NaN) so no special case
-    # is needed there.
-    if input_hex == "00000000":
-        if fn_id == "ci":
-            return "OK -inf -inf"
-        if fn_id == "k":
-            return "OK inf inf"
+    # f32 +0 special case for the ci / k limit-at-zero functions.
+    # Slice p1.5.6 introduced this; ADR-0035 preserves it.
+    if input_bits == 0x0000_0000:
+        special = special_case_at_zero(fn_id, sign=0)
+        if special is not None:
+            return f"OK {special:08x}"
 
-    ctx.prec = working_prec
-    try:
-        x_arb = arb_from_f32(x_f)
-        result = dispatch(fn_id, order, x_arb)
-        lo = format_endpoint(result, lower=True)
-        hi = format_endpoint(result, lower=False)
-    except Exception as e:
-        return f"ERR {type(e).__name__}: {e}"
-    return f"OK {lo} {hi}"
+    # NaN / inf input: dispatch directly to Arb at low precision
+    # and emit the appropriate f32 special. Arb propagates NaN
+    # through every function; Arb at inf gives function-specific
+    # behavior.
+    sign = (input_bits >> 31) & 1
+    exp_field = (input_bits >> 23) & 0xFF
+    mant = input_bits & 0x7FFFFF
+    if exp_field == 0xFF:
+        if mant != 0:
+            # Input NaN: output NaN.
+            return f"OK {_F32_QUIET_NAN:08x}"
+        # Input +/-inf: let the Ziv path compute the function's
+        # behavior at infinity (most functions saturate to +/-inf
+        # or 0; the rounding routine handles both).
+
+    # Run the Ziv-at-oracle loop.
+    prec = ZIV_START_PREC
+    last_error = None
+    while prec <= ZIV_MAX_PREC:
+        ctx.prec = prec
+        try:
+            x_arb = arb_from_f32_bits(input_bits)
+            result_ball = dispatch(fn_id, order, x_arb)
+        except Exception as e:
+            return f"ERR {type(e).__name__}: {e}"
+
+        # Handle NaN ball: output NaN as the certified answer.
+        if result_ball.is_nan():
+            return f"OK {_F32_QUIET_NAN:08x}"
+
+        # Handle inf ball: the ball is rigorous; if both bounds
+        # are +inf, certify +inf; both -inf, certify -inf;
+        # otherwise the ball straddles inf and the rounding routine
+        # would need a special handling. For pfloat's domain we
+        # expect either both bounds inf with matching sign or
+        # finite bounds.
+        if not result_ball.is_finite():
+            # mid is +inf or -inf; assume the entire ball is on
+            # that side. (Arb compares ball to 0 via > / < which
+            # return True only when the ball lies entirely on the
+            # chosen side.)
+            if result_ball > 0:
+                return f"OK {_F32_POS_INF:08x}"
+            if result_ball < 0:
+                return f"OK {_F32_NEG_INF:08x}"
+            # Sign indeterminate: try a higher precision (may
+            # resolve once the ball tightens).
+            prec *= 2
+            continue
+
+        # Finite ball: extract exact rational bounds and certify.
+        try:
+            lo, hi = arb_ball_to_rational_bounds(result_ball)
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            prec *= 2
+            continue
+
+        if lo is None or hi is None:
+            # Unexpected NaN extraction; treat as needing more
+            # precision.
+            prec *= 2
+            continue
+
+        certified = certified_round_f32(lo, hi, mode)
+        if certified is not None:
+            return f"OK {certified:08x}"
+
+        prec *= 2
+
+    if last_error is not None:
+        return f"ERR Ziv exhausted ({ZIV_MAX_PREC} bits); last error: {last_error}"
+    return "INC"
 
 
 def main() -> None:

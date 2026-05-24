@@ -81,7 +81,13 @@ fn verdict_variants_carry_diagnostic_payloads() {
 struct StubBackend;
 
 impl OracleBackend for StubBackend {
-    fn enclose(&self, _f: FnId, _input: u32, working_prec: u32) -> Enclosure {
+    fn enclose(
+        &self,
+        _f: FnId,
+        _input: u32,
+        _mode: pfloat::RoundingMode,
+        working_prec: u32,
+    ) -> Enclosure {
         let lo = Float::with_val(working_prec, 0.0);
         let hi = Float::with_val(working_prec, 0.0);
         Enclosure { lo, hi }
@@ -95,7 +101,7 @@ impl OracleBackend for StubBackend {
 #[test]
 fn oracle_backend_trait_object_dispatches_through_dyn() {
     let stub: &dyn OracleBackend = &StubBackend;
-    let enc = stub.enclose(FnId::Exp, 0x3f800000, 64);
+    let enc = stub.enclose(FnId::Exp, 0x3f800000, pfloat::RoundingMode::NearestEven, 64);
     assert_eq!(enc.lo.prec(), 64);
     assert_eq!(stub.name(), "stub");
 }

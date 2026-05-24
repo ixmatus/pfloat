@@ -42,13 +42,40 @@ pub struct Enclosure {
 /// fan shards across cores in a follow-up slice. The methods are
 /// `&self` so a single backend instance serves the entire sweep.
 pub trait OracleBackend: Send + Sync {
-    /// Enclose `f(input)` at `working_prec` bits. The returned
-    /// bracket's endpoints are exact at the working precision.
-    fn enclose(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure;
+    /// Enclose `f(input)` at `working_prec` bits under the caller's
+    /// rounding mode. The returned bracket's endpoints are exact
+    /// at the working precision.
+    ///
+    /// `mode` is a hint that authoritative backends (see
+    /// [`OracleBackend::is_authoritative`]) use to produce a
+    /// single-point enclosure at the mode's certified `f32`. Non
+    /// authoritative backends ignore `mode`; the verifier does the
+    /// mode-specific rounding from the returned bracket itself.
+    /// Added at slice p1.8 / ADR-0035 to support the
+    /// worker-reports-certified-f32-directly protocol while keeping
+    /// the trait shape uniform for the older `MpfrOracle` enclose
+    /// path.
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure;
 
     /// Backend identifier for the status table's `oracle` column
     /// (e.g. `"MPFR"`, `"Arb"`).
     fn name(&self) -> &'static str;
+
+    /// `true` when [`Self::enclose`] already runs the backend's own
+    /// internal precision loop and further calls at higher
+    /// `working_prec` would not refine the answer. The verifier
+    /// short-circuits its Ziv-at-oracle loop for authoritative
+    /// backends and calls `enclose` exactly once.
+    ///
+    /// The default returns `false`, matching the historical
+    /// `MpfrOracle` shape where the bracket tightens as
+    /// `working_prec` grows. The `ArbOracle` overrides this to
+    /// return `true` under ADR-0035: the worker's own Ziv loop
+    /// inside the subprocess decides the certified `f32` directly,
+    /// and the Rust-side verifier just receives the answer.
+    fn is_authoritative(&self) -> bool {
+        false
+    }
 }
 
 /// Identifier for each function the Phase 1 sweep verifies.
