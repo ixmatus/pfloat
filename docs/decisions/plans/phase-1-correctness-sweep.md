@@ -485,6 +485,98 @@ Arb-primary FnIds (`Si`, `Ci`, `Li`, `Bi`, `Ai_prime`,
 through the existing differential lane plus identity cross
 checks.
 
+## Slice p1.4 closure (2026-05-23)
+
+Slice p1.4 closed all three slice p1.3 has-errors findings
+(pf-7d7, pf-z0f, pf-n5d), extended the runner with L-M
+adversarial seeds (pf-r2b9), and wired three more elementary
+kernels onto the canonical Ziv envelope (erf, the Bessel J
+family). The slice landed seven unsigned branch commits:
+
+- **tanh tiny-input short circuit (slice p1.4.1, closes pf-7d7).**
+  The composition `(1 - exp(-2|x|)) / (1 + exp(-2|x|))` collapses
+  to exactly zero for tiny inputs (when `2|x| < 2^-w` at working
+  precision `w`, `exp(-2|x|)` rounds to one and the numerator
+  becomes zero); the slice p1.2 Ziv envelope cannot recover
+  because `half_width(0) = 0` makes the interval test certify
+  zero as the answer. `src/math/tanh.rs::tanh_at_w` now short
+  circuits to `|x|` for any input whose binary exponent is below
+  `-ceil((working_prec - 22) / 2)`, the threshold derived from
+  Taylor's theorem (`tanh(|x|) = |x| - |x|^3/3 + O(|x|^5)`) so
+  the truncation error fits the Ziv driver's error guard
+  `|y| * 2^-(working_prec - ZIV_ERROR_GUARD)`. Closed the 65535
+  / 65536 f32 subnormal mismatches on the slice p1.3 sweep.
+- **Harness bf -> f32 17-digit Display + initial p = 53 bump (slice
+  p1.4.2).** Diagnosed pf-z0f as a harness conversion bug rather
+  than a kernel defect: pfloat's `erf` at `p = 24` is correctly
+  rounded at that precision (verified by probing the kernel at
+  `p = 24, 53, 64, 113, 200`; all give identical decimal), but
+  the bf -> f32 conversion through Display + parse loses
+  information on f32-subnormal-grid midpoints because the
+  Display digit count (9 for `p = 24`) carries enough precision
+  for f32 normals but not for the subnormal grid spacing. Slice
+  p1.4.2 bumped the digit count to 17 (= f64 round-trip) and
+  raised the verification precision to `p = 53` globally; the
+  second move turned out to introduce a directed-mode
+  regression (see slice p1.4.6) and was scoped back to per-
+  function in the same slice.
+- **erf Ziv envelope (slice p1.4.3, closes pf-0qp9).**
+  Architectural cleanup. The slice p1.2 pattern (exp / ln / tanh
+  / lgamma) wraps the working-precision body in `ziv_round` to
+  inherit the canonical correctness criterion of ADR-0022;
+  `src/math/erf.rs` now follows. Regime decision is fixed at
+  kernel entry; both `erf_maclaurin` and
+  `super::erfc::erfc_asymptotic` flow under the Ziv envelope.
+- **Bessel J Ziv envelope (slice p1.4.4, closes pf-ydna).**
+  Same pattern around `bessel_j_eval_normal`: the regime
+  dispatcher (tiny / Miller / asymptotic) runs under one Ziv
+  envelope so J0, J1, Jn share the slice p1.2 correctness
+  scaffolding.
+- **Per-function verification precision (slice p1.4.5, closes
+  pf-n5d).** J1's residual mismatch was a different harness
+  bug: the Maclaurin's first correction term sits at relative
+  `~2^-298` for the smallest f32 subnormal exponent, far below
+  the slice p1.4.2 verification precision; the kernel's final
+  round to `p = 53` stripped the correction and left the value
+  on the exact f32-subnormal-grid midpoint where the conversion
+  ties to even instead of tracking the true sub-midpoint
+  position. The fix is per-function verification precision in
+  the harness: `BesselJ1` and `BesselJn` route through
+  `BESSEL_TINY_VERIFICATION_PRECISION = 320` (sized so the
+  worst-case cubic correction at relative `2^-298` survives the
+  kernel's final round with a 22-bit headroom).
+- **Tighten verification precision (slice p1.4.6, closes
+  pf-kg12).** Slice p1.4.2's global `p = 53` default introduced
+  a directed-mode regression: the bf -> f32 bridge always uses
+  NE rounding (Rust's f32 parser is NE-only), so at `p = 53`
+  the kernel's directed-mode rounding (`TowardPositive` /
+  `TowardNegative` / `TowardZero` / `NearestAway`) is silently
+  overridden by the bridge's NE re-encode. At `p = 24` the
+  kernel returns a value that lands exactly on the f32 grid, so
+  the bridge is lossless under every mode. Slice p1.4.6 set
+  `DEFAULT_VERIFICATION_PRECISION = 24` and reified the erf
+  bump as `ERF_VERIFICATION_PRECISION = 53`; the Bessel J
+  family keeps its `p = 320` bump from slice p1.4.5. Both
+  bumped paths run under NE only in the f32 sweep, so the
+  NE-only bridge correctly rounds them.
+- **L-M adversarial seeds (slice p1.4.7, closes pf-r2b9).**
+  `examples/oracle_sweep.rs` includes
+  `tests/differential/lefevre_muller_data.rs` via a relative
+  `#[path]` and prepends per-function L-M inputs (cast from f64
+  bit patterns to f32) to the linear sweep iterator. The
+  status row schema gained an `lm_seeds_run` field so the
+  verification posture records the adversarial-seed count
+  per row.
+
+Slice p1.4 closure leaves the 33 in-tree status rows all reading
+`correctly-rounded` and no regression corpora under
+`tests/vectors/`. The per-push smoke gate stays under one
+minute (~20 seconds debug for the default path, plus the J1
+and Jn bumped runs at `p = 320`). Next: pf-cvs (1.x smallvec
+inline BigFloat storage; do not pick up under the Phase 1
+posture) remains the only open work bead aside from the
+slice 8c.* parked items.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the

@@ -11,3 +11,4 @@ mismatch_count     = 0
 inconclusive_count = 0
 panic_count        = 0
 vectors            = ""
+lm_seeds_run       = 1

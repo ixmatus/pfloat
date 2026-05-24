@@ -165,9 +165,37 @@ precision doubling, per-push smoke gate, standalone runner
 binary, and a first sweep at 65536 binary32 subnormal-range
 inputs that produced an in-tree per-function TOML status table
 under `tests/oracle/status/`. The sweep returned 30 of 33
-functions correctly-rounded; three has-errors findings deferred
-to slice p1.4+ (tanh subnormal-cancellation defect, erf 1-ULP on
-111 inputs, J1 1-ULP on 25%).
+functions correctly-rounded; three has-errors findings (tanh
+subnormal-cancellation defect, erf 1-ULP on 111 inputs, J1 1-ULP
+on 25%) were deferred to slice p1.4.
+
+Slice p1.4 closed all three findings and extended the runner with
+the L-M corpus as adversarial seeds. The tanh defect was a real
+kernel bug (the standard `(1 - exp(-2|x|)) / (1 + exp(-2|x|))`
+composition collapses to zero for tiny inputs and the Ziv
+interval test certifies the zero because `half_width(0)` is also
+zero); the fix is a tiny-input short circuit in `tanh_at_w` that
+returns `|x|` directly when the cubic Taylor correction falls
+below the Ziv error guard. The erf and J1 defects were harness
+diagnoses: pfloat's kernels at `p = 24` are correctly rounded at
+that precision, but the bf → f32 conversion through
+Display + parse loses information on f32-subnormal-grid midpoints
+(erf) and on sub-midpoint corrections living below `p = 24` ULP
+(J1's cubic Maclaurin correction at relative `2^-298`). The fix
+is per-function verification precision in the harness: the
+default stays at `p = 24` so directed rounding modes survive the
+NE-only Display + parse bridge, and the two affected kernels route
+through bumped precisions (`p = 53` for erf, `p = 320` for the
+Bessel J family). erf, lgamma, and the J family also picked up
+the slice p1.2 Ziv envelope as architectural cleanup so the
+elementary kernel cohort presents a uniform correctness posture
+under ADR-0022. The L-M adversarial seeds prepend the
+CORE-MATH-sourced hard-to-round corpus to the oracle runner's
+linear sweep for the 24 functions the L-M corpus covers; the
+status row schema gained an `lm_seeds_run` field so the
+verification posture records the adversarial-seed count. The
+33 in-tree status rows now all read `correctly-rounded` and no
+in-tree regression corpora remain.
 
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
