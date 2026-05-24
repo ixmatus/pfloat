@@ -235,6 +235,37 @@ plus the diagnostic sweep with the convention-divergence fix;
 the kernel-side fixes for `BesselI1` and `li` belong to slice
 p1.6+.
 
+Slice p1.6 closes pf-716u. The investigation split cleanly: the
+li mismatch at f32 input 0x0000708b traces to the same
+midpoint-tie shape pf-z0f did for erf (the kernel's
+`round_to_precision(24, NE)` at the end of the
+`ln`-then-`Ei` composition lands exactly on the f32 subnormal
+midpoint between mantissas 306 and 307 at `2^-149`; the
+NE-only Display+parse bridge then ties-to-even and picks the
+even-mantissa neighbor, which is wrong when the true value sits
+on the odd-mantissa side of the midpoint). Bumping
+`verification_precision(FnId::Li)` from 24 to 53 carries enough
+information past the kernel's final round for the bridge to
+land on the certified neighbor; the directed-mode safety
+caveats from slice p1.4 hold (`p > 24` bumps are NE-only safe,
+the f32 sweep runs NE only). The li inconclusive at f32 +0 has
+a different root cause: `arb(0).li()` returns an exact zero
+(`is_exact() == True`, `mid_rad_10exp(20) == (0, 0, 0)`) and
+the worker's `+/-1` mantissa-unit padding (intended to absorb
+sub-LSB parser rounding) then emits the bracket `[-1, +1]`
+which straddles every f32 boundary; the verifier reports
+`OracleInconclusive` regardless of how high the Ziv-at-oracle
+loop escalates working_prec. The worker now skips the `+/-1`
+when `rad == 0`, so exact results emit a single-point bracket
+and certify cleanly. The bonus closure is that `si(+0) = 0`
+and `i1(+0) = 0` followed the same pattern and lose their
+inconclusive rows too (Si: 0/0/0, I1: 14030/0/0; `BesselI1`
+still has-errors under pf-6a4e). After the slice the in-tree
+status table reads 33 MPFR-primary rows plus 8 of 10
+non-parametric Arb-primary rows correctly-rounded, with
+`BesselI1` and the parametric `BesselIn`/`BesselKn` orders the
+remaining pre-v1.0 surface.
+
 Slice 8c (the v1.0 tag + `cargo publish` slice) is parked behind
 Phase 1 per ADR-0033: the slice-8b exercise surfaced a known
 wrong-rounding case in pfloat's `exp` underflow path (closed at
