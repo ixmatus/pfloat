@@ -98,13 +98,27 @@ const ERF_VERIFICATION_PRECISION: u32 = 53;
 const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 
 /// Pick the verification precision for an `FnId`. The default is
-/// `p = 53` (sized for f32 normal correctness through Display+parse);
-/// Bessel `J1` and `Jn` use the higher Bessel tiny-x precision so the
-/// sub-midpoint cubic correction survives the kernel's final round.
+/// `p = 24` (the f32 mantissa width; sufficient for any `FnId` whose
+/// kernel does not exhibit the small-subnormal midpoint trap). The
+/// per-function bumps live here:
+///
+/// - `Erf` and `Li` at `p = 53`: same shape as the slice p1.3 erf
+///   subnormal finding. The kernel's `round_to_precision(24, NE)` at
+///   the end of the composition can land exactly on an f32 subnormal
+///   grid midpoint when the true value is within sub-ULP-at-p=24 of
+///   the midpoint; bumping to `p = 53` carries enough information
+///   past the round for the bf -> f32 Display+parse pipeline to land
+///   on the correct neighbor. Slice p1.6 adds `Li` here (closes the
+///   pf-716u li subnormal mismatch at input 0x0000708b).
+///
+/// - Bessel `J1` and `Jn` at `p = 320`: the Maclaurin sub-midpoint
+///   cubic correction term for the small-argument-Bessel family needs
+///   the wider precision; see [`BESSEL_TINY_VERIFICATION_PRECISION`]
+///   for the derivation.
 fn verification_precision(f: FnId) -> u32 {
     match f {
         FnId::BesselJ1 | FnId::BesselJn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
-        FnId::Erf => ERF_VERIFICATION_PRECISION,
+        FnId::Erf | FnId::Li => ERF_VERIFICATION_PRECISION,
         _ => DEFAULT_VERIFICATION_PRECISION,
     }
 }
