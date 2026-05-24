@@ -39,13 +39,20 @@ pub enum MetaError {
 }
 
 impl std::fmt::Display for MetaError {
+    #[cfg(feature = "differential-arb")]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(feature = "differential-arb")]
             Self::Arb(e) => write!(f, "MetaOracle Arb backend setup: {e}"),
-            #[cfg(not(feature = "differential-arb"))]
-            _ => unreachable!("MetaError has no constructible variants without differential-arb"),
         }
+    }
+
+    // Without `differential-arb` the enum has no constructible
+    // variants, so this branch is unreachable at runtime; the type
+    // system enforces the absence of any value to format and the
+    // `match *self {}` body discharges the function with no code.
+    #[cfg(not(feature = "differential-arb"))]
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {}
     }
 }
 
@@ -70,7 +77,11 @@ pub struct MetaOracle {
 impl MetaOracle {
     /// Construct the `MetaOracle`. Under `differential-arb` this
     /// spawns the python-flint worker subprocess; without that
-    /// feature the constructor is essentially free.
+    /// feature the constructor is essentially free. The `Result`
+    /// shape is preserved across feature flavors so callers do not
+    /// have to branch; without `differential-arb` the constructor
+    /// is infallible but the wrap stays for signature stability.
+    #[allow(clippy::unnecessary_wraps)]
     pub fn new() -> Result<Self, MetaError> {
         let mpfr = MpfrOracle;
         #[cfg(feature = "differential-arb")]
@@ -88,13 +99,16 @@ impl MetaOracle {
     /// a NaN enclosure (the verifier will then report
     /// `Verdict::OracleInconclusive` since the pfloat kernel's
     /// output will not match the certified `Some(f32::NAN)` unless
-    /// the pfloat kernel also returns NaN).
+    /// the pfloat kernel also returns NaN). The `&self` argument
+    /// stays for signature parity with the `differential-arb` arm
+    /// where it dispatches to the owned `ArbOracle`.
     #[cfg(feature = "differential-arb")]
     fn enclose_arb(&self, f: FnId, input: u32, working_prec: u32) -> Enclosure {
         self.arb.enclose(f, input, working_prec)
     }
 
     #[cfg(not(feature = "differential-arb"))]
+    #[allow(clippy::unused_self)]
     fn enclose_arb(&self, _f: FnId, _input: u32, working_prec: u32) -> Enclosure {
         let nan = Float::with_val(working_prec, Special::Nan);
         Enclosure {
