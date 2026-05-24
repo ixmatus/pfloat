@@ -52,14 +52,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use oracle::{
-    outcome_to_status_row, pfloat_kernel, run_function, write_mismatch_corpus, DomainCoverage,
-    FnId, Kernel, MpfrOracle, RoundingStatus,
+    oracle_name_for, outcome_to_status_row, pfloat_kernel, run_function, write_mismatch_corpus,
+    DomainCoverage, FnId, Kernel, MetaOracle, RoundingStatus,
 };
 use pfloat::RoundingMode;
 
 /// MPFR-primary surface the runner covers by default. Mirrors the
 /// smoke gate's list; the runner also accepts Bessel parametric
-/// orders via `--function Jn:7` style syntax (next slice).
+/// orders via `--function Jn:7` style syntax.
 const MPFR_PRIMARY_FNIDS: &[FnId] = &[
     FnId::Sqrt,
     FnId::Exp,
@@ -94,6 +94,24 @@ const MPFR_PRIMARY_FNIDS: &[FnId] = &[
     FnId::BesselJ1,
     FnId::BesselY0,
     FnId::BesselY1,
+];
+
+/// Arb-primary surface (slice p1.5). The twelve `FnId`s the MPFR
+/// backend cannot cover; the runner sweeps them through the Arb
+/// backend via [`MetaOracle`]. Parametric `In` / `Kn` orders run
+/// only when invoked explicitly via `--function In:5` style syntax,
+/// matching the `Jn` / `Yn` precedent.
+const ARB_PRIMARY_FNIDS: &[FnId] = &[
+    FnId::Si,
+    FnId::Ci,
+    FnId::Li,
+    FnId::Bi,
+    FnId::AiPrime,
+    FnId::BiPrime,
+    FnId::BesselI0,
+    FnId::BesselI1,
+    FnId::BesselK0,
+    FnId::BesselK1,
 ];
 
 struct Args {
@@ -173,7 +191,7 @@ fn parse_fn_id(name: &str) -> Result<FnId, String> {
             other => Err(format!("unknown parametric family {other}")),
         };
     }
-    for &f in MPFR_PRIMARY_FNIDS {
+    for &f in MPFR_PRIMARY_FNIDS.iter().chain(ARB_PRIMARY_FNIDS.iter()) {
         if f.name() == name {
             return Ok(f);
         }
@@ -231,11 +249,15 @@ fn run() -> Result<u32, String> {
     std::fs::create_dir_all(&args.output_vectors)
         .map_err(|e| format!("create {}: {e}", args.output_vectors.display()))?;
 
-    let oracle = MpfrOracle;
+    let oracle = MetaOracle::new().map_err(|e| format!("MetaOracle::new: {e}"))?;
     let kernel: &Kernel = &pfloat_kernel;
     let functions: Vec<FnId> = match args.function {
         Some(f) => vec![f],
-        None => MPFR_PRIMARY_FNIDS.to_vec(),
+        None => MPFR_PRIMARY_FNIDS
+            .iter()
+            .chain(ARB_PRIMARY_FNIDS.iter())
+            .copied()
+            .collect(),
     };
 
     let (input_iter_count, domain_coverage) = if args.exhaustive {
@@ -279,7 +301,7 @@ fn run() -> Result<u32, String> {
             f,
             &outcome,
             domain_coverage,
-            "MPFR",
+            oracle_name_for(f),
             &args.modes,
             &vectors_path,
         );

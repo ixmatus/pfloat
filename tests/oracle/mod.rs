@@ -26,16 +26,22 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+#[cfg(feature = "differential-arb")]
+pub mod arb;
 pub mod convert;
 pub mod driver;
+pub mod meta;
 pub mod mpfr;
 pub mod pfloat_kernels;
 pub mod status;
 pub mod types;
 pub mod verify;
 
+#[cfg(feature = "differential-arb")]
+pub use arb::{ArbError, ArbOracle};
 pub use convert::{bf24_of_bits, bf_to_f32_bits, round_f32};
 pub use driver::{outcome_to_status_row, run_function, write_mismatch_corpus, DriverOutcome};
+pub use meta::{is_arb_primary, oracle_name_for, MetaError, MetaOracle};
 pub use mpfr::MpfrOracle;
 pub use pfloat_kernels::pfloat_kernel;
 pub use status::{DomainCoverage, RoundingStatus, StatusRow};
