@@ -30,6 +30,8 @@
 pub mod arb;
 pub mod convert;
 pub mod driver;
+#[cfg(feature = "differential-arb")]
+pub mod maxima;
 pub mod meta;
 pub mod mpfr;
 #[cfg(feature = "differential-arb")]
@@ -43,6 +45,8 @@ pub mod verify;
 pub use arb::{ArbError, ArbOracle};
 pub use convert::{bf24_of_bits, bf_to_f32_bits, round_f32};
 pub use driver::{outcome_to_status_row, run_function, write_mismatch_corpus, DriverOutcome};
+#[cfg(feature = "differential-arb")]
+pub use maxima::MaximaOracle;
 pub use meta::{is_arb_primary, oracle_name_for, MetaError, MetaOracle};
 pub use mpfr::MpfrOracle;
 #[cfg(feature = "differential-arb")]

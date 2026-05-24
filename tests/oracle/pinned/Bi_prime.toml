@@ -1,0 +1,10 @@
+# Pinned worker output for Bi_prime (Airy Bi derivative) (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x3f800000"
+mode           = "NE"
+certified_bits = "0x3f6eb41f"
+provenance     = """
+two-oracle agreement: Bi'(1.0) ≈ 0.932435933658...
+Both Arb and mpmath certify 0x3f6eb41f under NE.
+"""

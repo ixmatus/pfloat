@@ -1,0 +1,22 @@
+# Pinned worker output for Ci (ADR-0035 Tier 5).
+
+[[entry]]
+input_bits     = "0x00000000"
+mode           = "NE"
+certified_bits = "0xff800000"
+provenance     = """
+hand-derived: Ci(+0) = -inf (mathematical limit; Ci has a
+logarithmic singularity at 0). Slice p1.5.6 worker special-case
+emits -inf for this input; the alternative (Arb returns NaN
+because the function is "indeterminate at the limit") would
+disagree with pfloat's IEEE limit convention.
+"""
+
+[[entry]]
+input_bits     = "0x3f000000"
+mode           = "NE"
+certified_bits = "0xbe360d08"
+provenance     = """
+two-oracle agreement: Ci(0.5) ≈ -0.177784121412...
+Both Arb and mpmath certify 0xbe360d08 under NE.
+"""
