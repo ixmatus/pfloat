@@ -1,5 +1,5 @@
-function           = "tan"
-order              = ""
+function           = "Jn"
+order              = "5"
 kernel_kind        = "primary"
 domain_coverage    = "sampled(65536)"
 oracle             = "MPFR"
@@ -11,4 +11,4 @@ mismatch_count     = 0
 inconclusive_count = 0
 panic_count        = 0
 vectors            = ""
-lm_seeds_run       = 47
+lm_seeds_run       = 0

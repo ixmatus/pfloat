@@ -129,6 +129,7 @@ pub fn outcome_to_status_row(
         inconclusive_count: outcome.inconclusive.len() as u32,
         panic_count: outcome.panic.len() as u32,
         vectors: vectors_path.to_string(),
+        lm_seeds_run: 0,
     }
 }
 

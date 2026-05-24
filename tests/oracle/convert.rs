@@ -14,8 +14,21 @@
 //! 2. `BigFloat` (any precision) → `f32` bit pattern under `NE`.
 //!    The result of a kernel call to `*_round(24, NE)` is at
 //!    `p = 24`; converting to `f32` bits goes through the value's
-//!    Display decimal and Rust's standard `f32` parser (same shape
-//!    as the L-M lane's `bf_to_f64_bits` from slice p1.2 at `p = 53`).
+//!    decimal at the f64 round-trip digit count (17) and Rust's
+//!    standard `f32` parser (same shape as the L-M lane's
+//!    `bf_to_f64_bits` from slice p1.2 at `p = 53`).
+//!
+//!    Slice p1.4 raised the digit count from the default `Display`
+//!    width (`round_trip_digit_count(24) = 9`) to 17 (= f64
+//!    round-trip). The original 9-digit width carries enough
+//!    decimal precision for every `f32` *normal* result, but for
+//!    `f32` *subnormal* results sitting on the subnormal-grid
+//!    midpoint, the 9-digit rounding flipped the decimal across
+//!    the midpoint and made the `f32` parser pick the wrong
+//!    neighbor (slice p1.3 sweep findings on `erf`). 17 digits
+//!    captures the exact 24-bit value (`24 < 53`), so the `f32`
+//!    parser sees the `BigFloat`'s actual midpoint position and
+//!    applies IEEE round-to-nearest tie-to-even correctly.
 //!
 //! 3. `rug::Float` → `Option<f32>` under any IEEE rounding mode.
 //!    The oracle's enclosure endpoints land in `f32` here; the
@@ -110,15 +123,25 @@ pub fn bf24_of_bits(bits: u32) -> BigFloat {
 }
 
 /// Convert a `BigFloat` (any precision) to a binary32 bit pattern,
-/// rounding under `NearestEven` via the round-trip through the
-/// value's Display decimal and Rust's standard `f32` parser. The
-/// `BigFloat` Display contract emits a decimal that round-trips
-/// through `f64`; parsing as `f32` further rounds the decimal under
-/// IEEE NE.
+/// rounding under `NearestEven`. Goes through the value's decimal
+/// at the f64 round-trip digit count (17 digits for any precision
+/// up to 53) and Rust's standard `f32` parser, which rounds the
+/// decimal to nearest f32 under IEEE NE (including subnormals).
+///
+/// The 17-digit width (= `round_trip_digit_count(53)`) captures the
+/// exact value of any `BigFloat` with precision ≤ 53. The harness's
+/// kernel target is `p = 24`, well below 53, so 17 digits carries
+/// the `BigFloat`'s full mantissa information and the `f32` parser
+/// sees the true midpoint position on f32-subnormal-grid ties
+/// (slice p1.4, closes pf-z0f). For `BigFloat`s above `p = 53` the
+/// digit count scales with `bf.precision` so the round-trip stays
+/// exact.
 pub fn bf_to_f32_bits(bf: &BigFloat) -> u32 {
-    let s = format!("{bf}");
+    let effective_precision = bf.precision().max(53);
+    let digits = BigFloat::round_trip_digit_count(effective_precision);
+    let s = bf.to_decimal_string(digits, RoundingMode::NearestEven);
     s.parse::<f32>()
-        .expect("BigFloat's Display round-trips through f64; f32 parse rounds it under NE")
+        .expect("BigFloat decimal (incl. nan / inf / 0 tokens) parses as f32 under NE")
         .to_bits()
 }
 

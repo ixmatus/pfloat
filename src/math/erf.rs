@@ -17,6 +17,16 @@
 //! `pub(super)` so the two kernels can share code without
 //! recursing into each other's `kernel` functions.
 //!
+//! Correctly rounded under every IEEE rounding mode via the shared
+//! [`crate::math::ziv::ziv_round`] driver (slice p1.4, ADR-0022).
+//! The regime decision (Maclaurin vs `1 − erfc_asymptotic`) is
+//! fixed at kernel entry based on `target_precision`; the working
+//! precision the Ziv driver supplies flows into both regime
+//! evaluators so the retry loop can grow precision until the
+//! interval test certifies the result. This brings `erf` onto the
+//! same correctness scaffolding the slice p1.2 pattern wires
+//! around `exp`, `ln`, `tanh`, and `lgamma`.
+//!
 //! Special cases per IEEE 754-2019 §9.4.3:
 //!
 //! - `erf(±0) = ±0`.
@@ -36,6 +46,7 @@ use crate::mantissa::limbs_for;
 
 use super::erfc::erfc_asymptotic;
 use super::two_over_sqrt_pi_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `erf(self)` rounded under `mode` to `self.precision`.
@@ -117,31 +128,40 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    let threshold = asymptotic_threshold_exponent(target_precision);
-    let result_abs = if e_x >= threshold {
-        // erf(|x|) = 1 − erfc_asymptotic(|x|) at working precision
-        // generous enough to absorb the 1 − tiny cancellation.
-        let working_prec = target_precision
-            .saturating_add(64)
-            .min(target_precision.saturating_add(512));
-        let erfc_val = erfc_asymptotic(&abs_x, working_prec);
+    ziv_round(
+        |working_prec| {
+            let v = erf_at_w(&abs_x, working_prec, use_asymptotic);
+            if matches!(sign, Sign::Negative) {
+                v.negated()
+            } else {
+                v
+            }
+        },
+        target_precision,
+        mode,
+    )
+}
+
+/// Evaluate `erf(|x|)` at the supplied working precision. The regime
+/// decision (Maclaurin for small `|x|`, `1 − erfc_asymptotic` for
+/// large `|x|`) is fixed by the caller from `target_precision` so it
+/// does not flip across Ziv retries. The caller (`erf_kernel`) also
+/// peels off special cases (NaN, ±0, ±∞) and applies the input's
+/// sign to the returned value. Returns the unrounded value at
+/// `working_prec` (asymptotic path) or `working_prec + 64 + extra`
+/// (Maclaurin path; the peak-term boost in `erf_maclaurin` adds
+/// safety on top of the Ziv envelope).
+fn erf_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFloat {
+    if use_asymptotic {
+        let erfc_val = erfc_asymptotic(abs_x, working_prec);
         let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
         let (diff, _) = one.sub(&erfc_val, RoundingMode::NearestEven);
         diff
     } else {
-        erf_maclaurin(&abs_x, target_precision)
-    };
-    let result = if matches!(sign, Sign::Negative) {
-        result_abs.negated()
-    } else {
-        result_abs
-    };
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+        erf_maclaurin(abs_x, working_prec)
+    }
 }
 
 /// Returns the smallest binary exponent at which the `erfc`
