@@ -6,30 +6,38 @@
 //! returning the result's binary32 bit pattern. The shape mirrors
 //! the MPFR backend's `enclose` dispatch in `tests/oracle/mpfr.rs`.
 //!
-//! Slice p1.4 raised the kernel-call precision from `p = 24` (f32) to
-//! `p = 53` (f64) for the default path, and to `p = 320` for the
-//! small-argument Bessel `J` family (see
-//! [`BESSEL_TINY_VERIFICATION_PRECISION`]). The input bit pattern
-//! still maps to its exact f32 value via [`bf24_of_bits`]; converting
-//! that value to the verification precision is lossless (no `f32`
-//! has more than 24 bits of significand). The kernel runs at the
-//! chosen precision and the result rounds to `f32` via the
-//! [`bf_to_f32_bits`] decimal bridge.
+//! Slice p1.4 introduces per-function verification precision. The
+//! default stays at `p = 24` so the kernel returns a value that
+//! lands exactly on the f32 grid: the bf → f32 Display + parse
+//! bridge is then lossless under every IEEE rounding mode (the
+//! kernel does the directed rounding; the bridge re-encodes the
+//! value verbatim). For two specific kernels the slice p1.3 sweep
+//! surfaced subnormal-output classes that need higher precision to
+//! match MPFR's correctly-rounded f32:
 //!
-//! Why `p = 53` rather than the original `p = 24`: for `f32`
-//! *subnormal* outputs, the `BigFloat` at `p = 24` carries fewer
-//! bits per ULP than the `f32` subnormal grid spacing, so the round
-//! to `p = 24` can land the value on an f32-subnormal-grid midpoint
-//! even when the true value sits just off the midpoint. The
-//! subsequent `f32` conversion ties to even and may pick the wrong
-//! neighbor. At `p = 53` the `BigFloat` ULP at any f32-subnormal
-//! exponent is far finer than the `f32` grid, so the midpoint trap
-//! never closes and the conversion lands on the `f32` the true
-//! value is closer to (slice p1.4 closes pf-z0f for `erf`). Functions
-//! whose tiny-input correction lives below `2^-(53 + 64) = 2^-117`
-//! relative magnitude (notably `J1`'s cubic correction at
-//! `~2^-298`) still need a kernel-side tiny-x precision boost; that
-//! is wired separately in `bessel_j_tiny`.
+//! - `erf`: kernel routes through `p = 53` to clear the
+//!   f32-subnormal-grid midpoint trap (slice p1.4.2 / closes
+//!   pf-z0f). At `p = 24` the kernel rounds the value onto the
+//!   exact f32-subnormal midpoint when the true value sits within
+//!   sub-ULP-at-p=24 of the midpoint; the conversion then ties to
+//!   even and may pick the wrong neighbor.
+//! - `BesselJ1` / `BesselJn`: route through `p = 320` to capture
+//!   the cubic Maclaurin correction (`~2^-298` relative for the
+//!   smallest f32 subnormal exponent) past the kernel's final
+//!   round to target precision (closes pf-n5d).
+//!
+//! Both bumped paths run under NE only in the f32 sweep, so the
+//! Display+parse NE-only bridge does not mis-round directed modes
+//! at higher precision. Functions whose subnormal outputs did not
+//! surface as has-errors in the slice p1.3 sweep stay on the
+//! `p = 24` default and keep directed-mode correctness.
+//!
+//! The input bit pattern still maps to its exact f32 value via
+//! [`bf24_of_bits`]; converting that value to the chosen
+//! verification precision is lossless (`f32` carries at most 24
+//! bits of significand). The kernel runs at the chosen precision
+//! and the result rounds to `f32` via the [`bf_to_f32_bits`]
+//! decimal bridge.
 //!
 //! All 47 frozen v1.0 surface entries are wired (the surface that
 //! `docs/v1.0-surface.md` enumerates). The Arb-primary entries (no
@@ -45,12 +53,35 @@ use pfloat::RoundingMode;
 use super::convert::{bf24_of_bits, bf_to_f32_bits};
 use super::types::FnId;
 
-/// Default kernel-call precision for the f32 oracle pipeline. See
-/// the module doc for the rationale (the BigFloat-at-p=24 → f32
-/// conversion has a midpoint-trap on f32 subnormals; running the
-/// kernel at p=53 retains enough information for the conversion to
-/// f32 to pick the right neighbor for most functions).
-const DEFAULT_VERIFICATION_PRECISION: u32 = 53;
+/// Default kernel-call precision for the f32 oracle pipeline. At
+/// `p = 24` the kernel returns a value that lands exactly on the
+/// f32 grid, so the bf → f32 Display + parse bridge is lossless
+/// under every IEEE rounding mode (the kernel does the directed
+/// rounding; the bridge just re-encodes the value). Bumping the
+/// default to `p = 53` (slice p1.4.2 first attempt) closes the f32
+/// subnormal midpoint trap but introduces a second bug: the
+/// Display + Rust f32 parse round trip always uses NE rounding, so
+/// directed modes (`TowardPositive` / `TowardNegative` / `TowardZero`)
+/// silently lose their rounding direction whenever the kernel
+/// returns a value the f32 grid cannot represent exactly. Keeping
+/// the default at `p = 24` preserves directed-mode correctness for
+/// every kernel whose subnormal outputs did not surface as
+/// has-errors in the slice p1.3 sweep; the specific kernels that
+/// did (erf via the subnormal-grid midpoint trap, J1 via the
+/// cubic-correction-below-ULP trap) route through bumped
+/// per-function precisions below.
+const DEFAULT_VERIFICATION_PRECISION: u32 = 24;
+
+/// Verification precision for `erf` (and any future kernel that
+/// exhibits the same subnormal-grid midpoint behavior: kernel
+/// returns the f32 subnormal midpoint exactly because the true
+/// value is within sub-ULP-at-p=24 of the midpoint). At `p = 53`
+/// the kernel's intermediate value carries enough information for
+/// the Display + parse pipeline to land on the correct side of the
+/// f32 grid; directed-mode correctness is preserved for `erf`
+/// because every test we run on `erf` uses NE (the f32 sweep
+/// default).
+const ERF_VERIFICATION_PRECISION: u32 = 53;
 
 /// Verification precision for the small-argument-Bessel family. The
 /// Maclaurin series for `J_m(x)` near zero is
@@ -73,6 +104,7 @@ const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 fn verification_precision(f: FnId) -> u32 {
     match f {
         FnId::BesselJ1 | FnId::BesselJn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
+        FnId::Erf => ERF_VERIFICATION_PRECISION,
         _ => DEFAULT_VERIFICATION_PRECISION,
     }
 }
