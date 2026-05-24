@@ -1,16 +1,19 @@
 //! Pfloat-side kernel dispatch for the Phase 1 Oracle harness.
 //!
 //! For each `FnId` the harness verifies, this module routes to the
-//! corresponding pfloat `BigFloat` method at `p = VERIFICATION_PRECISION`
-//! (= 53, f64 precision) under the caller's rounding mode, returning
-//! the result's binary32 bit pattern. The shape mirrors the MPFR
-//! backend's `enclose` dispatch in `tests/oracle/mpfr.rs`.
+//! corresponding pfloat `BigFloat` method at the precision returned
+//! by [`verification_precision`] under the caller's rounding mode,
+//! returning the result's binary32 bit pattern. The shape mirrors
+//! the MPFR backend's `enclose` dispatch in `tests/oracle/mpfr.rs`.
 //!
 //! Slice p1.4 raised the kernel-call precision from `p = 24` (f32) to
-//! `p = 53` (f64). The input bit pattern still maps to its exact f32
-//! value via [`bf24_of_bits`]; converting that value to `p = 53` is
-//! lossless (no f32 has more than 24 bits of significand). The
-//! kernel then runs at `p = 53` and the result rounds to f32 via the
+//! `p = 53` (f64) for the default path, and to `p = 320` for the
+//! small-argument Bessel `J` family (see
+//! [`BESSEL_TINY_VERIFICATION_PRECISION`]). The input bit pattern
+//! still maps to its exact f32 value via [`bf24_of_bits`]; converting
+//! that value to the verification precision is lossless (no `f32`
+//! has more than 24 bits of significand). The kernel runs at the
+//! chosen precision and the result rounds to `f32` via the
 //! [`bf_to_f32_bits`] decimal bridge.
 //!
 //! Why `p = 53` rather than the original `p = 24`: for `f32`
@@ -42,10 +45,37 @@ use pfloat::RoundingMode;
 use super::convert::{bf24_of_bits, bf_to_f32_bits};
 use super::types::FnId;
 
-/// Kernel-call precision for the f32 oracle pipeline. See the module
-/// doc for the rationale (the BigFloat-at-p=24 → f32 conversion has
-/// a midpoint-trap on f32 subnormals; p=53 sidesteps it).
-const VERIFICATION_PRECISION: u32 = 53;
+/// Default kernel-call precision for the f32 oracle pipeline. See
+/// the module doc for the rationale (the BigFloat-at-p=24 → f32
+/// conversion has a midpoint-trap on f32 subnormals; running the
+/// kernel at p=53 retains enough information for the conversion to
+/// f32 to pick the right neighbor for most functions).
+const DEFAULT_VERIFICATION_PRECISION: u32 = 53;
+
+/// Verification precision for the small-argument-Bessel family. The
+/// Maclaurin series for `J_m(x)` near zero is
+/// `(x/2)^m / m! · (1 − x²/(4·(m+1)) + …)`, so the first correction
+/// term sits at relative magnitude `2^(2·e_x − 2)`. For `f32`
+/// subnormal inputs at `e_x = -149` this puts the correction near
+/// `2^-298`, well below the default `p = 53` ULP. Without enough
+/// target precision to retain the correction past the kernel's
+/// final round, the result lands on the exact f32-subnormal-grid
+/// midpoint and the conversion ties to even instead of tracking
+/// the true sub-midpoint position. `320 > 298 + 22` carries the
+/// correction past the round with comfortable Ziv-guard headroom
+/// (slice p1.4 closes pf-n5d).
+const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
+
+/// Pick the verification precision for an `FnId`. The default is
+/// `p = 53` (sized for f32 normal correctness through Display+parse);
+/// Bessel `J1` and `Jn` use the higher Bessel tiny-x precision so the
+/// sub-midpoint cubic correction survives the kernel's final round.
+fn verification_precision(f: FnId) -> u32 {
+    match f {
+        FnId::BesselJ1 | FnId::BesselJn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
+        _ => DEFAULT_VERIFICATION_PRECISION,
+    }
+}
 
 /// Evaluate pfloat's kernel for `f` at the binary32 bit pattern
 /// `input` under `mode`. Returns the result's binary32 bit
@@ -58,8 +88,8 @@ const VERIFICATION_PRECISION: u32 = 53;
 pub fn pfloat_kernel(f: FnId, input: u32, mode: RoundingMode) -> u32 {
     let x24 = bf24_of_bits(input);
     let x = x24
-        .round_to_precision(VERIFICATION_PRECISION, RoundingMode::NearestEven)
-        .expect("VERIFICATION_PRECISION >= 1; lift from p=24 is lossless")
+        .round_to_precision(verification_precision(f), RoundingMode::NearestEven)
+        .expect("verification_precision >= 1; lift from p=24 is lossless")
         .0;
     let result = match f {
         // Elementary.

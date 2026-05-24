@@ -1,5 +1,5 @@
-function           = "J1"
-order              = ""
+function           = "Jn"
+order              = "5"
 kernel_kind        = "primary"
 domain_coverage    = "sampled(65536)"
 oracle             = "MPFR"
