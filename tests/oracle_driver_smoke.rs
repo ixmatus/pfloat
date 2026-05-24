@@ -81,6 +81,7 @@ fn status_row_toml_emission_matches_schema() {
         inconclusive_count: 0,
         panic_count: 0,
         vectors: String::new(),
+        lm_seeds_run: 0,
     };
     let toml = row.to_toml();
     // Spot-check the schema fields named in ADR-0034.

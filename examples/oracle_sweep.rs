@@ -42,6 +42,12 @@
 #[path = "../tests/oracle/mod.rs"]
 mod oracle;
 
+/// L-M hard-to-round corpus, included via relative path so the
+/// runner can prepend per-function adversarial seeds without
+/// re-exporting through the oracle harness module tree.
+#[path = "../tests/differential/lefevre_muller_data.rs"]
+mod lm_data;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -240,7 +246,11 @@ fn run() -> Result<u32, String> {
 
     let mut has_errors_count: u32 = 0;
     for f in functions {
-        let inputs = (0u32..input_iter_count).take(input_iter_count as usize);
+        let lm_seeds = lm_seeds_for(f);
+        let lm_seeds_run = lm_seeds.len() as u32;
+        let inputs = lm_seeds
+            .into_iter()
+            .chain((0u32..input_iter_count).take(input_iter_count as usize));
         eprint!("[oracle_sweep] {} ", f.name());
         let start = std::time::Instant::now();
         let outcome = run_function(&oracle, kernel, f, inputs, &args.modes);
@@ -265,7 +275,7 @@ fn run() -> Result<u32, String> {
                 .map_err(|e| format!("write {}: {e}", abs.display()))?;
             rel
         };
-        let row = outcome_to_status_row(
+        let mut row = outcome_to_status_row(
             f,
             &outcome,
             domain_coverage,
@@ -273,6 +283,7 @@ fn run() -> Result<u32, String> {
             &args.modes,
             &vectors_path,
         );
+        row.lm_seeds_run = lm_seeds_run;
         let status_path = args.output_status.join(format!("{}.toml", row_filename(f)));
         std::fs::write(&status_path, row.to_toml())
             .map_err(|e| format!("write {}: {e}", status_path.display()))?;
@@ -293,6 +304,63 @@ fn row_filename(f: FnId) -> String {
         }
         _ => f.name().to_string(),
     }
+}
+
+/// Per-`FnId` Lefèvre-Muller hard-to-round inputs, cast from
+/// binary64 to binary32 bit patterns and deduplicated. The L-M
+/// corpus covers 24 elementary and special-function entries (no
+/// Bessel / Airy / Ei / Si / Ci / Li / digamma / zeta); other
+/// `FnId`s return an empty vector. Inputs that map to `f32` NaN or
+/// `f32` ±∞ after the cast are dropped so the linear sweep stays
+/// the only carrier of those classes.
+fn lm_seeds_for(f: FnId) -> Vec<u32> {
+    use lm_data::{
+        ACOSH_CASES, ACOS_CASES, ASINH_CASES, ASIN_CASES, ATANH_CASES, ATAN_CASES, COSH_CASES,
+        COS_CASES, ERFC_CASES, ERF_CASES, EXP10_CASES, EXP2_CASES, EXPM1_CASES, EXP_CASES,
+        GAMMA_CASES, LGAMMA_CASES, LN_CASES, LOG10_CASES, LOG1P_CASES, LOG2_CASES, SINH_CASES,
+        SIN_CASES, TANH_CASES, TAN_CASES,
+    };
+    let cases: &[(u64, u64)] = match f {
+        FnId::Exp => EXP_CASES,
+        FnId::Ln => LN_CASES,
+        FnId::Sin => SIN_CASES,
+        FnId::Cos => COS_CASES,
+        FnId::Tan => TAN_CASES,
+        FnId::Atan => ATAN_CASES,
+        FnId::Asin => ASIN_CASES,
+        FnId::Acos => ACOS_CASES,
+        FnId::Exp2 => EXP2_CASES,
+        FnId::Exp10 => EXP10_CASES,
+        FnId::Expm1 => EXPM1_CASES,
+        FnId::Log1p => LOG1P_CASES,
+        FnId::Log2 => LOG2_CASES,
+        FnId::Log10 => LOG10_CASES,
+        FnId::Sinh => SINH_CASES,
+        FnId::Cosh => COSH_CASES,
+        FnId::Tanh => TANH_CASES,
+        FnId::Asinh => ASINH_CASES,
+        FnId::Acosh => ACOSH_CASES,
+        FnId::Atanh => ATANH_CASES,
+        FnId::Erf => ERF_CASES,
+        FnId::Erfc => ERFC_CASES,
+        FnId::Gamma => GAMMA_CASES,
+        FnId::Lgamma => LGAMMA_CASES,
+        _ => return Vec::new(),
+    };
+    let mut seeds: Vec<u32> = cases
+        .iter()
+        .filter_map(|(input_bits, _)| {
+            let x_f32 = f64::from_bits(*input_bits) as f32;
+            if x_f32.is_finite() {
+                Some(x_f32.to_bits())
+            } else {
+                None
+            }
+        })
+        .collect();
+    seeds.sort_unstable();
+    seeds.dedup();
+    seeds
 }
 
 fn main() -> ExitCode {

@@ -66,6 +66,14 @@ pub struct StatusRow {
     /// file capturing mismatch and panic inputs. Empty `""` when
     /// the file does not exist (no mismatches captured).
     pub vectors: String,
+    /// Number of Lefèvre-Muller hard-to-round inputs the sweep
+    /// runner prepended to the linear input range for this row.
+    /// `0` when the runner is the smoke gate (L-M seeds are
+    /// runner-only) or when this `FnId` is outside the L-M
+    /// corpus's 24-function coverage. The field documents the
+    /// verification posture: a non-zero value records that the
+    /// adversarial-seed lane ran in addition to the linear sweep.
+    pub lm_seeds_run: u32,
 }
 
 impl StatusRow {
@@ -114,6 +122,7 @@ impl StatusRow {
         writeln!(out, "inconclusive_count = {}", self.inconclusive_count).unwrap();
         writeln!(out, "panic_count        = {}", self.panic_count).unwrap();
         writeln!(out, "vectors            = \"{}\"", self.vectors).unwrap();
+        writeln!(out, "lm_seeds_run       = {}", self.lm_seeds_run).unwrap();
         out
     }
 }
