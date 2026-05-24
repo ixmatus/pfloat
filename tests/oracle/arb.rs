@@ -286,7 +286,11 @@ fn mode_to_str(mode: RoundingMode) -> &'static str {
 /// Panics on a non-Arb-primary `FnId` because the dispatcher
 /// (`MetaOracle` in slice p1.5.3) is responsible for routing those
 /// to `MpfrOracle` instead.
-fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
+///
+/// Exposed under `pub(super)` so the mpmath oracle (which speaks
+/// the same worker protocol modulo the script path) can reuse the
+/// FnId-to-string mapping.
+pub(super) fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
     match f {
         FnId::Si => ("si", "-".to_string()),
         FnId::Ci => ("ci", "-".to_string()),
@@ -350,6 +354,13 @@ fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
         lo: value.clone(),
         hi: value,
     })
+}
+
+/// Wrapper that exposes [`parse_response`] across modules; the
+/// mpmath oracle uses identical response parsing because both
+/// workers speak the same wire protocol.
+pub(super) fn parse_response_external(line: &str, working_prec: u32) -> Result<Enclosure, String> {
+    parse_response(line, working_prec)
 }
 
 /// Construct a rug `Float` at the requested working precision
