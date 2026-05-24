@@ -69,6 +69,20 @@ requested binary precision (``n = working_prec * 0.31 + 5``)
 so the decimal conversion does not itself widen the bracket
 beyond Arb's native ball radius.
 
+When ``rad == 0`` the Arb result is an exact decimal at the
+chosen ``n``: the value equals ``mid * 10^exp`` exactly, and
+mid_rad_10exp's documented post-condition guarantees rad accounts
+for any decimal-rounding error in the conversion. The ``+/-1``
+absorbed-rounding safety is purely decorative in that case and
+artificially widens the bracket from a single point to
+``[-10^exp, +10^exp]``, which the verifier reports as
+``OracleInconclusive`` when both endpoints round to different
+``f32`` values (the bracket ``[-1, +1]`` around an exact zero
+straddles every ``f32`` boundary). Slice p1.6 skips the
+``+/-1`` widening when ``rad == 0`` so exact results emit a
+single-point bracket: ``li(0) = 0``, ``si(0) = 0``,
+``i1(0) = 0`` all certify cleanly at the verifier.
+
 LGPL isolation
 --------------
 
@@ -163,6 +177,16 @@ def format_endpoint(value: arb, lower: bool) -> str:
     # f-string formatter behave normally.
     mid_i = int(mid)
     rad_i = int(rad)
+    # Exact result: rad == 0 means the value equals mid * 10^exp
+    # exactly at the chosen n_digits, so no parser-rounding safety
+    # widening is required. Emit a single-point bracket
+    # ``[mid, mid] * 10^exp`` instead of ``[mid-1, mid+1] * 10^exp``
+    # so the verifier sees the exact value rather than a 2-ULP
+    # decimal ball that may straddle an f32 boundary (e.g. the
+    # ``[-1, +1]`` ball around an exact zero straddles every f32
+    # boundary). Slice p1.6 closes li(0), si(0), i1(0) inconclusive.
+    if rad_i == 0:
+        return f"{mid_i}e{exp}"
     if lower:
         mantissa = mid_i - rad_i - 1
     else:

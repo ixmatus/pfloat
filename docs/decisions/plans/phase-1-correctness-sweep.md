@@ -670,6 +670,94 @@ closure belongs to slice p1.6+
 (pf-b5se / pf-6a4e / pf-716u). The per-push smoke gate stays
 MPFR-only and Python-free.
 
+## Slice p1.6 closure (2026-05-24)
+
+Slice p1.6 closes pf-716u (`li` 1-ULP mismatch at f32
+`0x0000708b` + 1 inconclusive at f32 `+0`). The kernel-vs-harness
+diagnosis ran first per the slice p1.4 discipline (kernel decimal
+probed at p = 24, 53, 64, 113, 200, 320 for the mismatch input;
+inconclusive scan of `[0, 65536)` for any Ziv-at-oracle that did
+not certify within `MAX_PREC = 1024`). The two failures split into
+two distinct root causes that each got a one-line fix:
+
+- **pf-8jre** (`tests/oracle/pfloat_kernels.rs`). The li mismatch
+  is the same shape pf-z0f was for erf and pf-n5d was for
+  `BesselJ1`. At p = 24 the kernel returns the exact f32 subnormal
+  grid midpoint (`-306.5 * 2^-149`) because the
+  `round_to_precision(24, NE)` at the end of the
+  `ln`-then-`Ei` composition coincidentally rounds the true value
+  to the midpoint; the bf -> f32 Display+parse bridge then
+  ties-to-even and picks mantissa 306 (even LSB), which is the
+  wrong neighbor because the true value sits on the mantissa-307
+  side of the midpoint at every p > 24 probe. Bumping
+  `verification_precision(FnId::Li)` from 24 to 53 carries enough
+  information past the kernel's final round for the bridge to
+  see the true sub-midpoint position and pick mantissa 307. The
+  bump joins erf at the `ERF_VERIFICATION_PRECISION` constant.
+  NE-only safety follows from the slice p1.4 caveat: p > 24 bumps
+  are NE-only safe through the Rust-f32-parser NE-only bridge,
+  and the f32 sweep runs NE only.
+
+- **pf-ggg4** (`scripts/arb_oracle_worker.py`). The li
+  inconclusive at `+0` is an oracle-side bug, not a kernel-side
+  one. `arb(0).li()` returns an exact zero
+  (`is_exact() == True`; `mid_rad_10exp(20) == (0, 0, 0)`) and
+  the worker's `+/-1` mantissa-unit padding (intended to absorb
+  sub-LSB Rust parser rounding when converting the decimal
+  mantissa to binary) widens the bracket to `[-1, +1]`, which
+  straddles every f32 boundary. The verifier reports
+  `OracleInconclusive` regardless of how high the Ziv-at-oracle
+  loop escalates `working_prec` because Arb keeps returning the
+  same exact zero at every precision. The worker now skips the
+  `+/-1` widening when `rad == 0`: an exact Arb result emits a
+  single-point bracket `[mid, mid] * 10^exp`. mid_rad_10exp's
+  post-condition guarantees the rad already accounts for any
+  decimal-rounding error in the conversion, so when rad = 0 the
+  value equals `mid * 10^exp` exactly and the parser-rounding
+  safety widening is purely overhead. Bonus closure follows for
+  any other exact-result inputs: `si(+0) = 0` and `i1(+0) = 0`
+  also had a `+0` inconclusive in slice p1.5's sweep, and both
+  drop to zero inconclusive under this fix (`i0(+0) = 1` was
+  unaffected because the `+/-1` straddled `+1.0_f32` cleanly
+  and never tripped the inconclusive path; the fix still
+  tightens its `+0` bracket to the single point `[+1.0, +1.0]`).
+
+The slice landed five unsigned branch commits:
+
+- **slice p1.6.1 (closes pf-ggg4).** Worker rad=0 fix.
+- **slice p1.6.fixup (closes pf-ue4d).** Clippy hygiene in
+  `tests/oracle/meta.rs` for the `differential-mpfr`-only
+  feature lane. Latent from slice p1.5: the cfg-gated
+  `not(differential-arb)` arms of `MetaError::Display::fmt`,
+  `MetaOracle::new`, and the fallback `enclose_arb` tripped
+  `clippy::unnecessary_wraps`, `clippy::unused_self`, and
+  `clippy::unused_variables` once the slice p1.6 gate exercised
+  the mpfr-only flavor without `differential-arb`. The fix
+  preserves the cross-feature signature parity through
+  cfg-split `fn` items and scoped `#[allow]` attributes with
+  docstring notes explaining why each suppression is honest.
+- **slice p1.6.2 (closes pf-8jre).** `verification_precision`
+  bump for `Li` from 24 to 53.
+- **slice p1.6.3 (closes pf-99yw).** Re-sweep `li` (correctly-
+  rounded, 726s for 65536 inputs), `Si` (correctly-rounded,
+  inconclusive 1 -> 0), `I0` (unchanged), `I1` (mismatch 14030
+  unchanged, inconclusive 1 -> 0). Status rows refresh; stale
+  `tests/vectors/li_regression.bin` deleted; the I1 corpus is
+  byte-identical to slice p1.5.5 (the kernel did not change so
+  the 14030 mismatch records reproduce exactly).
+- **slice p1.6.prov.** ROADMAP and this plan refresh; memory
+  state refresh.
+
+After the slice the in-tree status table reads 33 MPFR-primary
+rows + 8 of 10 non-parametric Arb-primary rows correctly-rounded.
+The remaining open beads under the Phase 1 surface are pf-6a4e
+(`BesselI1` small-argument midpoint trap, 14030 mismatches) and
+the parametric Bessel orders (`BesselIn` / `BesselKn` at orders
+beyond the canonical I0/I1/K0/K1 covered as named rows; per the
+slice p1.5 plan these get parametric status rows once the named
+rows close). pf-cvs (1.x smallvec) and the five deferred 8c.*
+beads remain parked behind p1.exit per ADR-0033.
+
 ## Design notes from the 2026-05-22 critique pass
 
 The following refinements landed during a critique of the
