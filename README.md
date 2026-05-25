@@ -137,8 +137,9 @@ and `alloc`-free consumers can pick only what they need.
 
 - IEEE 754-2019 conformance vectors and Lefèvre–Muller worst-case-rounding tables run as integration tests.
 - Kani harnesses discharge no-panic, rounding-direction, and sign-of-zero properties on the arithmetic core.
-- `gmp-mpfr-sys` runs as a feature-gated dev-dependency on a separate Linux CI lane for differential testing. The default lane stays pure Rust.
-- `cargo-fuzz` covers every parser entry.
+- `gmp-mpfr-sys` runs as a feature-gated dev-dependency on a separate Linux CI lane for primary differential testing against MPFR. The default lane stays pure Rust.
+- Phase 1's exhaustive `f32` audit (ADR-0035) cross-checks three independent oracles. Arb via `python-flint` (LGPL, subprocess-only) is the primary oracle for the FnIds MPFR cannot cover (`Si`, `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family). mpmath (BSD, pure Python) cross-checks Arb's certified outputs in the same Python venv. Maxima (GPL, invoked through `nix-shell`) supplies a sampling third opinion on a small pinned corpus of worker outputs. The per-push CI gate stays MPFR-only and Python-free; the per-slice gate exercises the Arb worker plus a per-push diff against the pinned-corpus snapshot; the per-release sweep exercises Arb + mpmath agreement at full f32 coverage plus three-way agreement on the pinned corpus.
+- `cargo-fuzz` covers the parser entry points.
 
 ## Conformance evidence
 
