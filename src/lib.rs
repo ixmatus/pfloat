@@ -5,7 +5,10 @@
 //! arithmetic kernels, the elementary transcendental and special
 //! function surface, and both precision profiles ([`BigFloat`] and
 //! `FixedFloat<const PREC: u32>`) are implemented; the Phase 1
-//! correctness sweep against the exhaustive `f32` oracle is complete
+//! correctness sweep against the exhaustive binary32-input oracle
+//! (every one of the `2^32` f32 values used as a test input; pfloat
+//! computes at high working precision internally and the result
+//! gets rounded to f32 for the bit-exact comparison) is complete
 //! per ADR-0033. See `DESIGN.md` at the repository root for the
 //! full design and `docs/decisions/` for the architecture decision
 //! records that capture the load-bearing choices.
