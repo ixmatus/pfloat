@@ -89,9 +89,20 @@ proptest! {
     }
 
     /// Precision self-consistency: `Jn` at `p` agrees with `Jn` at
-    /// `p + 96` rounded back to `p`.
+    /// `p + 96` rounded back to `p`. The argument is an exact dyadic
+    /// rational (denominator a power of two) so both precisions
+    /// evaluate the *same* real point — a non-dyadic argument would
+    /// differ in its low bits between the two precisions, and near a
+    /// zero of `Jn` that argument mismatch is amplified by
+    /// `|Jn′/Jn|` into a spurious failure (this is a property of the
+    /// test construction, not the kernel). Matches the pf-ok9 lesson
+    /// already encoded in `property_yn::self_consistent`.
     #[test]
-    fn self_consistent(n in 0i32..=5, num in 1i64..=20, den in 1i64..=4) {
+    fn self_consistent(
+        n in 0i32..=5,
+        num in 1i64..=20,
+        den in prop_oneof![Just(1i64), Just(2), Just(4)],
+    ) {
         let p = 96u32;
         let x_lo = rat(num, den, p);
         let x_hi = rat(num, den, p + 96);
