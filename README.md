@@ -7,12 +7,21 @@ Pure Rust correctly-rounded arbitrary-precision floats.
 ## Overview
 
 pfloat is a pure-Rust implementation of IEEE 754-2019 binary
-floating-point arithmetic at arbitrary precision. It targets the
-gap between [`f64`] (fixed at 53 bits of mantissa, no introspection
-of exception flags) and the C-backed [`gmp-mpfr-sys`] / [`rug`]
-stack (correctly-rounded at arbitrary precision, but with a hard C
-build dependency that complicates WebAssembly, embedded, and
-reproducible-build pipelines).
+floating-point arithmetic at arbitrary precision. It is the
+container, not a comparison shim: a `BigFloat` carries whatever
+mantissa precision you pick at runtime (from a single bit upward),
+and a `FixedFloat<const PREC: u32>` pins the precision at compile
+time. The library does not operate on [`f64`] values internally;
+the references to `f64` and `f32` in this README and the project
+docs are contextual (see "Why" and "Verification posture" below for
+the two distinct uses).
+
+The niche pfloat fills sits between [`f64`] (the 53-bit-mantissa
+hardware float every Rust program already has, fixed-width with no
+introspection of IEEE 754 exception flags) and the C-backed
+[`gmp-mpfr-sys`] / [`rug`] stack (correctly-rounded at arbitrary
+precision, but with a hard C build dependency that complicates
+WebAssembly, embedded, and reproducible-build pipelines).
 
 Two precision profiles share the same arithmetic. `BigFloat` carries
 its precision as a runtime field and stores its mantissa on the heap
@@ -84,8 +93,9 @@ architecture decision records (`docs/decisions/`), the CI
 scaffolding, and the algorithmic kernels (arithmetic, the elementary
 transcendental and special-function surface listed below, both
 precision profiles). The Phase 1 correctness sweep is complete per
-ADR-0033 (exhaustive f32 audit closed by slices p1.1 through p1.11
-and the follow-ups pf-jn1y, pf-cvs, pf-06sw). The public API is
+ADR-0033 (the exhaustive binary32-input audit closed by slices p1.1
+through p1.11 and the follow-ups pf-jn1y, pf-cvs, pf-06sw; see
+Verification posture below for what the audit does). The public API is
 unstable and will break without notice until 1.0; slice 8c is the
 v1.0 tag ceremony.
 
@@ -174,14 +184,14 @@ and `alloc`-free consumers can pick only what they need.
 
 ## Why
 
-`rug` and `gmp-mpfr-sys` force a C toolchain on every Rust project that needs more than `f64` with correct rounding. `astro-float` is the closest pure-Rust alternative and covers basic arithmetic plus elementary transcendentals well; the special-function surface (gamma, erf, Bessel, zeta, etc.) and shipped formal-verification artifacts are gaps that pfloat fills directly. The companion goal is to displace the GMP/MPFR build dependency for scientific, financial, and symbolic-computation crates that want WebAssembly or embedded targets.
+`rug` and `gmp-mpfr-sys` force a C toolchain on every Rust project that needs more than the 53-bit hardware `f64` mantissa with correct rounding. `astro-float` is the closest pure-Rust alternative and covers basic arithmetic plus elementary transcendentals well; the special-function surface (gamma, erf, Bessel, zeta, etc.) and shipped formal-verification artifacts are gaps that pfloat fills directly. The companion goal is to displace the GMP/MPFR build dependency for scientific, financial, and symbolic-computation crates that want WebAssembly or embedded targets.
 
 ## Verification posture
 
 - IEEE 754-2019 conformance vectors and Lefèvre–Muller worst-case-rounding tables run as integration tests.
 - Kani harnesses discharge no-panic, rounding-direction, and sign-of-zero properties on the arithmetic core.
 - `gmp-mpfr-sys` runs as a feature-gated dev-dependency on a separate Linux CI lane for primary differential testing against MPFR. The default lane stays pure Rust.
-- Phase 1's exhaustive `f32` audit (ADR-0035) cross-checks three independent oracles. Arb via `python-flint` (LGPL, subprocess-only) is the primary oracle for the FnIds MPFR cannot cover (`Si`, `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family). mpmath (BSD, pure Python) cross-checks Arb's certified outputs in the same Python venv. Maxima (GPL, invoked through `nix-shell`) supplies a sampling third opinion on a small pinned corpus of worker outputs. The per-push CI gate stays MPFR-only and Python-free; the per-slice gate exercises the Arb worker plus a per-push diff against the pinned-corpus snapshot; the per-release sweep exercises Arb + mpmath agreement at full f32 coverage plus three-way agreement on the pinned corpus.
+- Phase 1's exhaustive binary32-input sweep (ADR-0035) enumerates every one of the `2^32` possible f32 input values as a test point, computes each function inside pfloat at high working precision (much wider than 32 bits), rounds the result back to f32, and verifies bit-exact agreement against an oracle. f32 is the **test-input grid**, not pfloat's storage type; pfloat operates at arbitrary precision throughout. The sweep cross-checks three independent oracles. Arb via `python-flint` (LGPL, subprocess-only) is the primary oracle for the FnIds MPFR cannot cover (`Si`, `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family). mpmath (BSD, pure Python) cross-checks Arb's certified outputs in the same Python venv. Maxima (GPL, invoked through `nix-shell`) supplies a sampling third opinion on a small pinned corpus of worker outputs. The per-push CI gate stays MPFR-only and Python-free; the per-slice gate exercises the Arb worker plus a per-push diff against the pinned-corpus snapshot; the per-release sweep exercises Arb + mpmath agreement at full binary32-input coverage plus three-way agreement on the pinned corpus.
 - `cargo-fuzz` covers the parser entry points.
 
 ## Conformance evidence
