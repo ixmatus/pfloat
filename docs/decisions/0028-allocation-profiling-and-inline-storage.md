@@ -1,7 +1,23 @@
 # ADR-0028: Allocation profiling, and `BigFloat` inline storage deferred to 1.x with data
 
-- **Status**: accepted
+- **Status**: accepted; the inline-storage prediction is contradicted by ADR-0037
 - **Date**: 2026-05-18
+
+**Outcome recorded by ADR-0037 (slice pf-cvs, 2026-05-24).** The
+measurement and scheduling this ADR specifies both stand; the
+allocation pattern numbers below remain the data of record. What
+ADR-0037 contradicts is the implicit prediction that swapping the
+mantissa container to `SmallVec<[u64; 4]>` at inline-cap 4 would
+deliver a significant per-call allocation reduction. pf-cvs ran the
+swap, measured 1.25x / 1.003x / 1.15x against the 2x land bar, and
+reverted: `SmallVec::from_vec` does not relocate, and the wider
+workspace conversion does not meet the bar either because the
+intermediates exceed the inline cap at every `p >= 256`. Future
+inline-storage work needs either a much larger inline cap (at
+real stack-pressure cost), a workspace pool / bump allocator, or
+a structural rewrite of the kernel loops to avoid creating
+intermediate `BigFloat`s at every step. See ADR-0037 for the
+measurement table and the lesson.
 
 ## Context
 

@@ -75,6 +75,18 @@ crate-wide `Class::Normal` refactor with correctness risk across
 every verified kernel, so it is scheduled as data-backed 1.x work
 rather than landed against the v1.0 timeline. See ADR-0028.
 
+**Resolved by ADR-0037 (slice pf-cvs, 2026-05-24).** The 1.x work
+ran: the `SmallVec<[u64; 4]>` swap at the inline cap ADR-0028
+recommended measures effectively neutral (1.25x / 1.003x / 1.15x
+allocation reduction on mul / exp / gamma against the 2x land bar),
+because `SmallVec::from_vec` is heap-ownership transfer not
+relocation; only changing the allocation site (`vec![v; n]` to
+`smallvec![v; n]`) saves anything, and even the wider workspace
+conversion misses the bar because the intermediates exceed the
+inline cap at every `p >= 256`. `Vec<u64>` therefore remains the
+chosen mantissa container for both `BigFloat` and the `BigFloat`
+form `FixedFloat` converts through.
+
 ## Consequences
 
 **Wins:**

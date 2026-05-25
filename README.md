@@ -37,9 +37,14 @@ warranty; see the LICENSE file for the legal terms governing use.
 ## Status
 
 Pre-1.0. The repository carries the design (`DESIGN.md`), the
-architecture decision records (`docs/decisions/`), and the CI
-scaffolding. The algorithmic kernels are not yet implemented. The
-public API is unstable and will break without notice until 1.0.
+architecture decision records (`docs/decisions/`), the CI
+scaffolding, and the algorithmic kernels (arithmetic, the elementary
+transcendental and special-function surface listed below, both
+precision profiles). The Phase 1 correctness sweep is complete per
+ADR-0033 (exhaustive f32 audit closed by slices p1.1 through p1.11
+and the follow-ups pf-jn1y, pf-cvs, pf-06sw). The public API is
+unstable and will break without notice until 1.0; slice 8c is the
+v1.0 tag ceremony.
 
 ## Scope target
 
