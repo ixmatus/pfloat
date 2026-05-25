@@ -1,6 +1,49 @@
 # pfloat
 
+[![CI](https://github.com/ixmatus/pfloat/actions/workflows/ci.yml/badge.svg)](https://github.com/ixmatus/pfloat/actions/workflows/ci.yml)
+
 Pure Rust correctly-rounded arbitrary-precision floats.
+
+## Overview
+
+pfloat is a pure-Rust implementation of IEEE 754-2019 binary
+floating-point arithmetic at arbitrary precision. It targets the
+gap between [`f64`] (fixed at 53 bits of mantissa, no introspection
+of exception flags) and the C-backed [`gmp-mpfr-sys`] / [`rug`]
+stack (correctly-rounded at arbitrary precision, but with a hard C
+build dependency that complicates WebAssembly, embedded, and
+reproducible-build pipelines).
+
+Two precision profiles share the same arithmetic. `BigFloat` carries
+its precision as a runtime field and stores its mantissa on the heap
+behind an `alloc` dependency. `FixedFloat<const PREC: u32>`
+parameterises the same arithmetic by a compile-time precision
+constant, stack-allocates its mantissa via a const generic, and
+works without `alloc` (the `no_std` story, with `thumbv6m-none-eabi`
+and `thumbv8m.main-none-eabi` cross-compile CI lanes).
+
+The IEEE 754-2019 §5 contract is the surface every operation
+presents. Each kernel takes an explicit `RoundingMode`
+(`NearestEven`, `NearestAway`, `TowardZero`, `TowardPositive`,
+`TowardNegative`), returns the rounded result paired with a `Status`
+carrying the sticky exception flags (`INVALID`, `DIV_BY_ZERO`,
+`OVERFLOW`, `UNDERFLOW`, `INEXACT`), and accumulates the same flags
+into a thread-local set under the `std` feature for callers that
+prefer the implicit-state API. The transcendental and
+special-function surface is correctly-rounded under the chosen mode
+wherever the per-function status rows under
+[`tests/oracle/status/`](tests/oracle/status/) record that
+classification, subject to the measure-zero exact-tie caveat MPFR
+also documents.
+
+For the development process that produced this code, read the
+disclosure immediately below before deciding whether to adopt.
+[Quickstart](#quickstart), [Installation](#installation), and
+[Feature flags](#feature-flags) follow.
+
+[`f64`]: https://doc.rust-lang.org/std/primitive.f64.html
+[`gmp-mpfr-sys`]: https://crates.io/crates/gmp-mpfr-sys
+[`rug`]: https://crates.io/crates/rug
 
 ## How pfloat is developed
 
@@ -24,9 +67,9 @@ consumers escape `alloc`, IEEE 754 exception semantics surfaced as observable st
 worst case rounding tables run as integration tests, in differential tests against a trusted reference oracle on a separate CI lane, and in fuzz coverage of parser entry points. CI runs the usual lints and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks carry a written justification at the call site.
 
 **Scope.** pfloat is a personal project. The intended consumer is the broader Rust scientific and embedded ecosystem (anyone who needs more than `f64` with correctly rounded results and no C
-toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate has not reached 1.0 and is unpublished; the design, the
-architecture decision records, and the CI scaffolding are in place, but the algorithmic kernels are not yet implemented. The repository remains public for users who want to read or follow the
-work.
+toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is pre-1.0 and unpublished; the design, the architecture
+decision records, the CI scaffolding, and the algorithmic kernels are in place. The public API stabilizes and the crates.io publish lands at slice 8c. The repository remains public for users
+who want to read or follow the work.
 
 **What this does not promise.** AI collaboration does not transfer responsibility. The author is accountable for what ships under his name. The disciplines above narrow the failure surface; they
 do not eliminate it. In particular, this process is most exposed to subtle bugs that a careful human reading of the code would catch but tests, types, and formal verification would not. For
@@ -195,6 +238,41 @@ guards against), please flag it in an issue. The honest framing is
 "this looks like it might be lifted from X" rather than waiting for
 certainty; the project would rather investigate a false positive
 than miss a real one.
+
+## Acknowledgments
+
+pfloat builds on a long history of correctly-rounded
+floating-point work. The names below are the artifacts and
+references that directly shape this implementation.
+
+- [MPFR](https://www.mpfr.org/) is the behavioral oracle for the
+  per-push differential lane and the reference for correctly-rounded
+  semantics across arithmetic and the elementary transcendentals.
+- [Arb](https://arblib.org/) (now part of FLINT) via
+  [python-flint](https://github.com/flintlib/python-flint) supplies
+  the Phase 1 secondary oracle for the FnIds MPFR cannot cover (`Si`,
+  `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family).
+- [mpmath](https://mpmath.org/) supplies the in-venv cross-check
+  that catches Arb worker errors per ADR-0035's three-oracle
+  architecture.
+- [Maxima](https://maxima.sourceforge.io/) supplies the sampling
+  third opinion on the pinned-corpus three-way agreement.
+- The Lefèvre–Muller worst-case-rounding tables (V. Lefèvre and
+  J.-M. Muller, *Worst Cases for Correct Rounding of the Elementary
+  Functions in Double Precision*, ARITH-15 2001 and follow-ups) and
+  the [CORE-MATH](https://core-math.gitlabpages.inria.fr/) corpus
+  seed the differential integration tier.
+- The [NIST DLMF](https://dlmf.nist.gov/) is the primary reference
+  for the special-function identities and asymptotic expansions
+  pfloat's kernels are derived from.
+- [astro-float](https://github.com/stencillogic/astro-float) is the
+  closest pure-Rust precedent for arbitrary-precision binary
+  floating point; the [Why](#why) section above describes where
+  pfloat extends rather than overlaps.
+- [Kani](https://model-checking.github.io/kani/),
+  [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz), and
+  [proptest](https://github.com/proptest-rs/proptest) supply the
+  in-repo verification tooling stack.
 
 ## License
 
