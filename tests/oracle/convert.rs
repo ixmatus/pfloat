@@ -43,9 +43,10 @@
 
 use core::cmp::Ordering;
 
-use pfloat::{BigFloat, RoundingMode, Sign};
-use rug::float::Round;
-use rug::Float;
+use pfloat::{BigFloat, Parts, RoundingMode, Sign};
+use rug::float::{Round, Special};
+use rug::integer::Order;
+use rug::{Float, Integer};
 
 const F32_PREC: u32 = 24;
 const F32_BIAS: i64 = 127;
@@ -143,6 +144,88 @@ pub fn bf_to_f32_bits(bf: &BigFloat) -> u32 {
     s.parse::<f32>()
         .expect("BigFloat decimal (incl. nan / inf / 0 tokens) parses as f32 under NE")
         .to_bits()
+}
+
+/// Convert a [`BigFloat`] to a [`rug::Float`] at the same precision,
+/// bit-exact regardless of the rounding mode that produced the value.
+///
+/// Mirrors the `bigfloat_to_rug` helper in `tests/differential/mod.rs`;
+/// duplicated here because each integration-test crate compiles its
+/// own copy of `tests/oracle/` and `tests/differential/`, and the two
+/// modules do not (and should not) share state at the source level.
+/// The conversion reads pfloat's raw mantissa limbs via [`Parts`] and
+/// builds the corresponding [`Float`] via [`Integer::from_digits`] +
+/// `mul_2si`; the construction is exact because pfloat's mantissa
+/// carries exactly `precision` significant bits (top-bit-set) and
+/// the destination is built at the same precision.
+fn bigfloat_to_rug(value: &BigFloat) -> Float {
+    let p = value.precision();
+    match value.parts() {
+        Parts::Zero { sign } => signed(Float::with_val(p, 0u32), sign),
+        Parts::Infinity { sign } => signed(Float::with_val(p, Special::Infinity), sign),
+        Parts::Nan { .. } => Float::with_val(p, Special::Nan),
+        Parts::Normal {
+            sign,
+            exponent,
+            mantissa,
+            precision: _precision,
+        } => {
+            let int = Integer::from_digits(mantissa, Order::Lsf);
+            let mut f = Float::with_val(p, &int);
+            let stored_bits = (mantissa.len() as i64) * 64;
+            let shift: i64 = exponent + 1 - stored_bits;
+            // In-place exact 2^shift; chunked so any i64 shift works
+            // even though rug's mul_2si takes a `long`.
+            let mut remaining = shift;
+            while remaining != 0 {
+                let step = if remaining >= 0 {
+                    remaining.min(i64::from(i32::MAX)) as i32
+                } else {
+                    remaining.max(i64::from(i32::MIN)) as i32
+                };
+                f <<= step;
+                remaining -= i64::from(step);
+            }
+            signed(f, sign)
+        }
+    }
+}
+
+fn signed(f: Float, sign: Sign) -> Float {
+    if matches!(sign, Sign::Negative) {
+        -f
+    } else {
+        f
+    }
+}
+
+/// Round a [`BigFloat`] to a binary32 bit pattern under the
+/// requested IEEE rounding mode.
+///
+/// The mode-aware companion to [`bf_to_f32_bits`] (which is NE-only
+/// through the Display + Rust `f32` parser bridge per
+/// `feedback_bf_to_f32_directed_mode`). Routes the BigFloat through
+/// `bigfloat_to_rug` to a precision-matching [`rug::Float`] (a
+/// bit-exact conversion that preserves the value regardless of the
+/// rounding mode that produced it), then delegates to the existing
+/// [`round_f32`] to apply the rounding mode at the f32 boundary
+/// (including the `NearestAway` synthesis via
+/// [`round_ties_to_away_f32`] for the mode MPFR has no primitive
+/// for).
+///
+/// At `p = 24` the BigFloat lands exactly on the f32 grid and the
+/// conversion is a bit-exact re-encode; at higher precisions the
+/// rug→f32 round picks the f32-grid neighbour determined by `mode`.
+/// This lifts the silent NE-only override the Display+parse bridge
+/// applies at `p > 24` (slice p1.4 lesson). Returns `None` for NaN
+/// (no unique f32 rounding under IEEE NaN-equality conventions).
+///
+/// Lifted into the harness at Phase 1f slice p1.23 (ADR-0038); the
+/// pre-existing `bf_to_f32_bits` remains as the NE-only fast path
+/// for callers that only need NE behaviour.
+pub fn certified_round_bf_to_f32(bf: &BigFloat, mode: RoundingMode) -> Option<u32> {
+    let rug_val = bigfloat_to_rug(bf);
+    round_f32(&rug_val, mode).map(f32::to_bits)
 }
 
 /// Round a `rug::Float` to `f32` under the requested rounding mode.

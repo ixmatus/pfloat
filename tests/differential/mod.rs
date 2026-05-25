@@ -53,6 +53,39 @@ pub fn mpfr_round_of(mode: RoundingMode) -> Option<Round> {
     }
 }
 
+/// Compute an MPFR oracle value for `op` at precision `p` under the
+/// requested pfloat `mode`.
+///
+/// For the four IEEE modes MPFR has a direct equivalent for
+/// ([`Round::Nearest`], [`Round::Zero`], [`Round::Up`],
+/// [`Round::Down`]), calls `op(p, round)` once at the target
+/// precision. For [`RoundingMode::NearestAway`] — which MPFR has no
+/// equivalent for, per [`mpfr_round_of`] returning `None` — calls
+/// `op(p + 128, Round::Nearest)` to land a high-precision result
+/// then routes through [`round_ties_to_away`] to synthesize the
+/// IEEE roundTiesToAway value at `p`. The `+128` guard captures
+/// every realistic value's two `p`-bit neighbours exactly and
+/// resolves every non-tie unambiguously.
+///
+/// Lifted into the shared module at Phase 1f slice p1.23
+/// (ADR-0038); the canonical caller pattern is `differential_pow.rs`
+/// before this helper landed. Every differential lane widened to
+/// [`BIT_EXACT_ROUNDING_MODES`] should route its `NearestAway` arm
+/// through this helper rather than open-coding the synthesis.
+pub fn mpfr_oracle_for_mode<F: Fn(u32, Round) -> Float>(
+    op: F,
+    mode: RoundingMode,
+    p: u32,
+) -> Float {
+    match mpfr_round_of(mode) {
+        Some(round) => op(p, round),
+        None => {
+            let hp = op(p + 128, Round::Nearest);
+            round_ties_to_away(&hp, p)
+        }
+    }
+}
+
 /// IEEE 754 roundTiesToAway of a high-precision value `hp` to
 /// precision `p`, synthesized because MPFR offers no such mode (see
 /// [`mpfr_round_of`]).
