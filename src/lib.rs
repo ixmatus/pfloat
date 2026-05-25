@@ -1,10 +1,37 @@
 //! pfloat: pure Rust correctly-rounded arbitrary-precision floats.
 //!
-//! This crate is pre-1.0. The public surface is unstable and the
-//! arithmetic kernels are not yet implemented. See `DESIGN.md` at
-//! the repository root for the full design and `docs/decisions/` for
-//! the architecture decision records that capture the load-bearing
-//! choices.
+//! This crate is pre-1.0. The public surface is unstable and will
+//! break without notice until the v1.0 tag (slice 8c). The
+//! arithmetic kernels, the elementary transcendental and special
+//! function surface, and both precision profiles ([`BigFloat`] and
+//! `FixedFloat<const PREC: u32>`) are implemented; the Phase 1
+//! correctness sweep against the exhaustive `f32` oracle is complete
+//! per ADR-0033. See `DESIGN.md` at the repository root for the
+//! full design and `docs/decisions/` for the architecture decision
+//! records that capture the load-bearing choices.
+//!
+//! # Quickstart
+//!
+//! ```
+//! use pfloat::{BigFloat, RoundingMode};
+//!
+//! // BigFloat: runtime precision, heap-allocated mantissa.
+//! // Square root of two at 200-bit precision, correctly rounded to
+//! // nearest even. The call returns the result and a Status carrying
+//! // any IEEE 754-2019 sticky exception flags raised by the operation.
+//! let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+//! let (_sqrt2, _status) = two.sqrt(RoundingMode::NearestEven);
+//! ```
+//!
+//! Five IEEE 754-2019 rounding modes are available
+//! ([`RoundingMode::NearestEven`], [`NearestAway`](RoundingMode::NearestAway),
+//! [`TowardZero`](RoundingMode::TowardZero),
+//! [`TowardPositive`](RoundingMode::TowardPositive),
+//! [`TowardNegative`](RoundingMode::TowardNegative)); every kernel
+//! returns a `(value, Status)` pair so callers can inspect or
+//! accumulate sticky flags without thread-local state. Under the
+//! `std` feature, the same flags also accumulate into a thread-local
+//! set accessible via [`flags`].
 //!
 //! # Scope target
 //!
