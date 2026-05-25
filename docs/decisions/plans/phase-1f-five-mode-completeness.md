@@ -1270,14 +1270,141 @@ test).
 
 ## Family p1.31 (1f.9): Airy
 
-**AUDIT TBD** — populated in slice p1.22 next session. Kernels:
-`Ai`, `Bi`, `Ai_prime`, `Bi_prime`. Expected shape: Maclaurin for
-small |x|; DLMF 9.7 asymptotic for large |x| (the recurrence sign
-correction per slice 6n / ADR-0021 stands; per
-`feedback_derive_dont_recall_coefficients` instance 3, the
-`u_k` recurrence with the `(2k-1)·216·k` divisor is the
-non-recalled form, with `u_1 = 5/72`, `u_2 = 3465/93312`). Wronskian
-`Ai · Bi' − Ai' · Bi = 1/π` cross-tie reused.
+All four kernels (Ai, Bi, Ai′, Bi′) route through a parameterized
+`airy_kernel(which: AiryFn, ...)` so they share boundary constants,
+the f/g Maclaurin series, the u_k/v_k asymptotic-coefficient
+recurrence, and ζ/x^(1/4). The migration treats them as a single
+unit; per-function entries below differ only in which boundary
+constants and which sign coefficients apply.
+
+### Ai
+
+- **Source**: `src/math/airy.rs:185-` (the `airy_kernel` body) +
+  `:50-55` (the `AiryFn` enum).
+- **Status today**: NOT Ziv-wrapped. Three-regime fixed-64-bit
+  guard with parameterized kernel.
+- **eval(w) shape**: special cases (NaN, ±0 → exact boundary
+  constant via `airy_zero_value`, ±∞ → exact-limit conventions per
+  ADR-0021: Ai(+∞) = +0, Ai(−∞) = +0 by the decaying-envelope
+  convention, similarly for Bi/Ai′/Bi′). General path at
+  working_prec = target + 64: three-regime dispatch on |x|'s
+  binary exponent and sign. **Small |x|**: Maclaurin series in the
+  two entire solutions f and g (DLMF 9.4.1-9.4.6), combined with
+  boundary constants Ai(0), Ai′(0) per DLMF 9.2.3-9.2.6. **Large
+  +x**: exponential asymptotic Ai(x) ~ e^(−ζ) / (2√π · x^(1/4)) ·
+  Σ (−1)^k u_k ζ^(−k) where ζ = (2/3) x^(3/2), summed to smallest
+  term (DLMF 9.7.5-9.7.8). **Large −x**: oscillatory asymptotic
+  Ai(−|x|) = π^(−1/2) |x|^(−1/4) · (cos(ζ − π/4) Σ v_(2k) ζ^(−2k)
+  − sin(ζ − π/4) Σ v_(2k+1) ζ^(−2k−1)) with ζ = (2/3) |x|^(3/2)
+  (DLMF 9.7.9-9.7.12). **u_k recurrence**: per ADR-0021 /
+  `feedback_derive_dont_recall_coefficients` instance 3, the form
+  is `u_k = ((6k-5)(6k-3)(6k-1) / ((2k-1)·216·k)) · u_{k-1}` with
+  closed-form u_1 = 5/72, u_2 = 3465/93312 (the divisor (2k-1) is
+  the load-bearing correction the recalled form was missing).
+- **Cancellation regimes**: large negative x (oscillatory regime)
+  near zeros of Ai (located at known irrational negative values
+  ξ_k ≈ −2.338, −4.088, −5.521, …) — the cos·Σ − sin·Σ composition
+  can cancel near these zeros. The amplification |f'/f| → ∞ at the
+  zeros themselves; the Ziv cap may bind on inputs that fall
+  exactly on the zero (measure-zero per the ADR-0022 documented
+  caveat). For most negative-x inputs the oscillation is
+  well-conditioned at working_prec. No collapse-to-exact-zero on
+  the documented domain (the special cases handle ±0 and ±∞;
+  finite x produces a finite non-zero Ai value, with the
+  oscillatory regime's near-zero cancellation absorbed by
+  working_prec + 64).
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with the
+  full three-regime dispatch preserved inside eval(w). The boundary-
+  constant short-circuits at ±0 stay before Ziv (return the exact
+  constants at target precision under mode). The ±∞ conventions
+  stay before Ziv (exact limits per ADR-0021). For the parameterized
+  kernel, the `which: AiryFn` argument selects the coefficients
+  inside eval(w); the Ziv wrap is a per-function decoration of the
+  shared kernel body.
+- **Cited spec**: DLMF 9.2 (boundary values), 9.4 (Maclaurin), 9.7
+  (asymptotic with the corrected u_k recurrence per ADR-0021).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for Airy).
+- **Estimated Ziv iterations at cap**: 1-3. Near zeros of Ai the
+  amplification could push to 4-5 on pathological inputs; the cap
+  accommodates this.
+- **Worked example**: `Ai(0) = 1/(3^(2/3)·Γ(2/3)) ≈ 0.355028…`
+  (the exact boundary constant); `Ai(1) ≈ 0.135292…`; `Ai(−2.338)
+  ≈ 0` (the first zero of Ai).
+- **Migration commit shape**: 1 commit on `airy_kernel` (the wrap
+  covers all four AiryFn variants since the body is shared).
+
+### Bi
+
+- **Source**: same `airy_kernel` parameterized by `AiryFn::Bi`.
+- **Status today**: NOT Ziv-wrapped.
+- **eval(w) shape**: same three regimes as Ai with different
+  boundary constants (Bi(0) = 1/(3^(1/6)·Γ(2/3)) ≈ 0.614927…)
+  and different asymptotic coefficients. Large +x:
+  Bi(x) ~ e^(+ζ) / (√π · x^(1/4)) · Σ u_k ζ^(−k) (no alternating
+  sign on u_k, opposite to Ai). Large −x: oscillatory form with
+  sin/cos swap.
+- **Cancellation regimes**: large negative x near zeros of Bi
+  (located at η_k ≈ −1.174, −3.271, −4.831, …). Same regime
+  treatment as Ai.
+- **Per-regime Ziv strategy**: same drop-in wrap on the shared
+  `airy_kernel` body.
+- **Cited spec**: DLMF 9.4 (Maclaurin), 9.7 (asymptotic).
+- **Oracle coverage**: Arb-primary.
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `Bi(0) ≈ 0.614927…`; `Bi(1) ≈ 1.207424…`;
+  `Bi(−1.174) ≈ 0` (the first zero of Bi).
+- **Migration commit shape**: 0 additional commits (folds into the
+  shared `airy_kernel` migration).
+
+### Ai′ (derivative of Ai)
+
+- **Source**: same `airy_kernel` parameterized by `AiryFn::AiPrime`.
+- **Status today**: NOT Ziv-wrapped.
+- **eval(w) shape**: same three regimes with different boundary
+  constants (Ai′(0) = −1/(3^(1/3)·Γ(1/3)) ≈ −0.258819…) and
+  derivative-form asymptotic coefficients (the v_k recurrence
+  alongside u_k).
+- **Cancellation regimes**: near zeros of Ai′ (distinct from
+  zeros of Ai); oscillatory regime same as Ai.
+- **Per-regime Ziv strategy**: same drop-in wrap on shared kernel.
+- **Cited spec**: DLMF 9.4 (Maclaurin), 9.7 (asymptotic).
+- **Oracle coverage**: Arb-primary.
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `Ai′(0) ≈ −0.258819…`.
+- **Migration commit shape**: 0 additional commits.
+
+### Bi′ (derivative of Bi)
+
+- **Source**: same `airy_kernel` parameterized by `AiryFn::BiPrime`.
+- **Status today**: NOT Ziv-wrapped.
+- **eval(w) shape**: same three regimes with Bi′(0) = 3^(1/6)/Γ(1/3)
+  ≈ 0.448288… and derivative coefficients.
+- **Cancellation regimes**: oscillatory regime same as Ai/Bi.
+- **Per-regime Ziv strategy**: same drop-in wrap on shared kernel.
+- **Cited spec**: DLMF 9.4, 9.7.
+- **Oracle coverage**: Arb-primary.
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `Bi′(0) ≈ 0.448288…`.
+- **Migration commit shape**: 0 additional commits.
+
+### Family p1.31 ADR posture
+
+Four kernels share a single parameterized `airy_kernel` body; the
+Ziv wrap is a per-function decoration of the shared body, so the
+migration is ONE kernel change covering all four AiryFn variants.
+The u_k recurrence per ADR-0021 stays unchanged. The Wronskian
+`Ai·Bi′ − Ai′·Bi = 1/π` cross-tie (existing differential test)
+exercises all four kernels under all five modes after the
+migration. No per-family ADR needed (ADR-0021 already records the
+recurrence form; this slice does not modify it). Slice p1.31
+commit shape: 1 kernel-migration (shared `airy_kernel` Ziv wrap)
++ 1 differential-lane-widening (Ai, Bi, Ai′, Bi′) + 1
+status-TOML-row update + 1 caveats-§1-narrowing + 1
+doc-comment-qualifier = 5 commits. Wall-clock estimate: 3-4 days
+(the oscillatory-regime cancellation near zeros of each function
+needs careful directed-mode unit-test pinning; the Wronskian
+cross-tie test extension to BIT_EXACT_ROUNDING_MODES is the
+strong cross-oracle).
 
 ## Family p1.32 (1f.10): Bessel J/Y
 
@@ -1287,40 +1414,281 @@ target.
 
 ### bessel_y (Y0, Y1, Yn)
 
-**AUDIT TBD** — populated in slice p1.22 next session. Expected
-shape: forward recurrence for J then `Y_n = (J_n · cos(nπ) -
-J_{-n}) / sin(nπ)` for non-integer order (n/a for the v1.0 surface
-which restricts to integer n); for integer order the Hankel
-asymptotic and the limit form at integer ν. J/Y Wronskian
-`J_n · Y_{n-1} − J_{n-1} · Y_n = 2/(π·x)` cross-tie reused.
+- **Source**: `src/math/bessel_y.rs:1-80` (header + impl signatures).
+  ADR-0024 records the design.
+- **Status today**: NOT Ziv-wrapped. Two-regime fixed-guard with
+  upward order-recurrence.
+- **eval(w) shape**: special cases (NaN, +0 → −∞+DIV_BY_ZERO,
+  +∞ → +0 by the ADR-0021/0023 decaying-envelope convention,
+  x ≤ 0 → NaN+INVALID since Y is complex there). Negative-order
+  reduction Y_{−n}(x) = (−1)^n Y_n(x) before evaluation. Order
+  recurrence: compute Y_0 and Y_1 directly, then climb upward via
+  Y_{k+1}(x) = (2k/x) Y_k(x) − Y_{k-1}(x) (DLMF 10.6.1, stable for
+  the dominant solution; this is the OPPOSITE shape from J's
+  Miller backward descent — Y is dominant, J is recessive). Base
+  pair Y_0/Y_1: regime dispatch on x's binary exponent against
+  the shared `bessel_j_threshold` from `bessel_j.rs`. **Below
+  threshold**: DLMF 10.8.1 logarithmic series with working
+  precision boosted ≈ x·log₂e for alternating cancellation (the
+  Ci guard idiom). **At or above threshold**: DLMF 10.17.4 Hankel
+  asymptotic, reusing J's a_k(ν) coefficients per ADR-0023 with
+  Y's trig combination (Y_n's asymptotic uses sin where J_n uses
+  cos and vice versa, per DLMF 10.17.4).
+- **Cancellation regimes**: x near zeros of Y_0/Y_1 (irrational
+  positive values; Y_0's first zero ≈ 0.8936, Y_1's first zero ≈
+  2.1971) — the log series and asymptotic compositions can cancel
+  near zero-crossings; the working_prec boost handles this. Order
+  recurrence upward is stable for Y (no normalization needed,
+  unlike J's Miller descent); the recurrence step's subtraction
+  in `(2k/x) Y_k − Y_{k-1}` doesn't cancel because Y_k and Y_{k-1}
+  have different magnitudes (Y_n grows in n at fixed x). No
+  collapse-to-exact-zero on the documented domain.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap. eval(w) =
+  the existing two-regime base pair Y_0/Y_1 + upward recurrence at
+  working precision w. The order-reduction sign and the upward
+  recurrence stay inside eval(w). Inner trig (sin, cos in the
+  Hankel asymptotic) and logarithm (in the log series) calls are
+  Ziv-driven from earlier cohort migrations.
+- **Cited spec**: DLMF 10.6.1 (recurrence), 10.8.1 (log series),
+  10.17.4 (Hankel asymptotic); ADR-0023 (a_k(ν) coefficients),
+  ADR-0024 (design).
+- **Oracle coverage**: MPFR-primary for Y_0, Y_1 (mpfr_y0, mpfr_y1);
+  Arb-primary for Y_n with n ≥ 2 (no MPFR primitive for Y at
+  variable order).
+- **Estimated Ziv iterations at cap**: 1-3. Near zeros of Y_0/Y_1
+  the amplification grows; the cap accommodates measure-zero
+  exact-tie cases per ADR-0022.
+- **Worked example**: `Y_0(1) ≈ 0.088257…`; `Y_1(1) ≈ −0.781213…`;
+  `Y_2(1) ≈ −1.650683…` (computed via Y_2 = (2/1)·Y_1 − Y_0).
+- **Migration commit shape**: 1 commit. The differential lane for Y
+  (existing `differential_yn`) widens to BIT_EXACT_ROUNDING_MODES.
+
+### Family p1.32 ADR posture
+
+Y migrates in this slice; J is already five-mode. The J/Y Wronskian
+`J_n · Y_{n-1} − J_{n-1} · Y_n = 2/(π·x)` cross-tie (existing
+property test) exercises both families under all five modes after
+the migration; this is the strong cross-oracle for the Bessel
+oscillatory pair. The shared a_k(ν) coefficients per ADR-0023 stay
+unchanged. The parametric Y_n sweep coverage at higher orders
+moves to slice p1.35. No per-family ADR needed (ADR-0024 already
+records the design; this slice does not modify it). Slice p1.32
+commit shape: 1 kernel-migration (bessel_y) + 1
+differential-lane-widening + 1 status-TOML-row update (Y0, Y1,
+plus the existing Jn_5 + new Yn_5 if applicable, with full
+parametric expansion moving to p1.35) + 1 caveats-§1-narrowing +
+1 doc-comment-qualifier = 5 commits. Wall-clock estimate: 2-3
+days (the Y-side is simpler than the I/K family since there's no
+recessive-normalization gymnastics).
 
 ## Family p1.33 (1f.11): Bessel I/K
 
-**AUDIT TBD** — populated in slice p1.22 next session. Kernels:
-`I0`, `I1`, `In`, `K0`, `K1`, `Kn`. Expected shape: Miller's
-backward recurrence for I (reuses J's `a_k(n)` coefficients);
-asymptotic for K. **K-recurrence sign convention** per
-`feedback_derive_dont_recall_coefficients` instance 4 / ADR-0025:
-`K_{k+1} = (2k/x) K_k + K_{k-1}` (PLUS, opposite I, opposite the
-naive read of the unified DLMF 10.29.1 cylinder relation). The
-`recurrence_spot_check` test stays as the durable artifact.
-**I-family** sub-midpoint cubic-Maclaurin precision bump
-(BESSEL_TINY_VERIFICATION_PRECISION = 320 per slice p1.8) stands
-and pre-dates Phase 1f. I/K cross-tie `I_ν · K'_ν − I'_ν · K_ν =
-1/x` cross-tie reused.
+### bessel_i (I0, I1, In)
+
+- **Source**: `src/math/bessel_i.rs:1-80` (header + impl signatures).
+  ADR-0025 records the design.
+- **Status today**: NOT Ziv-wrapped (BesselI was caught by slice
+  p1.8's BESSEL_TINY_VERIFICATION_PRECISION = 320 fix at the
+  verification harness level — that's a HARNESS precision bump, NOT
+  a kernel Ziv migration).
+- **eval(w) shape**: special cases (NaN, ±0 → I_0(0) = 1 / I_n(0) =
+  0 exact, ±∞ → +∞ for even n / (−1)^n·∞ for odd n × x sign — a
+  genuine infinite limit per ADR-0025, not the decaying-envelope
+  convention). Order parity I_{−n}(x) = I_n(x) (no sign — opposite
+  to J/Y per DLMF 10.27.1). Argument parity I_n(−x) = (−1)^n I_n(x).
+  Negative-argument reduction folds to |x| with parity sign applied.
+  **Three regimes** on |x|'s binary exponent: **Tiny |x|**:
+  Maclaurin DLMF 10.25.2 (slice 6q.2). **Moderate |x|**: Miller
+  backward recurrence (I is recessive in order, same shape as J)
+  normalized by the DLMF 10.35.5 sum rule e^x = I_0 + 2·Σ_{k≥1} I_k
+  (slice 6q.3). **Large |x|**: DLMF 10.40.1 asymptotic reusing the
+  a_k(ν) coefficients per ADR-0023 (slice 6q.4).
+- **Cancellation regimes**: I has no real zeros (I_n is positive for
+  x > 0 at any n ≥ 0; for x < 0 the parity sign handles the
+  reflection). So no zero-crossing cancellation. The Miller recurrence
+  normalization via the sum rule e^x = I_0 + 2·Σ I_k is well-
+  conditioned (all terms positive). The Maclaurin regime at tiny |x|
+  has the slice-p1.8 cubic-correction precision issue at the HARNESS
+  level (BESSEL_TINY_VERIFICATION_PRECISION = 320), but the kernel
+  itself returns a correctly-rounded-at-working-prec NE value; the
+  harness bump is the bf→f32 bridge issue, not a kernel issue.
+  **No collapse-to-exact-zero** on the kernel side; the special
+  cases handle I_n(0) = 0 for n ≠ 0 exactly.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with the
+  three-regime dispatch preserved inside eval(w). The argument-parity
+  reduction stays before Ziv (folds the negative-x case to |x| with
+  a parity sign applied to the result). The HARNESS-level
+  BESSEL_TINY_VERIFICATION_PRECISION = 320 bump stays as the
+  verification-precision floor; under p1.23's
+  `certified_round_bf_to_f32` helper, the bumped precision becomes
+  directed-mode-safe, so the f32 sweep can run under all five modes
+  at the bumped precision.
+- **Cited spec**: DLMF 10.25.2 (Maclaurin), 10.35.5 (sum rule),
+  10.40.1 (asymptotic); ADR-0023 (a_k(ν)), ADR-0025 (design),
+  ADR-0021 (the decaying-envelope vs genuine-limit distinction).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for I_n at
+  variable order; I_0 and I_1 use mpfr_i0/i1).
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `I_0(0) = 1` (exact); `I_0(1) ≈ 1.266066…`;
+  `I_1(1) ≈ 0.565159…`; `I_2(1) ≈ 0.135748…` (computed via the
+  Miller-with-sum-rule normalization).
+- **Migration commit shape**: 1 commit.
+
+### bessel_k (K0, K1, Kn)
+
+- **Source**: `src/math/bessel_k.rs:1-80` (header + impl signatures).
+  ADR-0025 records the design including the recurrence-sign
+  derivation.
+- **Status today**: NOT Ziv-wrapped.
+- **eval(w) shape**: special cases (NaN, +0 → +∞+DIV_BY_ZERO,
+  +∞ → +0 — a genuine exponential-decay limit per ADR-0025, NOT
+  the decaying-envelope convention, x ≤ 0 → NaN+INVALID since K is
+  complex there). Order parity K_{−n}(x) = K_n(x) (no sign).
+  Negative-argument is INVALID (not folded). **Upward recurrence**
+  K_{k+1}(x) = (2k/x)·K_k(x) + K_{k-1}(x) (DLMF 10.29.1 specialized
+  to K via the §10.25(ii) `e^{νπi} K_ν` convention; the
+  `e^{νπi}` factor flips K's sign relative to the naive read of the
+  unified `𝒵_{ν-1} − 𝒵_{ν+1} = (2ν/z)𝒵_ν` — per ADR-0025 and
+  `feedback_derive_dont_recall_coefficients` instance 4 the
+  recurrence is PLUS, opposite I, opposite the naive sign). Base
+  pair K_0/K_1: two regimes on x's binary exponent. **Small x**:
+  DLMF 10.31.1 logarithmic series (slice 6q.5). **Large x**: DLMF
+  10.40.2 asymptotic (slice 6q.7) reusing a_k(ν) per ADR-0023.
+- **Cancellation regimes**: K has no real zeros (K_n is positive for
+  x > 0 at any n). No zero-crossing cancellation. The upward
+  recurrence has the (2k/x)·K_k + K_{k-1} form — addition of
+  positive quantities, well-conditioned (no subtractive cancellation
+  as in Y's K_{k+1} = (2k/x) Y_k − Y_{k-1} form). The K_0 + K_1
+  log-series base at small x has well-managed cancellation per the
+  ADR-0025 design. No collapse-to-exact-zero on the documented
+  domain. The `recurrence_spot_check` test per ADR-0025 stays as
+  the durable artifact pinning the +sign.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap. eval(w) =
+  base pair K_0/K_1 + upward recurrence at working precision w.
+- **Cited spec**: DLMF 10.29.1 + §10.25(ii) (recurrence with the
+  `e^{νπi} K_ν` convention), 10.31.1 (log series), 10.40.2
+  (asymptotic); ADR-0023 (a_k(ν)), ADR-0025 (the K-recurrence sign
+  derivation and design).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for K_n at
+  variable order; K_0/K_1 use mpfr_k0/k1).
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `K_0(1) ≈ 0.421024…`; `K_1(1) ≈ 0.601907…`;
+  `K_2(1) = (2·1/1)·K_1(1) + K_0(1) = 2·0.601907 + 0.421024 ≈
+  1.624838…` (computed via the +sign upward recurrence; if the
+  recalled-sign minus had been used, K_2 would compute to
+  2·0.601907 − 0.421024 ≈ 0.782790, dramatically wrong — the
+  spot-check that catches the recalled sign).
+- **Migration commit shape**: 1 commit.
+
+### Family p1.33 ADR posture
+
+Two kernel families share the ADR-0023 a_k(ν) coefficients and the
+ADR-0025 design. The K-recurrence +sign convention per
+`feedback_derive_dont_recall_coefficients` instance 4 stays unchanged.
+The I/K Wronskian I_ν · K'_ν − I'_ν · K_ν = 1/x cross-tie (existing
+test) exercises both families under all five modes after migration.
+The I-family BESSEL_TINY_VERIFICATION_PRECISION = 320 harness bump
+becomes directed-mode-safe via slice p1.23's
+`certified_round_bf_to_f32` helper, so the f32 sweep can run under
+all five modes at the bumped precision. No per-family ADR needed
+(ADR-0025 already records the design; this slice does not modify
+it). Slice p1.33 commit shape: 2 kernel-migration commits (I, K) +
+1 differential-lane-widening (I, K) + 1 status-TOML-row update +
+1 caveats-§1-narrowing + 1 doc-comment-qualifier = 6 commits.
+Wall-clock estimate: 4-5 days (the recurrence-sign sanity test
+must be re-validated under all five modes; the BESSEL_TINY
+harness path needs the directed-mode helper from p1.23 in place).
 
 ## Family p1.34 (1f.12): Zeta (LAST)
 
-**AUDIT TBD** — populated in slice p1.22 next session. Kernel:
-`zeta`. **Inter-family dependency**: the functional equation
-branch (DLMF 25.4.2, NOT 25.4.1 per
-`feedback_derive_dont_recall_coefficients` instance 5 / ADR-0026)
-composes `sin`, `pow`, `gamma`. Each must already be five-mode
-correct; Phase 1f's ordering puts zeta last for this reason.
-CVZ acceleration (Borwein "Algorithm 1") for positive `Re(s)`
-stays; the algorithm pin via reproducing the paper's `n = 1, 2`
-worked examples (`2a₀/3`, `(16a₀ − 8a₁)/17`) per ADR-0026 is the
-durable artifact.
+### zeta
+
+- **Source**: `src/math/zeta.rs:1-120` (header + impl signatures
+  through `is_negative_even_integer`). ADR-0026 records the design
+  and the Borwein/CVZ algorithm pin via the paper's worked
+  examples.
+- **Status today**: NOT Ziv-wrapped. Two-regime fixed-guard.
+- **eval(w) shape**: special cases per the comprehensive domain
+  table at lines 25-50: NaN, ζ(1) = +∞+DIV_BY_ZERO (the pole at
+  s=1), ζ(±0) = −1/2 exact (DLMF 25.6.1), ζ(−2n) = +0 exact for n
+  ≥ 1 (the trivial zeros, special-cased to avoid the FE branch's
+  sin(πs/2) = 0 cancellation), ζ(+∞) = 1 (genuine limit), ζ(−∞) =
+  NaN+INVALID (unbounded non-converging oscillation, explicitly
+  NOT the decaying-envelope convention per ADR-0026). General
+  path two-regime dispatch on the sign of s. **s > 0, s ≠ 1**:
+  Borwein/CVZ alternating-series acceleration via
+  `zeta_borwein(s, working_prec)`. Algorithm pinned per ADR-0026
+  reproducing CVZ Proposition 1's worked examples `2a₀/3` at n=1
+  and `(16a₀ − 8a₁)/17` at n=2; this is the strongest form of the
+  derive-don't-recall reflex (reproduce the source's own worked
+  examples, not just transcribe the algorithm). **s < 0**:
+  functional equation `ζ(s) = 2·(2π)^(s−1)·sin(πs/2)·Γ(1−s)·ζ(1−s)`
+  per DLMF 25.4.2 (NOT 25.4.1 per
+  `feedback_derive_dont_recall_coefficients` instance 5; the
+  recalled `cos/Γ(s)` form for the FE branch was wrong, pinned by
+  ζ(−1) = −1/12). Routes through in-crate π, pow, sin, Γ, and a
+  recursive zeta(1−s) call (which lands in the s>0 Borwein branch
+  since 1−s > 1).
+- **Cancellation regimes**: s > 0 Borwein regime: the
+  alternating-series CVZ acceleration's truncation error is bounded
+  by `2·(3+√8)^(−n)` (Proposition 1) which converges geometrically;
+  no cancellation regime requires extra working precision. s = 1
+  (pole): special-case dispatch before eval(w). s < 0 FE branch:
+  the trivial zeros ζ(−2n) = 0 are special-cased BEFORE the FE
+  composition to avoid sin(πs/2) = 0 cancellation (sin(πs/2)
+  evaluates to a small non-zero value at working precision near
+  these integers, multiplied by ζ(1−s) which is positive finite,
+  producing a small non-zero result that is then incorrectly
+  rounded). The special-case dispatch is the load-bearing
+  cancellation avoidance.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with the
+  two-regime dispatch preserved inside eval(w). The trivial-zero
+  short-circuit (and all other special cases) stay BEFORE Ziv
+  (return exact values at target precision under mode). INTER-FAMILY
+  DEPENDENCIES (strict for the FE branch to compose correctly):
+  the FE branch's sin(πs/2) call needs p1.26 (forward trig) to land
+  first; Γ(1−s) needs p1.29 (gamma family) to land first; pow
+  is already Ziv. The recursive zeta(1−s) call in the FE branch
+  routes to the Borwein regime (since 1 − s > 1 when s < 0), so
+  no infinite recursion. This is why p1.34 lands LAST in family
+  ordering — every constituent of the FE branch must already be
+  five-mode-correct.
+- **Cited spec**: DLMF 25.2 (Dirichlet series, special values),
+  25.4.2 (functional equation, NOT 25.4.1), 25.6.1 (ζ(0) =
+  −1/2), 25.6.4 (trivial zeros); ADR-0026 (design + Borwein
+  algorithm pin + ζ(−∞) convention); Cohen-Villegas-Zagier
+  Proposition 1.
+- **Oracle coverage**: MPFR-primary (mpfr_zeta for the standard
+  surface).
+- **Estimated Ziv iterations at cap**: 1-3 on the Borwein branch
+  (geometric convergence); the FE branch may push to 4-5 on inputs
+  near the trivial zeros where the sin(πs/2) is small but non-zero
+  (the special-case short-circuit catches the EXACT trivial zeros;
+  slightly off-integer inputs go through the FE composition).
+- **Worked example**: `ζ(2) = π²/6 ≈ 1.6449340…` (Borwein);
+  `ζ(0) = −1/2` (exact special case); `ζ(−1) = −1/12` (FE branch,
+  pinning the correct DLMF 25.4.2 form per ADR-0026); `ζ(−2) = 0`
+  (trivial zero, exact special case).
+- **Migration commit shape**: 1 commit (kernel wrap with the full
+  domain dispatch preserved; the special-case short-circuits and
+  the FE branch's recursive call stay unchanged; unit tests pin
+  ζ(2), ζ(0), ζ(−1), ζ(−2) under all five modes).
+
+### Family p1.34 ADR posture
+
+Single-kernel slice (zeta). LAST in family ordering — must land
+after p1.26 (sin), p1.29 (gamma), and the cohort's pow. The FE
+branch's composition is correct under five modes if and only if
+its constituents are; the Phase 1f ordering enforces this.
+ADR-0026 already records the design (Borwein algorithm, DLMF
+25.4.2 FE branch, ζ(−∞) convention); this slice does not modify
+it. No per-family ADR needed. Slice p1.34 commit shape: 1
+kernel-migration + 1 differential-lane-widening + 1
+status-TOML-row update + 1 caveats-§1-narrowing (the LAST family
+to drop from the list, leaving §1 empty for the deletion at p1.37)
++ 1 doc-comment-qualifier = 5 commits. Wall-clock estimate: 2-3
+days (zeta's domain dispatch is the most extensive in the v1.0
+surface; each special case needs a directed-mode unit-test pin).
 
 ## Multi-arg confirmation (slice p1.36)
 
@@ -1348,23 +1716,101 @@ slice 8a.4c stays. The five-mode pass widens
 
 ### agm
 
-**AUDIT TBD** — populated in slice p1.22 next session. AGM
-converges quadratically (Brent-Salamin). Expected Ziv strategy:
-single-arg-eval closure that captures both arguments, or a
-multi-arg sibling helper in `ziv.rs` (audit decides). The
-quadratic convergence means at the 1024-bit cap precision Ziv adds
-~1 iteration over the existing path.
+- **Source**: `src/math/agm.rs:1-100` (header + impl signatures).
+  ADR-0015 records the choice of Gauss's iteration over
+  Brent-Salamin.
+- **Status today**: NOT Ziv-wrapped. Fixed-64-bit-guard with the
+  Gauss iteration converging quadratically.
+- **eval(w) shape**: special cases (NaN, sign domain errors,
+  ±0/±∞ combinations with finite operands). General path at
+  working_prec = target + 64: initialize a_0 = a, b_0 = b at
+  working_prec; iterate a_{n+1} = (a_n + b_n)/2, b_{n+1} =
+  sqrt(a_n · b_n) until |a_n − b_n| < 2^(−working_prec − 4). The
+  loop terminates in O(log working_prec) iterations because of
+  quadratic convergence. The 64-bit guard absorbs the per-iteration
+  rounding error.
+- **Cancellation regimes**: a near b — the iteration reaches fixed
+  point quickly with no extra cancellation (a_{n+1} − b_{n+1}
+  shrinks quadratically). a = 0 or b = 0 with the other finite —
+  agm(0, x) = 0 special case. No collapse-to-exact-zero on the
+  documented finite-positive-pair domain.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with a
+  multi-arg eval closure that captures both a and b. The Ziv
+  driver's single-u32 eval signature is unchanged (the closure
+  carries both BigFloats). Quadratic convergence means Ziv adds at
+  most one extra iteration at the cap precision (O(log w) → O(log
+  2w) ≈ +1 iteration); the cost is negligible.
+- **Cited spec**: Gauss's AGM iteration; ADR-0015 (variant
+  selection vs Brent-Salamin).
+- **Oracle coverage**: differential against MPFR (no f32 sweep
+  per the multi-arg surface document); the AGM identity I_0(x) ·
+  K_0(x) = π/(2 agm(1, x)) cross-tie could serve as a multi-arg
+  cross-oracle but is not currently in the test suite.
+- **Estimated Ziv iterations at cap**: 1-2.
+- **Worked example**: `agm(1, √2) ≈ 1.1981402…` (Gauss's
+  motivating example); `agm(2, 4) ≈ 2.9134388…`.
+- **Migration commit shape**: 1 commit at slice p1.36.
 
 ## Parametric Bessel N-ladder recommendation
 
-**AUDIT TBD** — populated in slice p1.22 next session. Today's
-status table has only `Jn_5.toml` (n=5). The audit will recommend
-the N-ladder for `Jn`, `Yn`, `In`, `Kn` parametric sweep coverage
-at slice p1.35. Candidate ladders include: `n ∈ {2, 5, 10}` (small
-+ representative + Miller-regime test), `n ∈ {2, 5, 10, 25, 100}`
-(wider coverage including the Miller-backward-recurrence stress
-regime). The choice depends on the per-N sweep wall-clock cost
-(measured at slice p1.22 against a representative N).
+Today's status table has only `Jn_5.toml` (n = 5). Slice p1.35
+expands to a per-family ladder of N values covering the three
+regimes Bessel kernels distinguish on order: the small-order
+direct-computation regime (n ≤ 5 or so), the moderate-order
+Miller-backward-recurrence regime (n ≈ 10-50, where the recessive
+solutions J and I need normalization but the regime is
+well-conditioned), and the large-order asymptotic-regime stress
+(n ≥ 100, where the order-asymptotic forms take over and the
+amplification |f'/f| can grow).
+
+**Recommended ladder**: `n ∈ {2, 5, 10, 25, 100}` per family
+(`Jn`, `Yn`, `In`, `Kn`). Five samples × four families = twenty
+new status TOML files at slice p1.35 (plus the existing Jn_5 row
+which keeps its data). The ladder spans:
+
+- `n = 2`: smallest non-trivial parametric order; close to the
+  J_0/J_1, Y_0/Y_1, I_0/I_1, K_0/K_1 fixed-order kernels in regime
+  but exercises the parametric path.
+- `n = 5`: existing pin point (Jn_5 stays); moderate
+  Miller-recurrence regime for J/I.
+- `n = 10`: deeper Miller regime; the sum-rule normalization for
+  I exercises more terms.
+- `n = 25`: stress on the recurrence's amplification factor and
+  the asymptotic regime's near-order-equality with x crossover.
+- `n = 100`: large-order regime; the order-asymptotic forms (Debye
+  expansion DLMF 10.19, 10.40) take over and the cross-tie
+  Wronskian identity verification stresses the cross-oracle
+  agreement.
+
+**Wall-clock cost estimate**: each TOML row's sweep at 65536 f32
+inputs × 5 rounding modes = 327680 evaluations. At ~1 ms per
+evaluation (pfloat's per-kernel cost at higher orders is dominated
+by the recurrence depth, which grows linearly in n), a single
+TOML row's sweep takes ~5-10 minutes wall-clock. Twenty new rows
+× 7.5 min average ≈ 2.5 hours of sweep wall-clock for slice p1.35.
+Parallelizable across cores. The cost is dominated by the per-input
+verifier call (the kernel itself is microseconds); the actual
+sweep wall-clock is dominated by the harness, not the kernel
+arithmetic.
+
+**Alternative considered**: `n ∈ {2, 5, 10, 25, 50, 100}` (six
+samples) adds the 50-order point for finer Miller-recurrence
+coverage between 25 and 100. The marginal coverage gain is small
+(the 25→50→100 transition is smooth, no qualitative regime
+change). Recommended LADDER stays at five samples; the audit's
+worked-numeric-example field for each Bessel-family entry can
+document the per-N regime boundaries if a future user needs the
+finer grid.
+
+**Alternative rejected**: `n ∈ {2, 5, 10}` only (three samples).
+Misses the large-order regime where the Debye expansion takes
+over and the Wronskian cross-tie's amplification grows. The v1.0
+strong claim covers the parametric surface; a three-sample ladder
+does not adequately exercise the regime variety.
+
+Final pin at slice p1.35: `docs/v1.0-surface.md` updates the
+"Bessel (12 fixed-order entries)" section to record the parametric
+N-ladder = `{2, 5, 10, 25, 100}` per family.
 
 ## Deferred from v1.0 surface (one-line entries; no audit work)
 
