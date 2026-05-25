@@ -928,20 +928,345 @@ estimate: 1-2 days.
 
 ## Family p1.29 (1f.7): Gamma family
 
-**AUDIT TBD** — populated in slice p1.22 next session. Kernels:
-`gamma`, `digamma`, `beta`. **Inter-family dependency**: gamma's
-reflection branch composes through `sin`, which must already be
-five-mode correct (family p1.26 lands first). beta sign/pole math
-per ADR-0030 stands; the case-4 algorithm cost fix (ADR-0030
-addendum, slice 8a.4c) stays. digamma special cases per existing
-kernel.
+### gamma
+
+- **Source**: `src/math/gamma.rs:78-149` (+ `gamma_sign_of` at
+  `:156-`).
+- **Status today**: NOT Ziv-wrapped. Fixed-guard composition
+  `sign · exp(lgamma(x))`.
+- **eval(w) shape**: special cases (NaN, ±0 → ±∞+DIV_BY_ZERO,
+  negative integer pole → NaN+INVALID, +∞ → +∞, −∞ → NaN+INVALID).
+  Positive-integer exact fast path: gamma(n) = (n−1)! when it fits
+  in target precision. General path at working_prec = min(target +
+  64, target + 512): ln_abs_gamma = lgamma_round(x, working_prec, NE)
+  (Ziv-driven internally per the already-Ziv cohort); abs_gamma =
+  exp(ln_abs_gamma) (Ziv-driven); result_sign = gamma_sign_of(x,
+  working_prec) (composes sin(πx) for x < 0 non-integer); apply
+  sign; round to target under mode. The lgamma+exp composition's
+  errors are bounded by ≤ 2·2^−working_prec absolute on the
+  positive-x path, well under ZIV_ERROR_GUARD.
+- **Cancellation regimes**: x near non-positive integers — handled
+  by special-case dispatch before eval(w). x where sin(πx) is near
+  zero (negative non-integer near a pole) — gamma_sign_of's sign
+  determination depends on `sin(πx)`'s sign, NOT its magnitude;
+  the binary sign is robust away from the pole (where the
+  negative-integer special case takes over). No
+  collapse-to-exact-zero: positive-x branch has lgamma finite,
+  exp finite-and-positive; negative-non-integer branch composes the
+  same with a known-correct sign. Positive-integer exact fast path
+  returns (n−1)! when it fits, which is exact and non-zero.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap. eval(w) =
+  the existing composition at working precision w. The positive-
+  integer exact fast path stays before Ziv (returns the factorial
+  at target precision under mode, exact for n−1)! ≤ target ULP). The
+  gamma_sign_of call stays inside eval(w) at working precision w,
+  but since it returns only a Sign enum (not a BigFloat), it
+  doesn't participate in the Ziv interval test directly; the sign
+  is applied AFTER the magnitude is rounded.
+- **Cited spec**: DLMF 5.2 (poles and residues), 5.5.3 (reflection
+  for sign), 5.7-5.11 (Stirling); IEEE 754-2019 §9.4 gamma.
+- **Oracle coverage**: MPFR-primary (mpfr_gamma).
+- **Estimated Ziv iterations at cap**: 1-3. Near gamma's zeros
+  (which on the positive reals don't exist — gamma > 0 everywhere
+  positive; on the negative reals there are no zeros either, just
+  the alternating-sign minima between poles) the magnitude doesn't
+  amplify the rounding mode boundary the way trigonometric kernels
+  do. Most inputs converge in 1-2 iterations.
+- **Worked example**: `gamma(5) = 24` (exact via the positive-integer
+  fast path); `gamma(0.5) = √π ≈ 1.7724539…`; `gamma(−0.5) = −2√π
+  ≈ −3.5449077…` (sign from gamma_sign_of: sin(−π/2) < 0 negates
+  the positive |gamma(−0.5)|).
+- **Migration commit shape**: 1 commit (kernel wrap; the positive-
+  integer fast path and gamma_sign_of helper stay; unit tests pin
+  against mpmath at positive integers, half-integers, and a near-
+  pole negative-non-integer to exercise the sign path).
+
+### digamma
+
+- **Source**: `src/math/digamma.rs:70-195` (+ `z_min_for_target` at
+  `:201-`).
+- **Status today**: NOT Ziv-wrapped. Multi-branch fixed-guard.
+- **eval(w) shape**: special cases (NaN, ±0 → −∞+DIV_BY_ZERO,
+  negative integer pole → −∞+DIV_BY_ZERO, +∞ → +∞, −∞ → NaN+INVALID).
+  General path at working_prec = min(target + 64, target + 512).
+  **Negative non-integer branch**: reflection ψ(x) = ψ(1−x) − π·cot(πx);
+  computes π, x, sin(πx), cos(πx), cot = cos/sin, π·cot, and the
+  recursive digamma_round(1−x, working_prec, NE); subtracts. **Positive
+  branch**: regime dispatch on x's exponent against z_min_for_target
+  (target=53 yields z_min=64 roughly). For x ≥ z_min: direct
+  stirling_digamma(x, working_prec). For 0 < x < z_min: shift by n
+  = z_min − approx_x via the recurrence ψ(x) = ψ(x+n) − Σ_{k=0}^{n−1}
+  1/(x+k); stirling_digamma on the shifted argument.
+- **Cancellation regimes**: x near positive integer where ψ(x) = 0
+  + small (e.g., ψ(1) = −γ ≈ −0.5772, ψ(2) = 1 − γ ≈ 0.4228) — no
+  cancellation; the recurrence shift gives a well-conditioned
+  result. Negative non-integer near a pole — the π·cot(πx) term has
+  sin(πx) → 0, so cot blows up; the negative-integer special case
+  handles the exact pole, but x slightly off-integer gives a large
+  finite cot. The subtraction ψ(1−x) − π·cot(πx) doesn't cancel
+  because the two terms have different magnitudes near the pole
+  (ψ(1−x) ≈ ψ(large) ≈ ln(large), while π·cot is large; the
+  divergence comes from π·cot, not from cancellation). No
+  collapse-to-exact-zero on the documented domain.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with the
+  full branch dispatch inside eval(w). The recursive digamma_round
+  call in the reflection branch needs careful handling: it routes
+  through the positive branch (since 1−x > 1 when x < 0), so it
+  doesn't recurse indefinitely. The recursive call's mode is NE at
+  working_prec; the outer Ziv envelope drives the final mode.
+- **Cited spec**: DLMF 5.5 (digamma); 5.11 (asymptotic series); the
+  shift-recurrence form (Higham §16.3) and the reflection
+  ψ(1−x) − ψ(x) = π·cot(πx) (DLMF 5.5.4).
+- **Oracle coverage**: MPFR-primary (mpfr_digamma).
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `digamma(1) = −γ ≈ −0.5772156649…`;
+  `digamma(2) = 1 − γ ≈ 0.4227843350…`; the recurrence
+  `ψ(x+1) = ψ(x) + 1/x` checks against `ψ(2) − ψ(1) = 1` exactly.
+- **Migration commit shape**: 1 commit. Unit tests pin against
+  mpmath at integer points (1, 2, 10), half-integers, and a
+  near-pole negative-non-integer (e.g. −0.5 + 2^−40) to exercise
+  the reflection path's large-cot magnitude regime.
+
+### beta
+
+- **Source**: `src/math/beta.rs:1-60` (header + impl signature). The
+  case 4 O(1) factorial form per ADR-0030 / slice 8a.4c stays.
+- **Status today**: NOT Ziv-wrapped. Multi-arg via composition
+  `sign · exp(lgamma(a) + lgamma(b) − lgamma(a+b))` with full
+  negative-domain case dispatch per ADR-0030.
+- **eval(w) shape**: extensive special-case dispatch (NaN, infinite
+  operands, both operands in Zle = {0, −1, −2, …}, a+b ∈ Zle with
+  one operand negative integer and the other positive integer →
+  the case 4 (−1)^m (m−1)!(n−m)!/n! evaluated through lgamma of
+  three positive-integer factorials, case 4 O(1) closed form per
+  ADR-0030 case-4 algorithm-cost lesson). General finite path at
+  working_prec = max(a.prec, b.prec) + 64: compute ln_a =
+  lgamma(a), ln_b = lgamma(b), ln_apb = lgamma(a+b) under NE
+  (each Ziv-driven internally); ln_beta = ln_a + ln_b − ln_apb;
+  abs_beta = exp(ln_beta); sign = product of three gamma_sign_of
+  calls; apply sign; round to target under mode.
+- **Cancellation regimes**: a+b near non-positive integer where
+  lgamma diverges; handled by the a+b ∈ Zle special case. a+b such
+  that lgamma(a) + lgamma(b) ≈ lgamma(a+b) (which happens generally
+  — the gamma identity (a+b−1)!/((a−1)!(b−1)!) = (a+b−1)·…·a·1/b!
+  approximately, with logarithmic terms canceling at scale) —
+  there's cancellation in the ln_beta computation, but the magnitude
+  of ln_beta itself is small (order ~ln(target)) so working_prec +
+  64 is sufficient. The case-4 O(1) factorial form per ADR-0030
+  closed-form lessons stays unchanged.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with a
+  multi-arg eval closure that captures both a and b. The Ziv
+  driver's single-u32 eval signature is unchanged; the closure
+  captures both BigFloats. The full ADR-0030 case dispatch stays
+  before Ziv (special cases return exact values at target precision
+  under mode; only the case-1 finite general path enters eval(w)).
+- **Cited spec**: ADR-0030 (the negative-domain extension);
+  DLMF 5.12 (beta); 5.5.3 (reflection for sign); 5.2 (poles and
+  residues).
+- **Oracle coverage**: differential against MPFR (no f32 sweep;
+  multi-arg defers per docs/v1.0-surface.md); property + worst-case
+  vectors at p1.36 multi-arg confirmation.
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `beta(2, 3) = 1/12` (exact via positive-integer
+  composition); `beta(0.5, 0.5) = π` (mathematically); `beta(−10, 4)
+  = 1/840` (case-4 closed form per ADR-0030 hand-derivation pin).
+- **Migration commit shape**: 1 commit. The ADR-0030 case dispatch
+  is preserved unchanged; unit tests stay green (the
+  beta_case4_factorial_exact_rational test and the
+  beta_case4_large_m_terminates DoS-prevention test from slice
+  8a.4c).
+
+### Family p1.29 ADR posture
+
+Three kernels, all drop-in `ziv_round` wraps. INTER-FAMILY
+DEPENDENCY: gamma_sign_of for negative non-integer x calls sin(πx)
+for sign determination; the SIGN is binary-stable away from poles,
+so this is a soft dependency on p1.26 (sin), not a strict
+prerequisite. The recursive digamma_round call in the reflection
+branch routes to the positive branch (no infinite recursion). beta
+preserves the ADR-0030 case dispatch and the case-4 O(1) closed
+form unchanged. No per-family ADR needed; the three kernel doc
+comments record the five-mode claim. Slice p1.29 commit shape:
+3 kernel-migration commits + 1 differential-lane-widening (gamma,
+digamma single-arg) + 1 status-TOML-row update + 1
+caveats-§1-narrowing + 1 doc-comment-qualifier = 7 commits. beta's
+multi-arg lane confirmation moves to slice p1.36. Wall-clock
+estimate: 4-5 days (digamma's multi-branch dispatch needs the most
+unit-test pinning).
 
 ## Family p1.30 (1f.8): Integrals
 
-**AUDIT TBD** — populated in slice p1.22 next session. Kernels:
-`Ei`, `Si`, `Ci`, `li`. Expected cancellation regimes: asymptotic
-branches of each. `li(x) = Ei(ln(x))` composition stays. Slice
-p1.6 li-at-+0 exact-bracket handling preserved.
+### Ei (exponential integral)
+
+- **Source**: `src/math/ei.rs:1-80` (header + impl signature).
+- **Status today**: NOT Ziv-wrapped. Two-regime fixed-guard.
+- **eval(w) shape**: special cases (NaN, ±0 → −∞+DIV_BY_ZERO,
+  +∞ → +∞, −∞ → −0). Regime dispatch on |x|'s binary exponent
+  against an erf-style asymptotic threshold. **Small |x|**:
+  convergent series `Ei(x) = γ + ln|x| + Σ_{k≥1} x^k/(k·k!)` with
+  working precision boosted by ≈ |x|·log₂ e to absorb the
+  alternating cancellation that dominates for x < 0 (the terms
+  alternate while Ei(x) → 0⁻). **Large |x|**: divergent asymptotic
+  `Ei(x) ∼ (e^x/x) · Σ_{k≥0} k!/x^k` summed to smallest term
+  (optimal truncation near k ≈ |x|). Both regimes use γ (the
+  Euler-Mascheroni constant from `euler_gamma_at`).
+- **Cancellation regimes**: small x < 0 — alternating series whose
+  partial sums lose bits as Ei(x) crosses zero between consecutive
+  partial sums. The existing |x|·log₂ e working-precision boost
+  recovers the lost bits (for x = −1, ~1.5 extra bits; for x =
+  −10, ~14 extra bits). For x near 0, Ei → −∞; the +0 special
+  case handles the exact pole. **No collapse-to-exact-zero on the
+  finite-x path**: the partial-sum cancellation is bounded by the
+  boost; the result is a well-defined finite value at working
+  precision.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with regime
+  dispatch and cancellation boost preserved inside eval(w) per the
+  erfc precedent. The inner ln|x|, e^x calls are Ziv-driven from
+  earlier cohort migrations (correctly rounded under NE at working
+  precision); the outer Ziv envelope drives the rounding mode.
+- **Cited spec**: DLMF 6.2 (definition), 6.6.2 (convergent
+  series), 6.12.2 (asymptotic).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for Ei in
+  the public f32 sweep; the existing `differential_ei` runs
+  against MPFR's mpfr_eint via the bindings).
+- **Estimated Ziv iterations at cap**: 1-3. Near Ei's positive
+  zero at x ≈ 0.3725 (`Ei(x) = 0` for x ≈ 0.37250741…) the
+  amplification |f'/f| could push to 3-4 iterations on
+  pathological inputs; the cap accommodates this.
+- **Worked example**: `Ei(1) ≈ 1.8951178…`; `Ei(−1) ≈ −0.2193839…`
+  (small-x series with cancellation boost); `Ei(10) ≈ 2492.2289…`
+  (asymptotic).
+- **Migration commit shape**: 1 commit.
+
+### Si (sine integral)
+
+- **Source**: `src/math/si.rs:1-60` (header + impl signature). The
+  auxiliary functions `si_ci_f` / `si_ci_g` and the shared
+  `asymptotic_threshold_exponent` live in this file too.
+- **Status today**: NOT Ziv-wrapped. Two-regime fixed-guard, odd
+  function computed on |x| with sign reapplied.
+- **eval(w) shape**: special cases (NaN, ±0 → ±0, ±∞ → ±π/2).
+  Regime dispatch on |x|. **Small |x|**: convergent alternating
+  series `Si(x) = Σ_{k≥0} (−1)^k x^(2k+1)/((2k+1)·(2k+1)!)` with
+  working precision boosted by ≈ |x|·log₂ e for the alternating
+  cancellation. **Large |x|**: auxiliary-function form `Si(x) =
+  π/2 − f(x)·cos(x) − g(x)·sin(x)` with f, g the shared asymptotic
+  auxiliaries `si_ci_f`/`si_ci_g`, summed to their smallest term.
+  Sign reapplied (Si is odd).
+- **Cancellation regimes**: large |x| where Si(x) oscillates near
+  ±π/2 — the asymptotic composition π/2 − f·cos − g·sin can
+  cancel near the oscillation peaks (where Si(x) ≈ π/2 + small
+  oscillation), but the magnitude of (f·cos + g·sin) is bounded
+  by O(1/x) so the residual `π/2 − (π/2 ± O(1/x))` retains target
+  precision. Small |x| alternating cancellation absorbed by the
+  boost. No collapse-to-exact-zero: Si is entire and its zeros
+  are isolated points (the first positive zero is at x = π);
+  Si(π) ≈ 1.8519, not zero; Si has no real zeros.
+  Wait — Si(x) ≠ 0 for any real x ≠ 0, because Si is monotonic
+  increasing... actually let me re-check: Si(x) approaches π/2
+  oscillating; it crosses through π/2 at certain points but isn't
+  zero. Si(0) = 0 is the only zero, handled by the Zero special
+  case.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with regime
+  dispatch and cancellation boost preserved inside eval(w). Inner
+  sin, cos calls are Ziv-driven after p1.26 lands (or
+  faithful-within-1-ULP under NE before, still under the Ziv error
+  guard). SOFT inter-family dependency on p1.26 for the asymptotic
+  regime's sin/cos composition.
+- **Cited spec**: DLMF 6.2 (definition), 6.6.5 (convergent series),
+  6.12.3 (asymptotic).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for Si).
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `Si(1) ≈ 0.9460830…`; `Si(π) ≈ 1.8519370…`
+  (close to the global max ≈ 1.8519+); `Si(10) ≈ 1.6583470…`
+  (asymptotic regime).
+- **Migration commit shape**: 1 commit.
+
+### Ci (cosine integral)
+
+- **Source**: `src/math/ci.rs:1-60` (header + impl signature).
+- **Status today**: NOT Ziv-wrapped. Two-regime fixed-guard.
+- **eval(w) shape**: special cases (NaN, +0 → −∞+DIV_BY_ZERO,
+  +∞ → +0, x ≤ 0 → NaN+INVALID since Ci(-x) = Ci(x) - iπ is
+  complex). Regime dispatch on x. **Small x**: convergent
+  alternating series `Ci(x) = γ + ln(x) + Σ_{k≥1} (−1)^k
+  x^(2k)/((2k)·(2k)!)` with working precision boost. **Large x**:
+  auxiliary-function form `Ci(x) = f(x)·sin(x) − g(x)·cos(x)`
+  using the shared si_ci_f/si_ci_g (no π/2 baseline like Si).
+- **Cancellation regimes**: x near zeros of Ci (the first positive
+  zero is x ≈ 0.6165) — the small-x branch's series and the
+  large-x branch's f·sin − g·cos can both have cancellation near
+  zero-crossings. The +0 special case handles the divergent end.
+  No collapse-to-exact-zero on the small-x branch (the γ + ln(x)
+  baseline is non-zero for any positive x ≠ 1; Ci(1) = γ + 0 + Σ…
+  = γ - 1/2·1/2 + ... is non-zero anyway).
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap with regime
+  dispatch and cancellation boost preserved inside eval(w). SOFT
+  inter-family dependency on p1.26 for the asymptotic regime's
+  sin/cos.
+- **Cited spec**: DLMF 6.2 (definition), 6.6.6 (convergent series),
+  6.12.4 (asymptotic).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for Ci).
+- **Estimated Ziv iterations at cap**: 1-3. Near zeros of Ci (e.g.
+  x ≈ 0.6165, 3.3842, 6.4272, …) the amplification could push to
+  3-4 iterations.
+- **Worked example**: `Ci(1) ≈ 0.3374039…`; `Ci(π) ≈ 0.0736680…`;
+  `Ci(10) ≈ −0.0454564…`.
+- **Migration commit shape**: 1 commit.
+
+### li (logarithmic integral)
+
+- **Source**: `src/math/li.rs:1-60` (header + impl signature).
+- **Status today**: NOT Ziv-wrapped. Composition `li(x) = Ei(ln(x))`
+  at boosted working precision.
+- **eval(w) shape**: special cases (NaN, +0 → +0 with no flag (the
+  defining integral over the empty interval; slice p1.6 fix), x = 1
+  → −∞+DIV_BY_ZERO, +∞ → +∞, x ≤ 0 → NaN+INVALID). Slice p1.6's
+  li-at-zero exact-bracket handling stays: the verifier's pinned-
+  corpus entry for li(+0) = 0 certifies via the worker skipping the
+  ±1 mantissa-unit padding when rad == 0. General path: t = ln(x)
+  at working_prec; result = Ei(t) at working_prec; round to target
+  under mode.
+- **Cancellation regimes**: x near 1 — t = ln(1) = 0, Ei(0) = -∞;
+  the x=1 special case handles the pole. x near li's positive
+  zero at x ≈ 1.4514 (where li(x) = 0) — the ln(x) → 0.3725
+  approximately, and Ei(0.3725) ≈ 0; the existing kernel boosts
+  the inner Ei call's working precision sufficiently. The
+  cancellation in Ei's small-x branch on the inner result handles
+  this. Cross-cancellation between ln and Ei is bounded by the
+  composition's working_prec boost.
+- **Per-regime Ziv strategy**: drop-in `ziv_round` wrap. eval(w) =
+  Ei(ln(x), w) at working precision w. Inner ln is Ziv-driven from
+  the cohort; inner Ei is Ziv-driven after this family's migration
+  (within slice p1.30 itself; ordering inside the slice: Ei first,
+  then li). The slice p1.6 li-at-zero exact-bracket handling
+  stays unchanged at the harness level (not in the kernel).
+- **Cited spec**: DLMF 6.2.8 (li = Ei∘ln definition).
+- **Oracle coverage**: Arb-primary (no MPFR primitive for li).
+- **Estimated Ziv iterations at cap**: 1-3.
+- **Worked example**: `li(2) ≈ 1.0451637…`; `li(10) ≈ 6.1655599…`;
+  `li(1.4514) ≈ 0` (the Ramanujan-Soldner constant, the unique
+  positive zero of li).
+- **Migration commit shape**: 1 commit.
+
+### Family p1.30 ADR posture
+
+Four kernels; Ei, Si, Ci are independent two-regime drop-ins; li
+composes through Ei within the same slice. SOFT inter-family
+dependency: Si and Ci's asymptotic regime composes through sin/cos
+which become five-mode-correct after p1.26 lands, but the
+fixed-guard NE sin/cos already meets ZIV_ERROR_GUARD so the family
+is not strictly blocked. The slice p1.6 li-at-+0 exact-bracket
+handling stays at the harness level. No per-family ADR needed.
+Slice p1.30 commit shape: 4 kernel-migration commits + 1
+differential-lane-widening (Ei, Si, Ci, li) + 1 status-TOML-row
+update + 1 caveats-§1-narrowing + 1 doc-comment-qualifier = 8
+commits. Ordering inside the slice: Ei migrates before li (li
+depends on Ei). Wall-clock estimate: 4-5 days (the asymptotic
+auxiliary functions' truncation analysis needs care; the
+cross-oracle agreement between Arb and mpmath on the alternating-
+series cancellation regime deserves a directed-mode property
+test).
 
 ## Family p1.31 (1f.9): Airy
 
