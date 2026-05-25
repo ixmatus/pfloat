@@ -75,9 +75,22 @@ proptest! {
     }
 
     /// Precision self-consistency: Ai at p agrees with Ai at p+48
-    /// rounded to p.
+    /// rounded to p. The argument is an exact dyadic rational
+    /// (denominator a power of two) so both precisions evaluate the
+    /// *same* real point — a non-dyadic argument would differ in its
+    /// low bits between the two precisions, and near a zero of Ai
+    /// (the first at x ≈ −2.338) that argument mismatch is amplified
+    /// by |Ai′/Ai| into a spurious failure even at the loose
+    /// `p − 12` tolerance (the property of the test construction the
+    /// pf-ok9 lesson identifies, also encoded in
+    /// `property_yn::self_consistent`, `property_ik::self_consistent`,
+    /// `property_zeta::self_consistent`, and
+    /// `property_jn::self_consistent` per ADR-0036).
     #[test]
-    fn ai_self_consistent(num in -10i64..=10, den in 1i64..=3) {
+    fn ai_self_consistent(
+        num in -10i64..=10,
+        den in prop_oneof![Just(1i64), Just(2), Just(4)],
+    ) {
         let p = 80u32;
         let x_lo = rat(num, den, p);
         let x_hi = rat(num, den, p + 48);

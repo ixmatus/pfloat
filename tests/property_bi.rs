@@ -56,9 +56,23 @@ proptest! {
     }
 
     /// Precision self-consistency: Bi at p agrees with Bi at p+48
-    /// rounded to p.
+    /// rounded to p. The argument is an exact dyadic rational
+    /// (denominator a power of two) so both precisions evaluate the
+    /// *same* real point — a non-dyadic argument would differ in its
+    /// low bits between the two precisions, and near a zero of Bi
+    /// (the first at x ≈ −1.174) that argument mismatch is amplified
+    /// by |Bi′/Bi| into a spurious failure even at the loose
+    /// `p − 12` tolerance (the property of the test construction the
+    /// pf-ok9 lesson identifies, also encoded in
+    /// `property_yn::self_consistent`, `property_ik::self_consistent`,
+    /// `property_zeta::self_consistent`,
+    /// `property_jn::self_consistent`, and
+    /// `property_ai::ai_self_consistent` per ADR-0036).
     #[test]
-    fn bi_self_consistent(num in -10i64..=10, den in 1i64..=3) {
+    fn bi_self_consistent(
+        num in -10i64..=10,
+        den in prop_oneof![Just(1i64), Just(2), Just(4)],
+    ) {
         let p = 80u32;
         let lo_x = {
             let n = BigFloat::try_from_i64_exact(num, p).unwrap();
