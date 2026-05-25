@@ -557,15 +557,20 @@ sections that read against the renumbered phase plan.
   passed-context `Status` form is correct by construction but
   noisier in the API. Decided in ADR-0007; revisit if the noise
   hurts adoption.
-- `property_jn`'s `self_consistent` check reconstructs its argument
-  at two precisions and can spuriously fail when that argument is
-  not a power of two: near a zero of `J_n` the amplification
-  `|f'/f|` turns the small reconstruction mismatch between
-  precision `p` and `p + 96` into a visible divergence.
-  `property_yn` carried the identical shape and was given a dyadic
-  argument at slice 6p.7. `property_jn` has not tripped in CI and
-  ships as is for 1.0 (pf-ok9); the fix, when it lands, is the same
-  one-line change to a power-of-two denominator.
+- `property_jn`'s `self_consistent` check reconstructed its
+  argument at two precisions and spuriously failed when that
+  argument was not a power of two: near a zero of `J_n` the
+  amplification `|f'/f|` turned the small reconstruction mismatch
+  between precision `p` and `p + 96` into a visible divergence.
+  `property_yn`, `property_ik`, and `property_zeta` had carried the
+  identical shape and received the dyadic mitigation at slice 6p.7
+  (the pf-ok9 lesson). **Closed by ADR-0036 (slice pf-jn1y,
+  2026-05-24):** `property_jn` adopts the same dyadic constraint.
+  **Extended by slice pf-06sw (2026-05-24):** the same fix lands on
+  `property_ai` and `property_bi` (the `bi` test had inlined the
+  rat() body so the original audit missed it). All five
+  cross-precision property tests in the suite now constrain their
+  argument to dyadic denominators uniformly.
 
 ## References
 

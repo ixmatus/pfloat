@@ -1,7 +1,18 @@
 # ADR-0034: Oracle layer for the Phase 1 exhaustive `f32` sweep
 
-- **Status**: accepted
+- **Status**: accepted; protocol refined by ADR-0035
 - **Date**: 2026-05-23
+
+**Refined by ADR-0035 (slice p1.7, 2026-05-22).** The MPFR backend
+and the `Enclosure`/`OracleBackend` abstraction this ADR specifies
+both stand. ADR-0035 changes the worker-side protocol: each oracle
+worker now reports the certified `f32` bit pattern directly rather
+than an interval that the Rust verifier collapses, which closed a
+class of bracket-collapse defects the original protocol could not
+detect, and the architecture moved to three independent oracles
+(Arb, mpmath as Tier 2 cross-check, Maxima as Tier 6 sampling).
+The Rust trait surface this ADR defines is unchanged; only the
+worker contract behind it is.
 
 ## Context
 

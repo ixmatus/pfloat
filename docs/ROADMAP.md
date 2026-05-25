@@ -146,7 +146,9 @@ the warning against the opposite approach.
 
 ## Currently in flight
 
-pfloat Phase 1 (the correctness sweep) is in flight. In-repo
+pfloat Phase 1 (the correctness sweep) is complete; slice 8c (the
+v1.0 tag and `cargo publish`) is the next active unit, blocked by
+pf-xyaq (the CI matrix widening described below). In-repo
 Phase 8 slice 8b shipped the foundational artifacts (the
 conformance-evidence script and CI gate, the disclosure-correction
 diff for the eventual v1.0 tag, the CORE-MATH-sourced L-M
@@ -366,6 +368,29 @@ cleanup. ADR-0032 (libm reciprocal and root kernels stay direct
 primary, not aliased) and ADR-0033 (this re-sequencing) are the
 two Phase 1 / Phase 2 discrete decisions discharged so far.
 Phase 2 and beyond remain queued.
+
+After ADR-0035 closed, three follow-up slices ran. **pf-jn1y**
+(ADR-0036, 2026-05-24) corrected `property_jn::self_consistent`
+to use a dyadic-denominator argument, the pf-ok9 lesson already
+encoded in `property_yn`/`property_ik`/`property_zeta`: the kernel
+was always correctly rounded (the oracle status row certifies it
+across 65536 inputs); the test had treated `rat(num,den,p)` and
+`rat(num,den,p+96)` as the same value when the rounding makes them
+differ. **pf-cvs** (ADR-0037, 2026-05-24) attempted the
+`SmallVec<[u64; 4]>` inline-storage swap ADR-0028 had recommended
+for `Class::Normal::mantissa` and `Class::Nan::payload`, measured
+the result, and rejected the change per strict revert stop-loss:
+`SmallVec::from_vec` is heap-ownership transfer not relocation, so
+the destination-field swap saves zero allocations (1.25x / 1.003x
+/ 1.15x on the three measured kernels against the 2x land bar).
+pfloat retains its zero-runtime-deps posture. **pf-06sw**
+(2026-05-24) extended the pf-jn1y dyadic fix to `property_ai` and
+`property_bi`, which had carried the same latent bug under a
+looser tolerance. All five cross-precision property tests now
+uniformly encode the constraint. The next active unit is
+**pf-xyaq**: widen CI to gate the full feature-union integration
+run, the gap that let the property-test bug class sit unsurfaced;
+it blocks slice 8c so v1.0 ships with the wider gate in place.
 
 ## Related
 
