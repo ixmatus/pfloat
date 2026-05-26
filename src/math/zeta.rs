@@ -689,4 +689,180 @@ mod tests {
         let x = BigFloat::try_from_i64_exact(2, 53).unwrap();
         assert!(x.zeta_round(0, RoundingMode::NearestEven).is_err());
     }
+
+    // ---- FE-branch constituent diagnostic probe ------------------
+    //
+    // Investigation gate for the `differential_zeta` p=1024 failure
+    // on ζ(-1/2). The differential lane reports a ~100-bit residual
+    // between pfloat and MPFR; the prior multi-precision probe
+    // showed bit-exact agreement at p ∈ {53, 113, 256, 512}. The
+    // boundary is the FE branch's working precision (target + 96 =
+    // 1120 at target=1024) crossing the 1024-bit `PI_LIMBS_1024`
+    // table cap, forcing fallback to `agm_constants::pi_via_agm`.
+    // This probe pins the constituents at working precision and
+    // emits each per-step comparison.
+
+    /// Print bit-position of disagreement (or "agree") for each FE
+    /// constituent at p=1120. Compile-gated on unix because the
+    /// `rug` dev-dependency is unix-only in `Cargo.toml`.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "diagnostic only; un-ignore to investigate the FE branch divergence"]
+    fn diag_zeta_neg_half_fe_constituents_p1024() {
+        use core::cmp::Ordering;
+
+        use rug::float::Round;
+        use rug::ops::Pow as _;
+        use rug::Float;
+
+        use crate::math::pi_at;
+
+        let target: u32 = 1024;
+        let working: u32 = target + 96;
+
+        fn report(label: &str, working: u32, pf: &BigFloat, rg: &Float) {
+            // Bit-exact construction of rug::Float from pfloat
+            // BigFloat. Mirrors `tests/differential/mod.rs::bigfloat_to_rug`
+            // inline because that helper lives in the dev-test
+            // crate tree, not in src/.
+            let pf_as_rug: Float = match &pf.class {
+                Class::Zero { sign } => {
+                    let mut f = Float::with_val(pf.precision, 0);
+                    if matches!(sign, Sign::Negative) {
+                        f = -f;
+                    }
+                    f
+                }
+                Class::Infinity { sign } => {
+                    let mut f = Float::with_val(
+                        pf.precision,
+                        rug::float::Special::Infinity,
+                    );
+                    if matches!(sign, Sign::Negative) {
+                        f = -f;
+                    }
+                    f
+                }
+                Class::Nan { .. } => Float::with_val(
+                    pf.precision,
+                    rug::float::Special::Nan,
+                ),
+                Class::Normal {
+                    sign,
+                    exponent,
+                    mantissa,
+                } => {
+                    let int = rug::Integer::from_digits(
+                        mantissa,
+                        rug::integer::Order::Lsf,
+                    );
+                    let mut f = Float::with_val(pf.precision, &int);
+                    let stored_bits = (mantissa.len() as i64) * 64;
+                    let shift: i64 = exponent + 1 - stored_bits;
+                    let mut remaining = shift;
+                    while remaining != 0 {
+                        let step = if remaining >= 0 {
+                            remaining.min(i64::from(i32::MAX)) as i32
+                        } else {
+                            remaining.max(i64::from(i32::MIN)) as i32
+                        };
+                        f <<= step;
+                        remaining -= i64::from(step);
+                    }
+                    if matches!(sign, Sign::Negative) {
+                        f = -f;
+                    }
+                    f
+                }
+            };
+
+            let agree = pf_as_rug == *rg;
+            if agree {
+                eprintln!("{label:36} p={working:5}  AGREE");
+            } else {
+                let diff =
+                    Float::with_val(working + 64, &pf_as_rug - rg);
+                let value_exp: i64 = rg.get_exp().unwrap_or(0).into();
+                let diff_exp: i64 = diff.get_exp().unwrap_or(0).into();
+                let bits_agree =
+                    i64::from(working) - 1 - (diff_exp - value_exp);
+                eprintln!(
+                    "{label:36} p={working:5}  DIFFER bits-of-agreement={bits_agree}"
+                );
+            }
+        }
+
+        // π at working precision: pfloat via pi_at(1120) (AGM path
+        // since 1120 > 1024), MPFR via Constant::Pi.
+        let pi_pf = pi_at(working);
+        let pi_rg = Float::with_val(working, rug::float::Constant::Pi);
+        report("pi_at(working)", working, &pi_pf, &pi_rg);
+
+        // Also: the leading 1024 bits of pi_pf should match the
+        // static PI_LIMBS_1024 table (which is multiply-pinned).
+        let pi_at_table_prec = pi_at(1024);
+        let pi_rg_at_table_prec =
+            Float::with_val(1024, rug::float::Constant::Pi);
+        report(
+            "pi_at(1024) — table path",
+            1024,
+            &pi_at_table_prec,
+            &pi_rg_at_table_prec,
+        );
+
+        // sin(-π/4) at working.
+        let neg_one = BigFloat::try_from_i64_exact(-1, working).unwrap();
+        let two = BigFloat::try_from_i64_exact(2, working).unwrap();
+        let (sw, _) = neg_one.div(&two, RoundingMode::NearestEven);
+        let (pi_s, _) = pi_pf.mul(&sw, RoundingMode::NearestEven);
+        let (arg, _) = pi_s.div(&two, RoundingMode::NearestEven);
+        let (sin_pf, _) = arg.sin(RoundingMode::NearestEven);
+
+        let sw_rg = Float::with_val(working, -1) / Float::with_val(working, 2);
+        let pi_s_rg = Float::with_val(working, &pi_rg * &sw_rg);
+        let arg_rg = pi_s_rg / Float::with_val(working, 2);
+        let sin_rg = Float::with_val_round(working, arg_rg.sin_ref(), Round::Nearest).0;
+        report("sin(-π/4)", working, &sin_pf, &sin_rg);
+
+        // Γ(3/2) at working.
+        let one = BigFloat::try_from_i64_exact(1, working).unwrap();
+        let (one_minus_s, _) = one.sub(&sw, RoundingMode::NearestEven);
+        let (gamma_pf, _) = one_minus_s.gamma(RoundingMode::NearestEven);
+        let one_minus_s_rg = Float::with_val(working, 1) - sw_rg.clone();
+        let gamma_rg = Float::with_val_round(
+            working,
+            one_minus_s_rg.gamma_ref(),
+            Round::Nearest,
+        )
+        .0;
+        report("Γ(3/2)", working, &gamma_pf, &gamma_rg);
+
+        // (2π)^(-3/2) at working.
+        let (two_pi_pf, _) = two.mul(&pi_pf, RoundingMode::NearestEven);
+        let (s_minus_1, _) = sw.sub(&one, RoundingMode::NearestEven);
+        let (pow_pf, _) = two_pi_pf.pow(&s_minus_1, RoundingMode::NearestEven);
+        let two_pi_rg = Float::with_val(working, 2) * &pi_rg;
+        let s_minus_1_rg = sw_rg - Float::with_val(working, 1);
+        let pow_rg = Float::with_val_round(
+            working,
+            (&two_pi_rg).pow(&s_minus_1_rg),
+            Round::Nearest,
+        )
+        .0;
+        report("(2π)^(-3/2)", working, &pow_pf, &pow_rg);
+
+        // ζ(3/2) at working (Borwein branch — recursive zeta call).
+        let (zeta_reflected_pf, _) =
+            one_minus_s.zeta(RoundingMode::NearestEven);
+        let zeta_reflected_rg = Float::with_val_round(
+            working,
+            one_minus_s_rg.zeta_ref(),
+            Round::Nearest,
+        )
+        .0;
+        report("ζ(3/2)", working, &zeta_reflected_pf, &zeta_reflected_rg);
+
+        // Suppress the unused-import warnings if all comparisons agree.
+        let _ = Ordering::Equal;
+    }
 }
