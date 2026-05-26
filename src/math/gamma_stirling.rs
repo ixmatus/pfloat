@@ -248,53 +248,20 @@ pub(super) fn spouge_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
     let (two_pi, _) = two.mul(&pi, RoundingMode::NearestEven);
     let (sqrt_2pi, _) = two_pi.sqrt(RoundingMode::NearestEven);
 
-    // S(z, a) = √(2π) + Σ_{k=1}^{a−1} c_k / (z+k).
-    //
-    // c_k computed via the log form: ln|c_k| = (k−1/2)·ln(a−k) +
-    // (a−k) − ln((k−1)!). Maintains a running `ln_factorial`
-    // (= ln((k−1)!)) so each step is one ln call (for ln(a−k))
-    // plus one exp call (for c_k = ±exp(ln|c_k|)) plus a handful
-    // of mul/div. The pow-with-fractional-exponent that the
-    // textbook formula suggests is avoided in favour of the ln/exp
-    // composition (cheaper on the BigFloat per-operation cost).
+    // S(z, a) = √(2π) + Σ_{k=1}^{a−1} c_k / (z+k). The c_k values
+    // depend only on (working_prec, a) and are memoized per
+    // working_prec; the per-call cost reduces to the partial-sum
+    // accumulation plus the leading-factor evaluation below.
+    let coefficients = spouge_coefficients(working_prec, a);
     let mut sum = sqrt_2pi;
-    let mut ln_factorial =
-        BigFloat::try_new_zero(crate::sign::Sign::Positive, working_prec).expect("precision >= 1"); // ln(0!) = 0
-    for k in 1u32..a {
-        let a_minus_k =
-            BigFloat::try_from_i64_exact(i64::from(a - k), working_prec).expect("precision >= 1");
-        let k_minus_half_int = BigFloat::try_from_i64_exact(i64::from(2 * k) - 1, working_prec)
-            .expect("precision >= 1");
-        let (k_minus_half, _) = k_minus_half_int.div(&two, RoundingMode::NearestEven);
-
-        // ln|c_k| = (k − 1/2)·ln(a − k) + (a − k) − ln((k − 1)!).
-        let (ln_a_minus_k, _) = a_minus_k.ln(RoundingMode::NearestEven);
-        let (term_a, _) = k_minus_half.mul(&ln_a_minus_k, RoundingMode::NearestEven);
-        let (term_b, _) = term_a.add(&a_minus_k, RoundingMode::NearestEven);
-        let (ln_c_k_abs, _) = term_b.sub(&ln_factorial, RoundingMode::NearestEven);
-
-        // |c_k| = exp(ln|c_k|), then apply sign (−1)^(k−1).
-        let (c_k_abs, _) = ln_c_k_abs.exp(RoundingMode::NearestEven);
-        let c_k = if k % 2 == 0 {
-            // k even → k − 1 odd → (−1)^(k−1) = −1.
-            c_k_abs.negated()
-        } else {
-            c_k_abs
-        };
-
-        // c_k / (z + k).
+    for (k_minus_1, c_k) in coefficients.iter().enumerate() {
+        let k = (k_minus_1 + 1) as u32;
         let k_bf =
             BigFloat::try_from_i64_exact(i64::from(k), working_prec).expect("precision >= 1");
         let (z_plus_k, _) = z_w.add(&k_bf, RoundingMode::NearestEven);
         let (term, _) = c_k.div(&z_plus_k, RoundingMode::NearestEven);
-
         let (next_sum, _) = sum.add(&term, RoundingMode::NearestEven);
         sum = next_sum;
-
-        // Advance: ln(k!) = ln((k−1)!) + ln(k).
-        let (ln_k, _) = k_bf.ln(RoundingMode::NearestEven);
-        let (next_ln_fact, _) = ln_factorial.add(&ln_k, RoundingMode::NearestEven);
-        ln_factorial = next_ln_fact;
     }
 
     // Leading factor in log: (z + 1/2) · ln(z + a) − (z + a).
@@ -314,6 +281,123 @@ pub(super) fn spouge_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
     let (ln_gamma_z, _) = ln_gamma_z_plus_1.sub(&ln_z, RoundingMode::NearestEven);
 
     ln_gamma_z
+}
+
+/// Compute the Spouge coefficient vector `[c_1, c_2, …, c_{a-1}]`
+/// at the supplied working precision, memoized per `working_prec`
+/// (since `a = spouge_a_for(working_prec)` is a function of
+/// `working_prec`, the cache key reduces to one dimension).
+///
+/// Each `c_k` is computed via the log form to avoid the
+/// fractional-exponent pow that the textbook
+/// `(a−k)^(k−1/2) · e^(a−k)` form would require: one ln call for
+/// `ln(a−k)`, one exp call for `c_k = ±exp(ln|c_k|)`, plus a few
+/// mul/sub. Total cost is O(a) ln + O(a) exp calls, dominated by
+/// the ln/exp at `working_prec`. Without memoization the
+/// `spouge_lgamma` runtime at p=1024 would dominate the
+/// `differential_zeta` lane's wall-clock; the cache amortizes
+/// across the lane's 15 dyadic inputs to a single computation per
+/// `working_prec`.
+#[allow(dead_code)]
+fn spouge_coefficients(working_prec: u32, a: u32) -> alloc::vec::Vec<BigFloat> {
+    spouge_cache::memoized(working_prec, || {
+        spouge_coefficients_compute(working_prec, a)
+    })
+}
+
+#[allow(dead_code)]
+fn spouge_coefficients_compute(working_prec: u32, a: u32) -> alloc::vec::Vec<BigFloat> {
+    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+    let mut coefficients = alloc::vec::Vec::with_capacity((a - 1) as usize);
+    let mut ln_factorial =
+        BigFloat::try_new_zero(crate::sign::Sign::Positive, working_prec).expect("precision >= 1"); // ln(0!) = 0.
+    for k in 1u32..a {
+        let a_minus_k =
+            BigFloat::try_from_i64_exact(i64::from(a - k), working_prec).expect("precision >= 1");
+        let k_minus_half_int = BigFloat::try_from_i64_exact(i64::from(2 * k) - 1, working_prec)
+            .expect("precision >= 1");
+        let (k_minus_half, _) = k_minus_half_int.div(&two, RoundingMode::NearestEven);
+
+        // ln|c_k| = (k − 1/2)·ln(a − k) + (a − k) − ln((k − 1)!).
+        let (ln_a_minus_k, _) = a_minus_k.ln(RoundingMode::NearestEven);
+        let (term_a, _) = k_minus_half.mul(&ln_a_minus_k, RoundingMode::NearestEven);
+        let (term_b, _) = term_a.add(&a_minus_k, RoundingMode::NearestEven);
+        let (ln_c_k_abs, _) = term_b.sub(&ln_factorial, RoundingMode::NearestEven);
+
+        // |c_k| = exp(ln|c_k|), sign = (−1)^(k−1).
+        let (c_k_abs, _) = ln_c_k_abs.exp(RoundingMode::NearestEven);
+        let c_k = if k % 2 == 0 {
+            c_k_abs.negated()
+        } else {
+            c_k_abs
+        };
+        coefficients.push(c_k);
+
+        // Advance: ln(k!) = ln((k − 1)!) + ln(k).
+        let k_bf =
+            BigFloat::try_from_i64_exact(i64::from(k), working_prec).expect("precision >= 1");
+        let (ln_k, _) = k_bf.ln(RoundingMode::NearestEven);
+        let (next_ln_fact, _) = ln_factorial.add(&ln_k, RoundingMode::NearestEven);
+        ln_factorial = next_ln_fact;
+    }
+    coefficients
+}
+
+/// Thread-local cache for Spouge coefficient vectors, keyed by
+/// `working_prec`. Mirrors the `agm_constants::cache` pattern: a
+/// small RefCell-protected list under `std`, transparent
+/// passthrough under `no_std`. `CACHE_CAP` bounds memory for
+/// callers that sweep unboundedly many precisions.
+#[cfg(feature = "std")]
+mod spouge_cache {
+    use super::BigFloat;
+    use std::cell::RefCell;
+
+    /// Soft bound on retained working precisions per thread. lgamma
+    /// touches a few distinct working precisions (target+64 across
+    /// the few targets a sweep exercises), so this never bites in
+    /// normal use; it caps memory under sweeps over many precisions.
+    const CACHE_CAP: usize = 16;
+
+    std::thread_local! {
+        static CACHE: RefCell<Vec<(u32, Vec<BigFloat>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn memoized(
+        working_prec: u32,
+        compute: impl FnOnce() -> Vec<BigFloat>,
+    ) -> Vec<BigFloat> {
+        if let Some(hit) = CACHE.with(|c| {
+            c.borrow()
+                .iter()
+                .find(|(p, _)| *p == working_prec)
+                .map(|(_, v)| v.clone())
+        }) {
+            return hit;
+        }
+        let value = compute();
+        CACHE.with(|c| {
+            let mut entries = c.borrow_mut();
+            if entries.len() < CACHE_CAP {
+                entries.push((working_prec, value.clone()));
+            }
+        });
+        value
+    }
+}
+
+#[cfg(not(feature = "std"))]
+mod spouge_cache {
+    use super::BigFloat;
+    use alloc::vec::Vec;
+
+    pub(super) fn memoized(
+        _working_prec: u32,
+        compute: impl FnOnce() -> Vec<BigFloat>,
+    ) -> Vec<BigFloat> {
+        compute()
+    }
 }
 
 /// Pick the Spouge parameter `a` to deliver `working_prec` bits of
