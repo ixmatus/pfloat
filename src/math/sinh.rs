@@ -18,6 +18,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -32,6 +34,10 @@ impl BigFloat {
     }
 
     /// `sinh(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.27, ADR-0038).
     pub fn sinh_round(
         &self,
         target_precision: u32,
@@ -91,22 +97,30 @@ fn sinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let neg_x = x_w.negated();
-    let (em1_pos, _) = x_w.expm1(RoundingMode::NearestEven);
-    let (em1_neg, _) = neg_x.expm1(RoundingMode::NearestEven);
-    let (diff, _) = em1_pos.sub(&em1_neg, RoundingMode::NearestEven);
-    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
-    let (result, _) = diff.div(&two, RoundingMode::NearestEven);
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing `(expm1(x) - expm1(-x))/2`
+    // composition at working precision `w` under NE; the outer
+    // envelope certifies the rounding-mode interval test on the
+    // final round. expm1 is itself Ziv-driven (slice p1.24) and
+    // its cancellation boost handles the small-|x| regime.
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let neg_x = x_w.negated();
+            let (em1_pos, _) = x_w.expm1(RoundingMode::NearestEven);
+            let (em1_neg, _) = neg_x.expm1(RoundingMode::NearestEven);
+            let (diff, _) = em1_pos.sub(&em1_neg, RoundingMode::NearestEven);
+            let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
+            diff.div(&two, RoundingMode::NearestEven).0
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]
