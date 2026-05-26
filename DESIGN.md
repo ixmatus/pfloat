@@ -542,8 +542,17 @@ sections that read against the renumbered phase plan.
   test, with the iteration cap fixed at 5 and stated in the
   `pow_round` doc comment; on the measure-zero exact-tie inputs that
   exhaust the cap the result may be 1 ULP off in directed modes.
-  Kernels still on the fixed 64-bit guard (`exp`, `ln`, `sin`, …)
-  carry the original caveat until a later slice extends the driver.
+  Phase 1f (ADR-0038) extends the driver across the v1.0 surface
+  one family at a time; kernels still on the fixed 64-bit guard
+  (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`,
+  `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `erfc`, `gamma`,
+  `digamma`, `beta`, `Ei`, `Si`, `Ci`, `li`, `Ai`, `Bi`, `Ai_prime`,
+  `Bi_prime`, `Y0`, `Y1`, `Yn`, `I0`, `I1`, `In`, `K0`, `K1`, `Kn`,
+  `zeta`, `agm`) carry the original caveat until their Phase 1f
+  family slice extends the driver to them. Slice p1.24
+  (elementary completions: `expm1`, `log1p`, `exp2`, `exp10`) is
+  the first family migration; subsequent families follow per the
+  audit at `docs/decisions/plans/phase-1f-five-mode-completeness.md`.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
   square-and-multiply fast path, every other case evaluates

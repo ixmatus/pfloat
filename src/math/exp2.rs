@@ -1,9 +1,15 @@
 //! `exp2(x) = 2^x`: binary exponential.
 //!
 //! Composition: `2^x = exp(x · ln(2))`. The kernel computes the
-//! product at working precision `target + 64` (with `ln(2)` from the
-//! shared 1024-bit constant), then calls `exp`. All special cases
-//! flow through composition.
+//! product at working precision (with `ln(2)` from the shared
+//! 1024-bit constant), then calls `exp`. All special cases flow
+//! through composition.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The `exp · ln(2)` composition has no cancellation
+//! regime; the Ziv envelope's working-precision growth certifies
+//! the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2 reduce to:
 //!

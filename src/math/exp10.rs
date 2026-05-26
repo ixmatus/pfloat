@@ -1,10 +1,16 @@
 //! `exp10(x) = 10^x`: decimal exponential.
 //!
 //! Composition: `10^x = exp(x · ln(10))`. The kernel computes the
-//! product at working precision `target + 64` against `ln(10)` (from
+//! product at working precision against `ln(10)` (from
 //! [`super::ln_10_at`], which evaluates `ln(10)` lazily per call),
 //! then dispatches to `exp`. Special cases compose through the same
 //! pattern as `exp2`.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The `exp · ln(10)` composition has no cancellation
+//! regime; the Ziv envelope's working-precision growth certifies
+//! the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
