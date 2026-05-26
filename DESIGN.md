@@ -544,16 +544,16 @@ sections that read against the renumbered phase plan.
   exhaust the cap the result may be 1 ULP off in directed modes.
   Phase 1f (ADR-0038) extends the driver across the v1.0 surface
   one family at a time; kernels still on the fixed 64-bit guard
-  (`gamma`, `digamma`, `beta`, `Ei`, `Si`, `Ci`, `li`, `Ai`, `Bi`,
-  `Ai_prime`, `Bi_prime`, `Y0`, `Y1`, `Yn`, `I0`, `I1`, `In`, `K0`,
-  `K1`, `Kn`, `zeta`, `agm`) carry the original caveat until their
-  Phase 1f family slice extends the driver to them. Slices p1.24
-  (elementary completions: `expm1`, `log1p`, `exp2`, `exp10`),
-  p1.25 (inverse trig: `asin`, `acos`, `atan`, `atan2`), p1.26
-  (forward trig: `sin`, `cos`, `tan`), p1.27 (hyperbolic and
-  inverse hyperbolic: `sinh`, `cosh`, `asinh`, `acosh`, `atanh`),
-  and p1.28 (`erfc`) are the migrations shipped so far; subsequent
-  families follow per the audit at
+  (`Ei`, `Si`, `Ci`, `li`, `Ai`, `Bi`, `Ai_prime`, `Bi_prime`, `Y0`,
+  `Y1`, `Yn`, `I0`, `I1`, `In`, `K0`, `K1`, `Kn`, `zeta`, `agm`)
+  carry the original caveat until their Phase 1f family slice
+  extends the driver to them. Slices p1.24 (elementary completions:
+  `expm1`, `log1p`, `exp2`, `exp10`), p1.25 (inverse trig: `asin`,
+  `acos`, `atan`, `atan2`), p1.26 (forward trig: `sin`, `cos`,
+  `tan`), p1.27 (hyperbolic and inverse hyperbolic: `sinh`, `cosh`,
+  `asinh`, `acosh`, `atanh`), p1.28 (`erfc`), and p1.29 (gamma
+  family: `gamma`, `digamma`, `beta`) are the migrations shipped so
+  far; subsequent families follow per the audit at
   `docs/decisions/plans/phase-1f-five-mode-completeness.md`.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
