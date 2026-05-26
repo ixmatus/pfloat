@@ -22,6 +22,67 @@ already-Ziv-wrapped cohort (sanity entries) plus the elementary
 completions family land in the first p1.22 session. Subsequent
 sessions populate one family at a time per the task list.
 
+## Discipline notes (cross-family lessons)
+
+### Irrational-constant special-case returns must be mode-aware
+
+Phase 1f slice p1.25 surfaced a defect class on `acos(0)` under
+TZ/TN: the kernel returned `pi_over_2_at(target)` directly,
+which rounds NE unconditionally and drops the caller's directed-
+mode information. **Any special case in any kernel that returns
+an irrational mathematical constant must round under the
+caller's mode**, not under NE.
+
+Fix shipped at slice p1.25 in `src/math/mod.rs`:
+
+- `pi_at_round(target, mode)` — π at target+128, then round-to-target
+  under mode.
+- `pi_over_2_at_round(target, mode)` — same for π/2.
+
+For π/4, 3π/4, sqrt(π), gamma boundary constants, and other
+composite irrationals, use the inline boost-then-round pattern:
+compute at `target + 128` precision then `round_to_precision(
+target, mode)`. The +128 boost is generous (π and its multiples
+are irrational; no ties at any target precision).
+
+**Affected upcoming family slices:**
+
+- **p1.30 (integrals)**: `Si(±∞) = ±π/2` needs the fix. Other
+  Si/Ci/li special cases are exact (Ci(+0) = -∞, li(0) = 0,
+  li(1) = -∞).
+- **p1.31 (Airy)**: `airy_zero_value(which, working)` returns
+  the boundary constants `Ai(0) = 1/(3^(2/3)·Γ(2/3))`,
+  `Bi(0) = 1/(3^(1/6)·Γ(2/3))`,
+  `Ai'(0) = -1/(3^(1/3)·Γ(1/3))`,
+  `Bi'(0) = 3^(1/6)/Γ(1/3)`. All irrational; all need the
+  boost-then-round pattern in the `Class::Zero` branch.
+
+**Not affected:**
+
+- p1.26 (forward trig: sin, cos, tan): no irrational-constant
+  special cases (±0/±∞/range-cap NaN are all exact or NaN).
+- p1.27 (hyperbolic + inverse): special cases are exact (±0,
+  ±∞, acosh(1) = +0, atanh(±1) = ±∞+DIV_BY_ZERO).
+- p1.28 (erfc): erfc(±0) = 1 (exact), erfc(+∞) = +0,
+  erfc(-∞) = 2 (exact).
+- p1.29 (gamma family): gamma special cases are exact poles
+  (±0 → ±∞, negative integer → NaN). digamma reflection
+  composes through ψ(1-x) and π·cot(πx), which is the general
+  path under Ziv, not a special case.
+- p1.32 (Bessel Y): Y(+0) = -∞ (exact pole).
+- p1.33 (Bessel I/K): K(+0) = +∞ (exact pole), I(0) = 1, etc.
+  (exact).
+- p1.34 (zeta): ζ(0) = -1/2 (exact via -1/2 = exact), ζ(+∞) = 1
+  (exact), ζ(-∞) = NaN.
+
+**How to detect.** Search each kernel before migrating:
+```bash
+grep -nE 'pi_at\([^)]+\)|pi_over_2_at\([^)]+\)' src/math/<kernel>.rs
+```
+Any hit OUTSIDE a `ziv_round` eval closure is a candidate. Inside
+the eval closure the kernel runs at working precision under NE
+by design (the outer Ziv handles the mode).
+
 ## Per-kernel entry template
 
 Each kernel block uses the following structure:
