@@ -51,6 +51,7 @@
 
 use super::lgamma::is_integer_test;
 use super::pi_at;
+use super::ziv::ziv_round;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -73,6 +74,10 @@ impl BigFloat {
     }
 
     /// `ζ(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.34, ADR-0038).
     pub fn zeta_round(
         &self,
         target_precision: u32,
@@ -185,12 +190,23 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
                 return (zero, Status::OK);
             }
 
-            let value = zeta_finite(x, target_precision);
-            let (rounded, status) = value
-                .round_to_precision(target_precision, mode)
-                .expect("precision >= 1");
+            // Ziv-driven correct rounding under every IEEE mode. The
+            // eval closure dispatches on sign(s) (binary, mode- and
+            // precision-independent) to zeta_borwein (s > 0) or
+            // zeta_fe (s < 0). Both helpers compose through gamma
+            // (Ziv-driven, p1.29), sin (p1.26), pow (already
+            // five-mode), and a recursive zeta(1-s) call that routes
+            // through the Borwein branch (1 - s > 1 when s < 0), so
+            // there is no infinite recursion. The FE branch's
+            // composition is now correct under every mode because
+            // every constituent is.
+            let (result, status) = ziv_round(
+                |w| zeta_finite(x, w),
+                target_precision,
+                mode,
+            );
             auto_raise(status);
-            (rounded, status)
+            (result, status)
         }
     }
 }
