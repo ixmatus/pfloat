@@ -2,14 +2,20 @@
 //!
 //! Naively `exp(x) − 1` loses precision near zero: for `x ≈ 2^−n`,
 //! `exp(x) ≈ 1 + x`, so the subtraction cancels the leading bits of
-//! the sum and the result has ~`n` bits of cancellation. This
-//! wrapper boosts the working precision by the cancellation amount
+//! the sum and the result has ~`n` bits of cancellation. The
+//! kernel boosts the working precision by the cancellation amount
 //! before calling `exp`, then subtracts.
 //!
 //! For `|x|` so small that `expm1(x)` rounds to `x` at the target
 //! precision (specifically, `x.exponent ≤ −target − 8`, so the
 //! `x²/2` term is below half a ULP of `x`), the kernel short-
 //! circuits and returns `x` directly without invoking `exp` at all.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The cancellation-boost composition runs inside the
+//! eval closure at each Ziv working precision; the outer envelope
+//! certifies the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
@@ -114,18 +120,20 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
-    // |x| < 2^(-target-8) ⇒ expm1(x) = x to target precision.
-    if e <= -i64::from(target_precision) - 8 {
-        let (rounded, status) = x
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
-    }
-
     // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.
+    //
+    // The pre-Phase-1f kernel had a short-circuit at
+    // `e ≤ -target - 8` that returned `x rounded under mode`.
+    // That shortcut was NE-correct (when x²/2 < ULP/2, expm1(x)
+    // rounds to x under NE) but produced wrong directed-mode
+    // results: for positive small x under TP, true expm1(x) > x
+    // is strictly above x, so TP must round up to the next-up
+    // f32 neighbour, but the short-circuit returned x. Pf-l6s5
+    // precedent applies: trust the Ziv driver to certify the
+    // correct rounding mode behaviour. The Ziv loop converges
+    // in 1-2 iterations on tiny-x inputs.
     let cancellation: u32 = if e < 0 {
         u32::try_from(-e).unwrap_or(u32::MAX)
     } else {

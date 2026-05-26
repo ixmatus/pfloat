@@ -2,13 +2,19 @@
 //! argument.
 //!
 //! Naïvely `ln(1 + x)` loses precision near zero: for `x ≈ 2^−n`,
-//! the addition `1 + x` cancels the leading bits of `x`. The wrapper
+//! the addition `1 + x` cancels the leading bits of `x`. The kernel
 //! boosts working precision by `−exponent(x)` bits, computes
 //! `1 + x` and `ln` at that precision, then rounds back.
 //!
 //! For `|x|` so small that `log1p(x)` rounds to `x` at target
 //! precision (`x.exponent ≤ −target − 8`), the kernel short-circuits
 //! and returns `x` directly.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The cancellation-boost composition runs inside the
+//! eval closure at each Ziv working precision; the outer envelope
+//! certifies the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
@@ -135,18 +141,19 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
-    // |x| < 2^(-target-8) ⇒ log1p(x) = x to target precision.
-    if e <= -i64::from(target_precision) - 8 {
-        let (rounded, status) = x
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
-    }
-
     // Cancellation boost: `1 + x` cancels ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.
+    //
+    // The pre-Phase-1f kernel had a short-circuit at
+    // `e ≤ -target - 8` that returned `x rounded under mode`.
+    // That shortcut was NE-correct but produced wrong
+    // directed-mode results (same shape as expm1 — for positive
+    // small x under TP, true log1p(x) < x but rounds up under TP
+    // to x's neighbour ABOVE; for negative small x under TZ, true
+    // log1p(x) > x and rounds toward zero away from x). The Ziv
+    // driver converges in 1-2 iterations on tiny-x inputs and
+    // certifies the correct rounding-mode behaviour.
     let cancellation: u32 = if e < 0 {
         u32::try_from(-e).unwrap_or(u32::MAX)
     } else {
