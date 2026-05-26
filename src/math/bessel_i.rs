@@ -35,6 +35,7 @@
 //! DLMF provenance.
 
 use super::pi_at;
+use super::ziv::ziv_round;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -55,6 +56,10 @@ impl BigFloat {
     }
 
     /// `I₀(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.33, ADR-0038).
     pub fn i0_round(
         &self,
         target_precision: u32,
@@ -74,6 +79,10 @@ impl BigFloat {
     }
 
     /// `I₁(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.33, ADR-0038).
     pub fn i1_round(
         &self,
         target_precision: u32,
@@ -95,6 +104,10 @@ impl BigFloat {
     }
 
     /// `Iₙ(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.33, ADR-0038).
     pub fn in_round(
         &self,
         n: i32,
@@ -199,19 +212,60 @@ fn bessel_i_kernel(
             // I is entire: no domain restriction. Reduce to I_m(|x|)
             // with one argument-parity sign. Iₙ(−x) = (−1)ⁿ Iₙ(x);
             // I₋ₙ(x) = Iₙ(x) (no order sign). Negate exactly when m is
-            // odd and x < 0.
+            // odd and x < 0. Binary parity sign pinned outside Ziv.
             let negate = (m % 2 == 1) && x.is_sign_negative();
             let ax = x.abs();
 
-            let value = bessel_i_eval_normal(m, &ax, target_precision);
-            let value = if negate { value.negated() } else { value };
+            // Regime decision pinned from target_precision so it does
+            // not flip across Ziv retries (slice p1.4 erf precedent).
+            // Three regimes: tiny (|x| < 1, fixed cut), miller (default),
+            // asymptotic (|x| >= bessel_j_threshold(target_precision)).
+            // The tiny vs miller boundary is precision-independent (|x|
+            // < 1); the miller vs asymptotic boundary depends on
+            // target_precision via bessel_j_threshold.
+            let e_x = match &ax.class {
+                Class::Normal { exponent, .. } => *exponent,
+                _ => 0,
+            };
+            let use_tiny = e_x <= bessel_i_tiny_threshold();
+            let use_asymptotic =
+                !use_tiny && e_x >= super::bessel_j::bessel_j_threshold(target_precision);
 
-            let (rounded, status) = value
-                .round_to_precision(target_precision, mode)
-                .expect("precision >= 1");
+            let (result, status) = ziv_round(
+                |w| {
+                    let value = bessel_i_eval_at_w(m, &ax, w, use_tiny, use_asymptotic);
+                    if negate {
+                        value.negated()
+                    } else {
+                        value
+                    }
+                },
+                target_precision,
+                mode,
+            );
             auto_raise(status);
-            (rounded, status)
+            (result, status)
         }
+    }
+}
+
+/// Same shape as [`bessel_i_eval_normal`] but takes the pinned
+/// three-regime flags (`use_tiny` / `use_asymptotic`) so the regime
+/// does not flip across Ziv retries. Exactly one of `use_tiny` and
+/// `use_asymptotic` may be true; both false means the Miller default.
+fn bessel_i_eval_at_w(
+    m: u32,
+    ax: &BigFloat,
+    target_precision: u32,
+    use_tiny: bool,
+    use_asymptotic: bool,
+) -> BigFloat {
+    if use_tiny {
+        bessel_i_tiny(m, ax, target_precision)
+    } else if use_asymptotic {
+        bessel_i_asymptotic(m, ax, target_precision)
+    } else {
+        bessel_i_miller(m, ax, target_precision)
     }
 }
 
@@ -247,20 +301,6 @@ fn bessel_i_tiny_threshold() -> i64 {
 /// error, so `bessel_j_threshold`'s conservative
 /// `2^{e_x} ≥ target+64` cut is strictly more than enough for `I`
 /// too. Miller (always correct, slower) carries everything below it.
-fn bessel_i_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
-    let e_x = match &ax.class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-    if e_x <= bessel_i_tiny_threshold() {
-        bessel_i_tiny(m, ax, target_precision)
-    } else if e_x >= super::bessel_j::bessel_j_threshold(target_precision) {
-        bessel_i_asymptotic(m, ax, target_precision)
-    } else {
-        bessel_i_miller(m, ax, target_precision)
-    }
-}
-
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
 /// non-finite (the [`super::bessel_y`] `magnitude` idiom; the
 /// `bessel_j` copy is private, so `I` carries its own).
