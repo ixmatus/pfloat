@@ -37,7 +37,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::gamma_stirling::stirling_lgamma;
+use super::gamma_stirling::{spouge_lgamma, stirling_lgamma};
 use super::pi_at;
 use super::ziv::ziv_round;
 
@@ -177,6 +177,16 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         .expect("precision >= 1")
         .0;
 
+    // Dispatch on target precision. The 17-Bernoulli-pair Stirling
+    // table caps accuracy at ~895 bits regardless of shift (pf-l6s5);
+    // for working precisions past that reach, Spouge's approximation
+    // delivers the full target accuracy with cost linear in its
+    // parameter `a`. The 600-bit threshold leaves Stirling room for
+    // its `+32`-bit margin from z_min_for_target and the Ziv guard.
+    if working_prec > STIRLING_REACH_THRESHOLD {
+        return spouge_lgamma(&x_w, working_prec);
+    }
+
     // Decide whether to shift. We want z = x + n ≥ z_min.
     let e_x = match &x_w.class {
         Class::Normal { exponent, .. } => *exponent,
@@ -205,6 +215,15 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         diff
     }
 }
+
+/// Working-precision threshold above which the lgamma kernel
+/// dispatches to Spouge's approximation. Below the threshold, the
+/// 17-pair Stirling table delivers the required precision via the
+/// upward-shift composition. The threshold is set conservatively
+/// (well below the ~895-bit Stirling reach cap, pf-l6s5) to keep
+/// the `differential_gamma` lane on the existing Stirling path at
+/// every `TRANSCENDENTAL_PRECISIONS` entry.
+const STIRLING_REACH_THRESHOLD: u32 = 600;
 
 /// Picks the shift target `z_min` such that Stirling truncated at
 /// the 17 hardcoded coefficients clears `target_precision + 32`
