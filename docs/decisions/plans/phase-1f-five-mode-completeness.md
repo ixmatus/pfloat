@@ -930,6 +930,25 @@ estimate: 1-2 days.
 
 ### gamma
 
+- **AUDIT REVISION (slice p1.23 diagnostic, 2026-05-25)**: the
+  drop-in `ziv_round` wrap strategy below is **insufficient until
+  pf-l6s5 lands**. The lgamma kernel's `z_min_for_target` caps the
+  Stirling shift target at `2^28` (`src/math/lgamma.rs:222-227`),
+  bounding Stirling truncation error at `2^-895.5` regardless of
+  target precision. For target precisions above ~895 bits, gamma
+  returns degraded values (~174 ULPs of error at p=1120, the FE
+  branch's working precision when zeta's target is 1024). Ziv's
+  `ZIV_ERROR_GUARD = 24` assumes inner accuracy ≤ 2^24 ULP at
+  working precision; gamma's 2^174 ULP error violates this and
+  Ziv would falsely certify the wrong answer. **Slice p1.29 MUST
+  land pf-l6s5 first** (extend the Stirling Bernoulli table from
+  17 to ~40 coefficients, or switch to Spouge at high precision)
+  before the ziv_round wrap is sound. The differential_gamma lane
+  never caught this because TRANSCENDENTAL_PRECISIONS only tests
+  p ∈ {53, 113, 256, 1024} and gamma at p=1024 with integer
+  arguments uses the positive-integer factorial fast path. The
+  defect is surfaced by `src/math/zeta.rs::tests::diag_zeta_neg_half_fe_constituents_p1024`
+  (Phase 1f slice p1.23 probe).
 - **Source**: `src/math/gamma.rs:78-149` (+ `gamma_sign_of` at
   `:156-`).
 - **Status today**: NOT Ziv-wrapped. Fixed-guard composition
@@ -1078,14 +1097,21 @@ estimate: 1-2 days.
 
 ### Family p1.29 ADR posture
 
-Three kernels, all drop-in `ziv_round` wraps. INTER-FAMILY
-DEPENDENCY: gamma_sign_of for negative non-integer x calls sin(πx)
-for sign determination; the SIGN is binary-stable away from poles,
-so this is a soft dependency on p1.26 (sin), not a strict
-prerequisite. The recursive digamma_round call in the reflection
-branch routes to the positive branch (no infinite recursion). beta
-preserves the ADR-0030 case dispatch and the case-4 O(1) closed
-form unchanged. No per-family ADR needed; the three kernel doc
+Three kernels, intended as drop-in `ziv_round` wraps. **REVISED
+PREREQUISITE (slice p1.23, 2026-05-25)**: pf-l6s5 (the gamma
+Stirling-reach defect) MUST close before this family migrates;
+the audit's drop-in strategy is insufficient until the underlying
+gamma kernel is correctly rounded at the working precisions Ziv
+requests. pf-l6s5 blocks p1.29 (this family) and p1.34 (zeta,
+whose FE branch composes through gamma).
+
+INTER-FAMILY DEPENDENCY: gamma_sign_of for negative non-integer x
+calls sin(πx) for sign determination; the SIGN is binary-stable
+away from poles, so this is a soft dependency on p1.26 (sin), not
+a strict prerequisite. The recursive digamma_round call in the
+reflection branch routes to the positive branch (no infinite
+recursion). beta preserves the ADR-0030 case dispatch and the
+case-4 O(1) closed form unchanged. No per-family ADR needed; the three kernel doc
 comments record the five-mode claim. Slice p1.29 commit shape:
 3 kernel-migration commits + 1 differential-lane-widening (gamma,
 digamma single-arg) + 1 status-TOML-row update + 1
@@ -1603,6 +1629,14 @@ harness path needs the directed-mode helper from p1.23 in place).
 
 ### zeta
 
+- **AUDIT REVISION (slice p1.23 diagnostic, 2026-05-25)**: the
+  FE branch composes through gamma at working precision (e.g.
+  p=1120 when target=1024); the differential_zeta lane already
+  reports a ~100-bit residual at p=1024 NE on ζ(-1/2) due to
+  gamma's Stirling-reach cap (pf-l6s5). **Slice p1.34 MUST land
+  pf-l6s5 first** to make the FE composition correct. The
+  Borwein branch (s > 0) is unaffected (no gamma call); zeta's
+  s > 0 inputs pass bit-exact today.
 - **Source**: `src/math/zeta.rs:1-120` (header + impl signatures
   through `is_negative_even_integer`). ADR-0026 records the design
   and the Borwein/CVZ algorithm pin via the paper's worked
