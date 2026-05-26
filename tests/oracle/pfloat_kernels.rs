@@ -129,9 +129,14 @@ const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 ///   already documented).
 fn verification_precision(f: FnId) -> u32 {
     match f {
-        FnId::BesselJ1 | FnId::BesselJn(_) | FnId::BesselI1 | FnId::BesselIn(_) => {
-            BESSEL_TINY_VERIFICATION_PRECISION
-        }
+        FnId::BesselJ1
+        | FnId::BesselJn(_)
+        | FnId::BesselI0
+        | FnId::BesselI1
+        | FnId::BesselIn(_)
+        | FnId::BesselK0
+        | FnId::BesselK1
+        | FnId::BesselKn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
         FnId::Erf | FnId::Li => ERF_VERIFICATION_PRECISION,
         _ => DEFAULT_VERIFICATION_PRECISION,
     }

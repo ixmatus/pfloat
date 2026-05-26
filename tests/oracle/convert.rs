@@ -251,11 +251,31 @@ pub fn round_f32(value: &Float, mode: RoundingMode) -> Option<f32> {
 /// because MPFR offers no such mode (`MPFR_RNDA` is directed
 /// round-away-from-zero, not ties-to-away). Mirrors the L-M
 /// differential lane's `round_ties_to_away` helper, sized for f32.
+///
+/// Overflow handling: when |value| exceeds `f32::MAX`, IEEE 754
+/// §4.3 specifies that `roundTiesToEven` and `roundTiesToAway` both
+/// saturate to ±∞ (the halfway between `max_finite` and 2^128 is at
+/// `max_finite + 2^103`, and any value above that overflows to ±∞
+/// under both nearest modes). The distance-based comparison below
+/// treats +∞ as infinitely far, which incorrectly picks `max_finite`
+/// for any finite value above `max_finite`. Handle overflow first.
 fn round_ties_to_away_f32(value: &Float) -> f32 {
+    if value.is_infinite() {
+        return value.to_f32_round(Round::Nearest);
+    }
+    // Overflow check: NA above max_finite rounds to ±∞ per IEEE 754.
+    // The directed-round upward already gives +∞ in that case; if
+    // lo (Round::Zero) differs from hi (Round::AwayZero) AND hi is
+    // infinite, the value is past the overflow boundary.
     let lo = value.to_f32_round(Round::Zero);
     let hi = value.to_f32_round(Round::AwayZero);
     if lo == hi {
         return lo;
+    }
+    if hi.is_infinite() {
+        // value's magnitude exceeds max_finite. Under NA, IEEE 754
+        // §4.3 rounds to ±∞.
+        return hi;
     }
     // Distances at the value's working precision, computed without
     // further rounding.
