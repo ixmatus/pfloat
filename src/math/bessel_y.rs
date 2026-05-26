@@ -47,6 +47,7 @@
 //!
 //! ADR-0024 records the design and the coefficient provenance.
 
+use super::ziv::ziv_round;
 use super::{euler_gamma_at, pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -68,6 +69,10 @@ impl BigFloat {
     }
 
     /// `Y₀(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.32, ADR-0038).
     pub fn y0_round(
         &self,
         target_precision: u32,
@@ -87,6 +92,10 @@ impl BigFloat {
     }
 
     /// `Y₁(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.32, ADR-0038).
     pub fn y1_round(
         &self,
         target_precision: u32,
@@ -108,6 +117,10 @@ impl BigFloat {
     }
 
     /// `Yₙ(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.32, ADR-0038).
     pub fn yn_round(
         &self,
         n: i32,
@@ -225,17 +238,35 @@ fn bessel_y_kernel(
                 return (nan, Status::INVALID);
             }
 
-            // Y₋ₙ(x) = (−1)ⁿ Yₙ(x) (DLMF 10.4.1): order parity only,
-            // negate when m is odd and n < 0.
+            // Y₋ₙ(x) = (−1)ⁿ Yₙ(x) (DLMF 10.4.1): order parity is
+            // binary and pinned outside the Ziv envelope.
             let negate = (m % 2 == 1) && (n < 0);
-            let value = bessel_y_eval_normal(m, x, target_precision);
-            let value = if negate { value.negated() } else { value };
 
-            let (rounded, status) = value
-                .round_to_precision(target_precision, mode)
-                .expect("precision >= 1");
+            // Pin the base-pair regime decision from target_precision
+            // so it does not flip across Ziv retries (slice p1.4 erf
+            // precedent). The bessel_j_threshold grows with precision;
+            // pinning ensures bessel_y01 picks the same regime at every
+            // Ziv iteration.
+            let e_x = match &x.class {
+                Class::Normal { exponent, .. } => *exponent,
+                _ => 0,
+            };
+            let use_asymptotic = e_x >= super::bessel_j::bessel_j_threshold(target_precision);
+
+            let (result, status) = ziv_round(
+                |w| {
+                    let value = bessel_y_eval_normal_at_w(m, x, w, use_asymptotic);
+                    if negate {
+                        value.negated()
+                    } else {
+                        value
+                    }
+                },
+                target_precision,
+                mode,
+            );
             auto_raise(status);
-            (rounded, status)
+            (result, status)
         }
     }
 }
@@ -260,9 +291,14 @@ fn bessel_y_kernel(
 /// solution to renormalise, so no sum rule and no
 /// [`super::bessel_j::bessel_j_miller`] reuse. The climb is a
 /// rolling pair, `O(m)` time and `O(1)` space, no `Vec`.
-fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+fn bessel_y_eval_normal_at_w(
+    m: u32,
+    x: &BigFloat,
+    target_precision: u32,
+    use_asymptotic_base: bool,
+) -> BigFloat {
     if m <= 1 {
-        return bessel_y01(m, x, target_precision);
+        return bessel_y01(m, x, target_precision, use_asymptotic_base);
     }
 
     let e_x = match &x.class {
@@ -287,12 +323,13 @@ fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat
         .0;
     let (inv_x, _) = ci(1, working).div(&xw, RoundingMode::NearestEven);
 
-    // Seeds Y₀, Y₁ at the recurrence working precision.
-    let mut y_prev = bessel_y01(0, x, working)
+    // Seeds Y₀, Y₁ at the recurrence working precision, using the
+    // base-pair regime flag pinned by the caller from target_precision.
+    let mut y_prev = bessel_y01(0, x, working, use_asymptotic_base)
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
-    let mut y_cur = bessel_y01(1, x, working)
+    let mut y_cur = bessel_y01(1, x, working, use_asymptotic_base)
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
@@ -317,12 +354,8 @@ fn bessel_y_eval_normal(m: u32, x: &BigFloat, target_precision: u32) -> BigFloat
 /// `Y` has no recessive-normalisation analog, so unlike `J` there is
 /// no cheap middle regime; the log series carries everything below
 /// the asymptotic cut. Returns the unrounded working-precision value.
-fn bessel_y01(which: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
-    let e_x = match &x.class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-    if e_x >= super::bessel_j::bessel_j_threshold(target_precision) {
+fn bessel_y01(which: u32, x: &BigFloat, target_precision: u32, use_asymptotic: bool) -> BigFloat {
+    if use_asymptotic {
         bessel_y_asymptotic(which, x, target_precision)
     } else {
         bessel_y_series(which, x, target_precision)
@@ -773,7 +806,7 @@ mod tests {
         let p = 160;
         let x = at(7, 2, p); // 3.5
         for n in [2u32, 3, 5] {
-            let recur = bessel_y_eval_normal(n, &x, p);
+            let recur = bessel_y_eval_normal_at_w(n, &x, p, false);
             let series = bessel_y_series(n, &x, p);
             assert!(close_at(&recur, &series, p - 12), "Y_{n}(3.5) recur=series");
         }
