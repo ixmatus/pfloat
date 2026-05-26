@@ -23,6 +23,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `2^self` rounded under `mode` to `self.precision`.
@@ -105,19 +106,29 @@ fn exp2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let ln_2 = ln_2_at(working_prec);
-    let (product, mul_status) = x_w.mul(&ln_2, RoundingMode::NearestEven);
-    let (result, exp_status) = product.exp(RoundingMode::NearestEven);
-    let (rounded, round_status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, mul_status | exp_status | round_status)
+    // Ziv-driven correct rounding under every IEEE mode. The
+    // composition `exp(x · ln(2))` has no cancellation regime; the
+    // Ziv driver's working-precision growth handles the rounding-
+    // mode interval test at the final round to target.
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let ln_2 = ln_2_at(w);
+            let (product, _) = x_w.mul(&ln_2, RoundingMode::NearestEven);
+            let (e_val, _) = product.exp(RoundingMode::NearestEven);
+            e_val
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0
+        },
+        target_precision,
+        mode,
+    );
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]

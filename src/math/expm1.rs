@@ -23,6 +23,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -121,29 +123,40 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         return (rounded, status);
     }
 
+    // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
+    // bits when x is small. The boost moves INSIDE the Ziv eval
+    // closure so each working-precision retry inherits it.
     let cancellation: u32 = if e < 0 {
         u32::try_from(-e).unwrap_or(u32::MAX)
     } else {
         0
     };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(cancellation)
-        .min(target_precision.saturating_add(1024));
 
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let (e_x, exp_status) = x_w.exp(RoundingMode::NearestEven);
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (diff, sub_status) = e_x.sub(&one, RoundingMode::NearestEven);
-
-    let (rounded, round_status) = diff
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, exp_status | sub_status | round_status)
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing composition (`exp(x_w) − 1`) at a
+    // working precision boosted by `cancellation` above the Ziv
+    // driver's requested working precision `w`, then rounds the
+    // composition's result to `w` under NE so the Ziv interval
+    // test sees a w-precision value with the cancellation absorbed.
+    let (result, status) = ziv_round(
+        |w| {
+            let inner_w = w.saturating_add(cancellation).min(w.saturating_add(1024));
+            let x_w = x
+                .round_to_precision(inner_w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let (e_x, _) = x_w.exp(RoundingMode::NearestEven);
+            let one = BigFloat::try_from_i64_exact(1, inner_w).expect("precision >= 1");
+            let (diff, _) = e_x.sub(&one, RoundingMode::NearestEven);
+            diff.round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0
+        },
+        target_precision,
+        mode,
+    );
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]
