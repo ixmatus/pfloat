@@ -543,20 +543,20 @@ sections that read against the renumbered phase plan.
   `pow_round` doc comment; on the measure-zero exact-tie inputs that
   exhaust the cap the result may be 1 ULP off in directed modes.
   Phase 1f (ADR-0038) extends the driver across the v1.0 surface
-  one family at a time; kernels still on the fixed 64-bit guard
-  (`zeta`, `agm`) carry the original caveat until their Phase 1f
-  family slice extends the driver to them. Slices p1.24
-  (elementary completions: `expm1`, `log1p`, `exp2`, `exp10`),
-  p1.25 (inverse trig: `asin`, `acos`, `atan`, `atan2`), p1.26
-  (forward trig: `sin`, `cos`, `tan`), p1.27 (hyperbolic and
-  inverse hyperbolic: `sinh`, `cosh`, `asinh`, `acosh`, `atanh`),
-  p1.28 (`erfc`), p1.29 (gamma family: `gamma`, `digamma`, `beta`),
-  p1.30 (integrals: `Ei`, `Si`, `Ci`, `li`), p1.31 (Airy: `Ai`,
-  `Bi`, `Ai_prime`, `Bi_prime`), p1.32 (Bessel Y: `Y0`, `Y1`,
-  `Yn`), and p1.33 (Bessel I/K: `I0`, `I1`, `In`, `K0`, `K1`,
-  `Kn`) are the migrations shipped so far; subsequent families
-  follow per the audit at
-  `docs/decisions/plans/phase-1f-five-mode-completeness.md`.
+  one family at a time; `agm` is the last remaining kernel on the
+  fixed 64-bit guard (slice p1.36 covers it via the multi-arg
+  surface confirmation). Slices p1.24 (elementary completions:
+  `expm1`, `log1p`, `exp2`, `exp10`), p1.25 (inverse trig: `asin`,
+  `acos`, `atan`, `atan2`), p1.26 (forward trig: `sin`, `cos`,
+  `tan`), p1.27 (hyperbolic and inverse hyperbolic: `sinh`, `cosh`,
+  `asinh`, `acosh`, `atanh`), p1.28 (`erfc`), p1.29 (gamma family:
+  `gamma`, `digamma`, `beta`), p1.30 (integrals: `Ei`, `Si`, `Ci`,
+  `li`), p1.31 (Airy: `Ai`, `Bi`, `Ai_prime`, `Bi_prime`), p1.32
+  (Bessel Y: `Y0`, `Y1`, `Yn`), p1.33 (Bessel I/K: `I0`, `I1`,
+  `In`, `K0`, `K1`, `Kn`), and p1.34 (`zeta`) are the migrations
+  shipped so far; the audit at
+  `docs/decisions/plans/phase-1f-five-mode-completeness.md` carries
+  the per-kernel derivation for each.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
   square-and-multiply fast path, every other case evaluates
