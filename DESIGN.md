@@ -537,30 +537,20 @@ sections that read against the renumbered phase plan.
 ## Caveats and open questions
 
 - Ziv's strategy at unbounded precision is unproven to terminate
-  in pathological cases. MPFR has the same caveat. Slice 7c
-  (ADR-0022) implements the strategy for `pow` via the interval
-  test, with the iteration cap fixed at 5 and stated in the
-  `pow_round` doc comment; on the measure-zero exact-tie inputs that
-  exhaust the cap the result may be 1 ULP off in directed modes.
-  Phase 1f (ADR-0038) extended the driver across the entire v1.0
-  surface. Slices p1.24 (elementary completions: `expm1`, `log1p`,
-  `exp2`, `exp10`), p1.25 (inverse trig: `asin`, `acos`, `atan`,
-  `atan2`), p1.26 (forward trig: `sin`, `cos`, `tan`), p1.27
-  (hyperbolic and inverse hyperbolic: `sinh`, `cosh`, `asinh`,
-  `acosh`, `atanh`), p1.28 (`erfc`), p1.29 (gamma family: `gamma`,
-  `digamma`, `beta`), p1.30 (integrals: `Ei`, `Si`, `Ci`, `li`),
-  p1.31 (Airy: `Ai`, `Bi`, `Ai_prime`, `Bi_prime`), p1.32 (Bessel
-  Y: `Y0`, `Y1`, `Yn`), p1.33 (Bessel I/K: `I0`, `I1`, `In`, `K0`,
-  `K1`, `Kn`), p1.34 (`zeta`), and p1.36 (`agm` + multi-arg
-  confirmation) shipped the per-family migrations; the audit at
+  in pathological cases. MPFR has the same caveat. The driver
+  fixes the iteration cap at 5 and applies the interval test
+  uniformly across the v1.0 surface (slice 7c ADR-0022 for pow;
+  Phase 1f ADR-0038 for the remaining transcendentals). On the
+  measure-zero exact-tie inputs that exhaust the cap the result
+  may be 1 ULP off in directed modes; this is the same
+  unbounded-precision termination caveat MPFR carries. The Phase
+  1f audit at
   `docs/decisions/plans/phase-1f-five-mode-completeness.md` carries
-  the per-kernel derivation for each. Every v1.0-surface kernel is
-  now correctly rounded under every IEEE 754-2019 rounding mode.
+  the per-kernel derivation for every migration.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
   square-and-multiply fast path, every other case evaluates
-  `exp(y · ln(x))` at working precision. It is the first
-  transcendental off the NearestEven-only differential tier.
+  `exp(y · ln(x))` at working precision.
 - Performance vs MPFR will not fully close in 1.0. MPFR carries
   decades of hand-tuned assembly via GMP. The target is "documented
   gap, never absurd"; principles forbid reaching for FFI to close

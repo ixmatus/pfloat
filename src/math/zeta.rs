@@ -200,11 +200,7 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             // there is no infinite recursion. The FE branch's
             // composition is now correct under every mode because
             // every constituent is.
-            let (result, status) = ziv_round(
-                |w| zeta_finite(x, w),
-                target_precision,
-                mode,
-            );
+            let (result, status) = ziv_round(|w| zeta_finite(x, w), target_precision, mode);
             auto_raise(status);
             (result, status)
         }
