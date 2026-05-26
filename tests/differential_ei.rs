@@ -2,19 +2,18 @@
 //!
 //! MPFR's `mpfr_eint` equals `Ei(x)` only for `x > 0` (it returns
 //! NaN for `x < 0`), so the bit-exact MPFR lane sweeps positive
-//! inputs. Negative `x` (a genuine real value for `Ei`, with no MPFR
-//! oracle) is covered by a high-precision self-consistency lane:
-//! `Ei` at `p` must agree with `Ei` at `p + 96` to within a few ULP,
-//! which catches regime-dispatch and series bugs even though it does
-//! not pin correct rounding.
+//! inputs and now spans every IEEE rounding mode (Ei is correctly
+//! rounded via Ziv per slice p1.30, ADR-0038). Negative `x` (a
+//! genuine real value for `Ei`, with no MPFR oracle) stays on the
+//! high-precision self-consistency lane below.
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    ALL_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_oracle_for_mode, next_i64_in, rug_from_i64,
+    sweep_size, BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 use pfloat::RoundingMode;
 
@@ -28,22 +27,20 @@ fn ei_matches_mpfr_on_positive_inputs() {
             // x > 0: MPFR eint == Ei. Cap |x| so eˣ in the
             // asymptotic regime stays a sane size.
             let a = next_i64_in(&mut state, 1, 40);
-            for &mode in ALL_ROUNDING_MODES {
+            for &mode in BIT_EXACT_ROUNDING_MODES {
                 let bf_r = {
                     let a_bf = bigfloat_from_i64(a, p);
                     let (r, _status) = a_bf.ei(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = {
-                    let a_rg = rug_from_i64(a, p);
-                    let (r, _ord) = rug::Float::with_val_round(
-                        p,
-                        a_rg.eint_ref(),
-                        mpfr_round_of(mode)
-                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                    );
-                    r
-                };
+                let rug_r = mpfr_oracle_for_mode(
+                    |prec, round| {
+                        let a_rg = rug_from_i64(a, prec);
+                        rug::Float::with_val_round(prec, a_rg.eint_ref(), round).0
+                    },
+                    mode,
+                    p,
+                );
                 assert_eq!(bf_r, rug_r, "Ei({a}) at p={p}, mode={mode:?}");
             }
         }
