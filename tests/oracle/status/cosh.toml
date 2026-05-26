@@ -13,7 +13,7 @@ lm_seeds_run       = 50
 
 [rounding_status]
 NE = "correctly-rounded"
-NA = "unswept"
-TZ = "unswept"
-TP = "unswept"
-TN = "unswept"
+NA = "correctly-rounded"
+TZ = "correctly-rounded"
+TP = "correctly-rounded"
+TN = "correctly-rounded"
