@@ -28,6 +28,7 @@ use crate::mantissa::limbs_for;
 
 use super::gamma_stirling::stirling_digamma;
 use super::pi_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `digamma(self)` rounded under `mode` to `self.precision`.
@@ -38,6 +39,10 @@ impl BigFloat {
     }
 
     /// `digamma(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.29, ADR-0038).
     pub fn digamma_round(
         &self,
         target_precision: u32,
@@ -111,18 +116,37 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
         Class::Normal { .. } => {}
     }
 
-    // Negative branch.
+    // Negative integer pole, before any working-precision work.
+    if matches!(x.sign(), Sign::Negative) && super::lgamma::is_integer_test(x) {
+        let neg_inf =
+            BigFloat::try_new_infinity(Sign::Negative, target_precision).expect("precision >= 1");
+        auto_raise(Status::DIV_BY_ZERO);
+        return (neg_inf, Status::DIV_BY_ZERO);
+    }
+
+    // z_min pinned from target_precision so the shift count does not
+    // flip across Ziv retries (mirrors the lgamma precedent). The
+    // regime dispatch (direct Stirling vs shift-then-Stirling) reads
+    // from this pinned value inside eval(w).
+    let z_min = z_min_for_target(target_precision);
+    let (result, status) = ziv_round(|w| digamma_at_w(x, z_min, w), target_precision, mode);
+    auto_raise(status);
+    (result, status)
+}
+
+/// Evaluate `digamma(x)` at the supplied working precision under
+/// `NearestEven`. The caller has peeled off NaN, ±0, ±∞, and the
+/// negative-integer pole. The reflection branch (negative non-integer
+/// `x`) composes `ψ(1 − x) − π·cot(πx)` with a recursive
+/// `digamma_round` call that routes through the positive branch
+/// (since `1 − x > 1` when `x < 0`), so it does not recurse
+/// indefinitely. The positive branch dispatches on `z_min` (pinned
+/// by the caller from `target_precision`) between direct Stirling
+/// and shift-then-Stirling per the recurrence
+/// `ψ(x+1) = ψ(x) + 1/x`.
+fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     if matches!(x.sign(), Sign::Negative) {
-        if super::lgamma::is_integer_test(x) {
-            let neg_inf = BigFloat::try_new_infinity(Sign::Negative, target_precision)
-                .expect("precision >= 1");
-            auto_raise(Status::DIV_BY_ZERO);
-            return (neg_inf, Status::DIV_BY_ZERO);
-        }
         // Reflection: ψ(x) = ψ(1 − x) − π·cot(πx).
-        let working_prec = target_precision
-            .saturating_add(64)
-            .min(target_precision.saturating_add(512));
         let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
         let (y, _) = one.sub(x, RoundingMode::NearestEven);
         let pi = pi_at(working_prec);
@@ -134,24 +158,15 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
         let (psi_y, _) = y
             .digamma_round(working_prec, RoundingMode::NearestEven)
             .expect("precision >= 1");
-        let (result, _) = psi_y.sub(&pi_cot, RoundingMode::NearestEven);
-        let (rounded, status) = result
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
+        return psi_y.sub(&pi_cot, RoundingMode::NearestEven).0;
     }
 
     // Positive branch: shift up if needed, then apply Stirling.
-    let working_prec = target_precision
-        .saturating_add(64)
-        .min(target_precision.saturating_add(512));
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
 
-    let z_min = z_min_for_target(target_precision);
     let e_x = match &x_w.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
@@ -164,7 +179,7 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
         1u32 << ((e_x + 1) as u32)
     };
 
-    let result_full_prec = if approx_x >= z_min {
+    if approx_x >= z_min {
         stirling_digamma(&x_w, working_prec)
     } else {
         let shifts = z_min - approx_x;
@@ -185,13 +200,7 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
             sum_recip = next_sum;
         }
         psi_z.sub(&sum_recip, RoundingMode::NearestEven).0
-    };
-
-    let (rounded, status) = result_full_prec
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(status);
-    (rounded, status)
+    }
 }
 
 /// `z_min` for the digamma asymptotic. Same shape as the lgamma
