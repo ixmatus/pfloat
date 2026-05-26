@@ -204,16 +204,16 @@ fn signed(f: Float, sign: Sign) -> Float {
 ///
 /// The mode-aware companion to [`bf_to_f32_bits`] (which is NE-only
 /// through the Display + Rust `f32` parser bridge per
-/// `feedback_bf_to_f32_directed_mode`). Routes the BigFloat through
-/// `bigfloat_to_rug` to a precision-matching [`rug::Float`] (a
-/// bit-exact conversion that preserves the value regardless of the
-/// rounding mode that produced it), then delegates to the existing
-/// [`round_f32`] to apply the rounding mode at the f32 boundary
-/// (including the `NearestAway` synthesis via
+/// `feedback_bf_to_f32_directed_mode`). Routes the `BigFloat`
+/// through `bigfloat_to_rug` to a precision-matching [`rug::Float`]
+/// (a bit-exact conversion that preserves the value regardless of
+/// the rounding mode that produced it), then delegates to the
+/// existing [`round_f32`] to apply the rounding mode at the f32
+/// boundary (including the `NearestAway` synthesis via
 /// [`round_ties_to_away_f32`] for the mode MPFR has no primitive
 /// for).
 ///
-/// At `p = 24` the BigFloat lands exactly on the f32 grid and the
+/// At `p = 24` the `BigFloat` lands exactly on the f32 grid and the
 /// conversion is a bit-exact re-encode; at higher precisions the
 /// rug→f32 round picks the f32-grid neighbour determined by `mode`.
 /// This lifts the silent NE-only override the Display+parse bridge

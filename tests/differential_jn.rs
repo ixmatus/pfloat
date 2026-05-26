@@ -5,7 +5,10 @@
 //! rug 1.30 exposes MPFR `mpfr_j0` / `mpfr_j1` / `mpfr_jn`
 //! (`j0_ref` / `j1_ref` / `jn_ref`), a genuine external oracle, so
 //! this is a **bit-exact** lane (`assert_eq!`, the `differential_ei`
-//! idiom) under `NearestEven`.
+//! idiom) under every IEEE rounding mode (J0/J1/Jn are correctly
+//! rounded under every mode via the slice p1.4 Ziv envelope,
+//! ADR-0022; Phase 1f slice p1.23 widens this lane from NE-only to
+//! all five IEEE modes via `mpfr_oracle_for_mode`, ADR-0038).
 //!
 //! Cost note (`feedback_differential_lane_cost`): the integer sweep
 //! lands almost entirely in the Miller recurrence regime, whose seed
@@ -21,8 +24,8 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    NEAREST_EVEN_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_oracle_for_mode, next_i64_in, rug_from_i64,
+    sweep_size, BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 use pfloat::RoundingMode;
 
@@ -49,18 +52,18 @@ fn j0_matches_mpfr() {
     for &p in TRANSCENDENTAL_PRECISIONS {
         for _ in 0..cases {
             let a = next_i64_in(&mut state, 1, 40);
-            for &mode in NEAREST_EVEN_ROUNDING_MODES {
+            for &mode in BIT_EXACT_ROUNDING_MODES {
                 let bf_r = {
                     let (r, _s) = bigfloat_from_i64(a, p).j0(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = rug::Float::with_val_round(
+                let rug_r = mpfr_oracle_for_mode(
+                    |prec, round| {
+                        rug::Float::with_val_round(prec, rug_from_i64(a, prec).j0_ref(), round).0
+                    },
+                    mode,
                     p,
-                    rug_from_i64(a, p).j0_ref(),
-                    mpfr_round_of(mode)
-                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                )
-                .0;
+                );
                 assert_eq!(bf_r, rug_r, "J0({a}) at p={p}, mode={mode:?}");
             }
         }
@@ -74,18 +77,18 @@ fn j1_matches_mpfr() {
     for &p in TRANSCENDENTAL_PRECISIONS {
         for _ in 0..cases {
             let a = next_i64_in(&mut state, 1, 40);
-            for &mode in NEAREST_EVEN_ROUNDING_MODES {
+            for &mode in BIT_EXACT_ROUNDING_MODES {
                 let bf_r = {
                     let (r, _s) = bigfloat_from_i64(a, p).j1(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = rug::Float::with_val_round(
+                let rug_r = mpfr_oracle_for_mode(
+                    |prec, round| {
+                        rug::Float::with_val_round(prec, rug_from_i64(a, prec).j1_ref(), round).0
+                    },
+                    mode,
                     p,
-                    rug_from_i64(a, p).j1_ref(),
-                    mpfr_round_of(mode)
-                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                )
-                .0;
+                );
                 assert_eq!(bf_r, rug_r, "J1({a}) at p={p}, mode={mode:?}");
             }
         }
@@ -100,18 +103,19 @@ fn jn_matches_mpfr() {
         for n in [2i32, 3, 5] {
             for _ in 0..cases {
                 let a = next_i64_in(&mut state, 1, 40);
-                for &mode in NEAREST_EVEN_ROUNDING_MODES {
+                for &mode in BIT_EXACT_ROUNDING_MODES {
                     let bf_r = {
                         let (r, _s) = bigfloat_from_i64(a, p).jn(n, mode);
                         bigfloat_to_rug(&r)
                     };
-                    let rug_r = rug::Float::with_val_round(
+                    let rug_r = mpfr_oracle_for_mode(
+                        |prec, round| {
+                            rug::Float::with_val_round(prec, rug_from_i64(a, prec).jn_ref(n), round)
+                                .0
+                        },
+                        mode,
                         p,
-                        rug_from_i64(a, p).jn_ref(n),
-                        mpfr_round_of(mode)
-                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                    )
-                    .0;
+                    );
                     assert_eq!(bf_r, rug_r, "J{n}({a}) at p={p}, mode={mode:?}");
                 }
             }
@@ -130,44 +134,50 @@ fn jn_negative_and_dyadic_matches_mpfr() {
         // Negative integers: parity reduction vs MPFR directly.
         for _ in 0..cases {
             let a = next_i64_in(&mut state, -30, -1);
-            let mode = RoundingMode::NearestEven;
             for n in [0i32, 1, 2, 3] {
-                let bf_r = {
-                    let (r, _s) = bigfloat_from_i64(a, p).jn(n, mode);
-                    bigfloat_to_rug(&r)
-                };
-                let rug_r = rug::Float::with_val_round(
-                    p,
-                    rug_from_i64(a, p).jn_ref(n),
-                    mpfr_round_of(mode)
-                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                )
-                .0;
-                assert_eq!(bf_r, rug_r, "J{n}({a}) at p={p}");
+                for &mode in BIT_EXACT_ROUNDING_MODES {
+                    let bf_r = {
+                        let (r, _s) = bigfloat_from_i64(a, p).jn(n, mode);
+                        bigfloat_to_rug(&r)
+                    };
+                    let rug_r = mpfr_oracle_for_mode(
+                        |prec, round| {
+                            rug::Float::with_val_round(prec, rug_from_i64(a, prec).jn_ref(n), round)
+                                .0
+                        },
+                        mode,
+                        p,
+                    );
+                    assert_eq!(bf_r, rug_r, "J{n}({a}) at p={p}, mode={mode:?}");
+                }
             }
         }
         // Exact dyadic rationals: identical inputs both sides.
         for &(num, den) in DYADIC {
-            let mode = RoundingMode::NearestEven;
             let x_bf = {
                 let (q, _) = bigfloat_from_i64(num, p)
                     .div(&bigfloat_from_i64(den, p), RoundingMode::NearestEven);
                 q
             };
-            let x_rg = rug_from_i64(num, p) / rug_from_i64(den, p);
             for n in [0i32, 1, 2, 3] {
-                let bf_r = {
-                    let (r, _s) = x_bf.jn(n, mode);
-                    bigfloat_to_rug(&r)
-                };
-                let rug_r = rug::Float::with_val_round(
-                    p,
-                    x_rg.jn_ref(n),
-                    mpfr_round_of(mode)
-                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                )
-                .0;
-                assert_eq!(bf_r, rug_r, "J{n}({num}/{den}) at p={p}");
+                for &mode in BIT_EXACT_ROUNDING_MODES {
+                    let bf_r = {
+                        let (r, _s) = x_bf.jn(n, mode);
+                        bigfloat_to_rug(&r)
+                    };
+                    let rug_r = mpfr_oracle_for_mode(
+                        |prec, round| {
+                            // Build the dyadic rational at the
+                            // working precision under NE (exact for
+                            // dyadic operands) before evaluating Jn.
+                            let x_rg = rug_from_i64(num, prec) / rug_from_i64(den, prec);
+                            rug::Float::with_val_round(prec, x_rg.jn_ref(n), round).0
+                        },
+                        mode,
+                        p,
+                    );
+                    assert_eq!(bf_r, rug_r, "J{n}({num}/{den}) at p={p}, mode={mode:?}");
+                }
             }
         }
     }

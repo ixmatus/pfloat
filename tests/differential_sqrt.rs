@@ -1,5 +1,10 @@
 //! MPFR differential: `BigFloat::sqrt` matches `rug::Float::sqrt`
-//! bit-for-bit at every tested precision and rounding mode.
+//! bit-for-bit at every tested precision and IEEE rounding mode
+//! (the arithmetic core is correctly rounded under every mode by
+//! construction).
+//!
+//! Phase 1f slice p1.23 widened this lane from NE-only to all five
+//! IEEE modes via `mpfr_oracle_for_mode` (ADR-0038).
 //!
 //! Negative inputs are exercised by the Kani harness in
 //! `src/verify/sqrt.rs`; this lane confines itself to non-negative
@@ -10,8 +15,8 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    ALL_ROUNDING_MODES, SWEEP_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_oracle_for_mode, next_i64_in, rug_from_i64,
+    sweep_size, BIT_EXACT_ROUNDING_MODES, SWEEP_PRECISIONS,
 };
 
 #[test]
@@ -27,22 +32,20 @@ fn sqrt_matches_mpfr_on_nonnegative_i64() {
         };
         for _ in 0..cases {
             let a = next_i64_in(&mut state, 0, cap);
-            for &mode in ALL_ROUNDING_MODES {
+            for &mode in BIT_EXACT_ROUNDING_MODES {
                 let bf_root = {
                     let a_bf = bigfloat_from_i64(a, p);
                     let (root, _status) = a_bf.sqrt(mode);
                     bigfloat_to_rug(&root)
                 };
-                let rug_root = {
-                    let a_rg = rug_from_i64(a, p);
-                    let (root, _ord) = rug::Float::with_val_round(
-                        p,
-                        a_rg.sqrt_ref(),
-                        mpfr_round_of(mode)
-                            .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                    );
-                    root
-                };
+                let rug_root = mpfr_oracle_for_mode(
+                    |prec, round| {
+                        let a_rg = rug_from_i64(a, prec);
+                        rug::Float::with_val_round(prec, a_rg.sqrt_ref(), round).0
+                    },
+                    mode,
+                    p,
+                );
                 assert_eq!(bf_root, rug_root, "sqrt({a}) at p={p}, mode={mode:?}");
             }
         }

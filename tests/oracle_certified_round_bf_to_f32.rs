@@ -7,8 +7,8 @@
 //! Display + Rust `f32` parser bridge (`bf_to_f32_bits`, per
 //! `feedback_bf_to_f32_directed_mode`). The two bridges must agree
 //! bit-exact under `NearestEven` on every binary32 input — at
-//! `p = 24` the BigFloat lands on the f32 grid and both routes are
-//! exact re-encodes, so any disagreement signals a bridge bug.
+//! `p = 24` the `BigFloat` lands on the f32 grid and both routes
+//! are exact re-encodes, so any disagreement signals a bridge bug.
 //!
 //! This is the 2^32-input property test. Wall-clock budget ~2
 //! minutes on a single thread (the rug FFI dominates); marked
@@ -31,7 +31,7 @@
 mod oracle;
 
 use oracle::{bf24_of_bits, bf_to_f32_bits, certified_round_bf_to_f32};
-use pfloat::RoundingMode;
+use pfloat::{BigFloat, RoundingMode};
 
 #[test]
 #[ignore = "2^32 exhaustive sweep; ~2 minutes wall-clock"]
@@ -68,6 +68,98 @@ fn certified_round_bf_to_f32_agrees_with_bf_to_f32_bits_under_ne_at_p24() {
     assert_eq!(
         mismatch_count, 0,
         "{mismatch_count} mismatches over 2^32 inputs; first: {first_mismatch:?}"
+    );
+}
+
+/// Directed-mode pin corpus: hand-derived (input, mode, expected
+/// bits) triples at `p = 53` (above the f32 grid) that exercise
+/// the rounding-mode-aware bf→f32 path the
+/// `certified_round_bf_to_f32` helper unlocks. The pre-helper
+/// Display + Rust `f32` parser bridge would silently re-round to
+/// NE on every one of these inputs at `p > 24`; this test pins
+/// the helper's mode-aware behaviour as a regression gate
+/// (slice p1.23, ADR-0038).
+///
+/// The inputs are exact-representable at `p = 53` (every value
+/// uses a finite binary expansion fitting in 53 bits) so the
+/// `parse_str` constructor lands the `BigFloat` bit-exactly. Each
+/// expected output is derived from the IEEE 754-2019 rounding
+/// rules applied by hand to the value's position on the f32
+/// grid.
+#[test]
+fn certified_round_bf_to_f32_directed_modes_pin_at_p53() {
+    // The value 1 + 2^-24 = 1.00000005960464477539062500 sits
+    // exactly at the midpoint between f32 grid points 1.0
+    // (0x3F800000) and 1.0 + 2^-23 (0x3F800001).
+    let mid_above_one = BigFloat::parse_str(
+        "1.00000005960464477539062500",
+        53,
+        RoundingMode::NearestEven,
+    )
+    .expect("decimal parses at p=53")
+    .0;
+    // NE: ties to even; mantissa 0 (the lower neighbour) is even.
+    assert_pin(&mid_above_one, RoundingMode::NearestEven, 0x3F800000);
+    // NA: ties away from zero; lands on the larger-magnitude
+    // neighbour.
+    assert_pin(&mid_above_one, RoundingMode::NearestAway, 0x3F800001);
+    // TZ: directed toward zero on the positive value lands lower.
+    assert_pin(&mid_above_one, RoundingMode::TowardZero, 0x3F800000);
+    // TP: directed toward +∞ lands higher.
+    assert_pin(&mid_above_one, RoundingMode::TowardPositive, 0x3F800001);
+    // TN: directed toward −∞ on a positive value lands lower.
+    assert_pin(&mid_above_one, RoundingMode::TowardNegative, 0x3F800000);
+
+    // The negated value −1 − 2^-24 sits between −1.0 (0xBF800000)
+    // and −1.0 − 2^-23 (0xBF800001).
+    let mid_below_neg_one = BigFloat::parse_str(
+        "-1.00000005960464477539062500",
+        53,
+        RoundingMode::NearestEven,
+    )
+    .expect("decimal parses at p=53")
+    .0;
+    // NE: ties to even; mantissa 0 is even, lands on −1.0.
+    assert_pin(&mid_below_neg_one, RoundingMode::NearestEven, 0xBF800000);
+    // NA: ties away from zero; on a negative value, away means
+    // more negative.
+    assert_pin(&mid_below_neg_one, RoundingMode::NearestAway, 0xBF800001);
+    // TZ: directed toward zero on a negative value lands less
+    // negative (closer to zero).
+    assert_pin(&mid_below_neg_one, RoundingMode::TowardZero, 0xBF800000);
+    // TP: directed toward +∞ on a negative value lands less
+    // negative.
+    assert_pin(&mid_below_neg_one, RoundingMode::TowardPositive, 0xBF800000);
+    // TN: directed toward −∞ lands more negative.
+    assert_pin(&mid_below_neg_one, RoundingMode::TowardNegative, 0xBF800001);
+
+    // A non-tie value strictly above the midpoint: 1 + 2^-23
+    // exactly. Already on the f32 grid (the second neighbour);
+    // every mode lands there.
+    let exact_above = BigFloat::parse_str(
+        "1.00000011920928955078125000",
+        53,
+        RoundingMode::NearestEven,
+    )
+    .expect("decimal parses at p=53")
+    .0;
+    for &mode in &[
+        RoundingMode::NearestEven,
+        RoundingMode::NearestAway,
+        RoundingMode::TowardZero,
+        RoundingMode::TowardPositive,
+        RoundingMode::TowardNegative,
+    ] {
+        assert_pin(&exact_above, mode, 0x3F800001);
+    }
+}
+
+fn assert_pin(bf: &BigFloat, mode: RoundingMode, expected: u32) {
+    let got = certified_round_bf_to_f32(bf, mode)
+        .expect("non-NaN input certified_round_bf_to_f32 returns Some");
+    assert_eq!(
+        got, expected,
+        "certified_round_bf_to_f32(bf, {mode:?}) = 0x{got:08x}, expected 0x{expected:08x}"
     );
 }
 

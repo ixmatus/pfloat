@@ -1,6 +1,11 @@
 # ADR-0038: Five-mode kernel completeness as the v1.0 strong-claim gate
 
-- **Status**: accepted
+- **Status**: accepted; scaffolding shipped at slice p1.23 (the
+  `mpfr_oracle_for_mode` and `certified_round_bf_to_f32` helpers,
+  the per-mode status TOML schema, the already-five-mode cohort's
+  differential lanes widened to `BIT_EXACT_ROUNDING_MODES`); the
+  per-family kernel migrations (p1.24 through p1.34) execute
+  against the audit doc.
 - **Date**: 2026-05-25
 
 ## Context

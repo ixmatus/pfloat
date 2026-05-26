@@ -85,10 +85,7 @@ impl DriverOutcome {
                 // Already initialized to Unswept.
                 continue;
             }
-            let any_failure = self
-                .mismatch
-                .iter()
-                .any(|(_, m, _, _)| *m == mode)
+            let any_failure = self.mismatch.iter().any(|(_, m, _, _)| *m == mode)
                 || self.panic.iter().any(|(_, m, _)| *m == mode);
             *slot = if any_failure {
                 RoundingStatus::HasErrors
