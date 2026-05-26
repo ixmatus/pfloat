@@ -41,6 +41,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::pi_at;
+use super::ziv::ziv_round;
 
 /// Which Airy function a kernel invocation evaluates. The four share
 /// the boundary constants, the `f`/`g` Maclaurin series, the
@@ -63,6 +64,10 @@ impl BigFloat {
     }
 
     /// `Ai(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.31, ADR-0038).
     pub fn ai_round(
         &self,
         target_precision: u32,
@@ -82,6 +87,10 @@ impl BigFloat {
     }
 
     /// `Bi(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.31, ADR-0038).
     pub fn bi_round(
         &self,
         target_precision: u32,
@@ -102,6 +111,10 @@ impl BigFloat {
     }
 
     /// `Ai′(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.31, ADR-0038).
     pub fn ai_prime_round(
         &self,
         target_precision: u32,
@@ -122,6 +135,10 @@ impl BigFloat {
     }
 
     /// `Bi′(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.31, ADR-0038).
     pub fn bi_prime_round(
         &self,
         target_precision: u32,
@@ -221,12 +238,36 @@ fn airy_kernel(
         Class::Normal { .. } => {}
     }
 
-    let value = airy_eval_normal(which, x, target_precision);
-    let (rounded, status) = value
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Regime decision pinned from target_precision so it does not
+    // flip across Ziv retries (slice p1.4 erf precedent). The
+    // three-regime helpers (Maclaurin, +x asymptotic, -x oscillatory
+    // asymptotic) each take their working precision and apply their
+    // internal +64 + cancellation-tax guard on top.
+    let e_x = match &x.abs().class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let threshold = airy_threshold_exponent(target_precision);
+    let use_asymptotic = e_x >= threshold;
+    let asymptotic_neg = use_asymptotic && matches!(x.sign(), Sign::Negative);
+
+    let (result, status) = ziv_round(
+        |w| {
+            if use_asymptotic {
+                if asymptotic_neg {
+                    airy_asymptotic_neg(which, &x.abs(), w)
+                } else {
+                    airy_asymptotic_pos(which, x, w)
+                }
+            } else {
+                airy_series(which, x, w)
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// The exact limit of an Airy function at `±∞` (DLMF 9.7). At `+∞`:
@@ -323,28 +364,6 @@ fn airy_zero_value(which: AiryFn, working_prec: u32) -> BigFloat {
             let (r, _) = p.div(&g, RoundingMode::NearestEven);
             r
         }
-    }
-}
-
-/// Evaluate an Airy function at a finite non-zero argument via the
-/// three-regime sign-aware dispatch: large positive `x` → the
-/// exponential asymptotic (DLMF 9.7.5–9.7.8); large negative `x` →
-/// the oscillatory asymptotic (DLMF 9.7.9–9.7.12); otherwise the
-/// convergent Maclaurin series (valid for all `z`).
-fn airy_eval_normal(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
-    let e_x = match &x.abs().class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-    let threshold = airy_threshold_exponent(target_precision);
-    if e_x >= threshold {
-        if matches!(x.sign(), Sign::Negative) {
-            airy_asymptotic_neg(which, &x.abs(), target_precision)
-        } else {
-            airy_asymptotic_pos(which, x, target_precision)
-        }
-    } else {
-        airy_series(which, x, target_precision)
     }
 }
 

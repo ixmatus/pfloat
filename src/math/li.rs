@@ -22,6 +22,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -36,6 +38,10 @@ impl BigFloat {
     }
 
     /// `li(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.30, ADR-0038).
     pub fn li_round(
         &self,
         target_precision: u32,
@@ -112,25 +118,40 @@ fn li_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         }
     }
 
-    // x > 0 finite. Compose at a boosted working precision so the
-    // ln-then-Ei chain keeps the caller's bits; round once at the end.
-    let working_prec = target_precision
-        .saturating_add(128)
-        .min(target_precision.saturating_add(4096));
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
+    // x = 1 is the li(1) = -∞ + DIV_BY_ZERO pole (ln 1 = +0,
+    // Ei(0) = -∞). Handle it before Ziv so the DIV_BY_ZERO flag
+    // reaches the caller's status return value, not just the
+    // thread-local (the ziv_round signature returns only a rounding
+    // status). This special case avoids needing a status-merging
+    // multi-arg Ziv driver.
+    let one_at_input = BigFloat::try_from_i64_exact(1, x.precision).expect("precision >= 1");
+    if matches!(
+        x.partial_cmp(&one_at_input).0,
+        Some(core::cmp::Ordering::Equal)
+    ) {
+        let ninf =
+            BigFloat::try_new_infinity(Sign::Negative, target_precision).expect("precision >= 1");
+        auto_raise(Status::DIV_BY_ZERO);
+        return (ninf, Status::DIV_BY_ZERO);
+    }
 
-    let (t, _) = x_w.ln(RoundingMode::NearestEven);
-    // ln(1) = +0 ⇒ Ei(0) = −∞ + DIV_BY_ZERO: the li(1) pole. The
-    // `ei` kernel raises the flag; capture and re-raise it.
-    let (ei_val, ei_status) = t.ei(RoundingMode::NearestEven);
-
-    let (rounded, round_status) = ei_val
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    let status = ei_status | round_status;
+    // x > 0 finite, x ≠ 1. Ziv-driven composition: eval(w) computes
+    // t = ln(x) at w then Ei(t) at w. Both ln (Ziv-driven, slice
+    // p1.2) and Ei (Ziv-driven, this slice) deliver correctly-rounded
+    // NE values at working precision; the outer Ziv envelope drives
+    // the rounding mode at target precision.
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let (t, _) = x_w.ln(RoundingMode::NearestEven);
+            t.ei(RoundingMode::NearestEven).0
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }

@@ -40,6 +40,7 @@
 use super::gamma::gamma_sign_of;
 use super::lgamma::is_integer_test;
 use super::pow::{integer_parity, Parity};
+use super::ziv::ziv_round;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -62,6 +63,13 @@ impl BigFloat {
     }
 
     /// `beta(self, other)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.29, ADR-0038). The ADR-0030 case dispatch (poles,
+    /// pole-cancellation, finite paths) stays before Ziv; only the
+    /// finite-path lgamma compositions (cases 1/2 and the case-4
+    /// closed form) run through the Ziv envelope.
     pub fn beta_round(
         &self,
         other: &Self,
@@ -204,39 +212,39 @@ fn beta_kernel(
     }
 
     // Cases 1 and 2: a, b, a+b all away from Γ poles. Magnitude via
-    // the lgamma composition (unchanged); sign is the product of the
-    // three Γ signs (ADR-0030), reusing the single reflection
-    // derivation in gamma_sign_of.
-    let working_prec = target_precision
-        .saturating_add(64)
-        .min(target_precision.saturating_add(512));
-    let (lg_a, _) = a
-        .lgamma_round(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1");
-    let (lg_b, _) = b
-        .lgamma_round(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1");
-    let (lg_sum, _) = sum
-        .lgamma_round(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1");
-    let (lg_a_plus_b, _) = lg_a.add(&lg_b, RoundingMode::NearestEven);
-    let (lb, _) = lg_a_plus_b.sub(&lg_sum, RoundingMode::NearestEven);
-    let (magnitude, _) = lb.exp(RoundingMode::NearestEven);
-
-    let sign_a = gamma_sign_of(a, working_prec);
-    let sign_b = gamma_sign_of(b, working_prec);
-    let sign_sum = gamma_sign_of(&sum, working_prec);
-    let signed = if sign_product_is_negative(sign_a, sign_b, sign_sum) {
-        magnitude.negated()
-    } else {
-        magnitude
-    };
-
-    let (rounded, status) = signed
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // the lgamma composition; sign is the product of the three Γ
+    // signs (ADR-0030), reusing the single reflection derivation in
+    // gamma_sign_of. The composition runs through ziv_round so the
+    // directed-mode boundary lands correctly; the sign is binary
+    // and applied after the magnitude is rounded.
+    let (result, status) = ziv_round(
+        |w| {
+            let (lg_a, _) = a
+                .lgamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (lg_b, _) = b
+                .lgamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (lg_sum, _) = sum
+                .lgamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (lg_a_plus_b, _) = lg_a.add(&lg_b, RoundingMode::NearestEven);
+            let (lb, _) = lg_a_plus_b.sub(&lg_sum, RoundingMode::NearestEven);
+            let (magnitude, _) = lb.exp(RoundingMode::NearestEven);
+            let sign_a = gamma_sign_of(a, w);
+            let sign_b = gamma_sign_of(b, w);
+            let sign_sum = gamma_sign_of(&sum, w);
+            if sign_product_is_negative(sign_a, sign_b, sign_sum) {
+                magnitude.negated()
+            } else {
+                magnitude
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// `true` iff `x` is a non-positive integer, i.e. sits at a Γ pole
@@ -288,36 +296,46 @@ fn beta_case4(
     target_precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
-    let wp = target_precision.saturating_add(64);
-    let ne = RoundingMode::NearestEven;
-    let one = BigFloat::try_from_i64_exact(1, wp).expect("precision >= 1");
-    // n, m as exact integers at the working precision (neg, pos are
-    // already exact integers, so widening cannot round).
-    let n = neg
-        .negated()
-        .round_to_precision(wp, ne)
-        .expect("precision >= 1")
-        .0; // +n  ≥ 1
-    let m = pos.round_to_precision(wp, ne).expect("precision >= 1").0; // m   ≥ 1
-    let (n_plus_1, _) = n.add(&one, ne); // n + 1     ≥ 2
-    let (n_minus_m, _) = n.sub(&m, ne); // n − m     ≥ 0
-    let (n_minus_m_plus_1, _) = n_minus_m.add(&one, ne); // n−m+1 ≥ 1
-    let (lg_m, _) = m.lgamma_round(wp, ne).expect("precision >= 1"); // ln (m−1)!
-    let (lg_nm1, _) = n_minus_m_plus_1
-        .lgamma_round(wp, ne)
-        .expect("precision >= 1"); // ln (n−m)!
-    let (lg_np1, _) = n_plus_1.lgamma_round(wp, ne).expect("precision >= 1"); // ln n!
-    let (sum, _) = lg_m.add(&lg_nm1, ne);
-    let (ln_mag, _) = sum.sub(&lg_np1, ne);
-    let (mag, _) = ln_mag.exp(ne);
-    // sign = (−1)^m, from the parity of m (O(limbs), no loop).
+    // Sign is (−1)^m, from the parity of m; binary and pinned
+    // outside the Ziv envelope (`neg` and `pos` are exact integers
+    // so the parity does not depend on the rounding mode or
+    // working precision).
     let negative = matches!(integer_parity(pos), Some(Parity::Odd));
-    let signed = if negative { mag.negated() } else { mag };
-    let (rounded, status) = signed
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            let ne = RoundingMode::NearestEven;
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            // n, m as exact integers at the working precision (neg,
+            // pos are already exact integers, so widening cannot
+            // round).
+            let n = neg
+                .negated()
+                .round_to_precision(w, ne)
+                .expect("precision >= 1")
+                .0; // +n ≥ 1
+            let m = pos.round_to_precision(w, ne).expect("precision >= 1").0; // m ≥ 1
+            let (n_plus_1, _) = n.add(&one, ne); // n + 1 ≥ 2
+            let (n_minus_m, _) = n.sub(&m, ne); // n − m ≥ 0
+            let (n_minus_m_plus_1, _) = n_minus_m.add(&one, ne); // n−m+1 ≥ 1
+            let (lg_m, _) = m.lgamma_round(w, ne).expect("precision >= 1"); // ln (m−1)!
+            let (lg_nm1, _) = n_minus_m_plus_1
+                .lgamma_round(w, ne)
+                .expect("precision >= 1"); // ln (n−m)!
+            let (lg_np1, _) = n_plus_1.lgamma_round(w, ne).expect("precision >= 1"); // ln n!
+            let (sum, _) = lg_m.add(&lg_nm1, ne);
+            let (ln_mag, _) = sum.sub(&lg_np1, ne);
+            let (mag, _) = ln_mag.exp(ne);
+            if negative {
+                mag.negated()
+            } else {
+                mag
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 fn is_finite_positive(x: &BigFloat) -> bool {

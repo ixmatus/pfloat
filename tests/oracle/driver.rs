@@ -14,7 +14,9 @@ use std::path::Path;
 
 use pfloat::RoundingMode;
 
-use super::status::{fnid_to_status_fields, DomainCoverage, RoundingStatus, StatusRow};
+use super::status::{
+    fnid_to_status_fields, DomainCoverage, PerModeStatus, RoundingStatus, StatusRow,
+};
 use super::types::{FnId, OracleBackend, Verdict};
 use super::verify::{verify_input, Kernel};
 
@@ -39,18 +41,59 @@ impl DriverOutcome {
             + self.panic.len() as u32
     }
 
-    /// Compose the Phase 1 verdict from the verdict counts.
-    /// `HasErrors` is any mismatch or panic; `Faithful` requires
-    /// the worst observed error to be at most 1 ULP (the driver
-    /// does not currently measure ULP and treats any mismatch as
-    /// `HasErrors`, so a follow-up slice's per-mismatch ULP
-    /// measurement is what unlocks the `Faithful` rung).
+    /// Compose the aggregate Phase 1 verdict from the verdict
+    /// counts. `HasErrors` is any mismatch or panic; `Faithful`
+    /// requires the worst observed error to be at most 1 ULP (the
+    /// driver does not currently measure ULP and treats any
+    /// mismatch as `HasErrors`, so a follow-up slice's
+    /// per-mismatch ULP measurement is what unlocks the `Faithful`
+    /// rung).
+    ///
+    /// The Phase 1f per-mode schema (ADR-0038) prefers
+    /// [`Self::rounding_status_per_mode`] over this method;
+    /// `rounding_status` is retained for back-compat with
+    /// pre-migration callers (the smoke gate's assertions, the
+    /// L-M corpus's success criterion).
     pub fn rounding_status(&self) -> RoundingStatus {
         if !self.mismatch.is_empty() || !self.panic.is_empty() {
             RoundingStatus::HasErrors
         } else {
             RoundingStatus::CorrectlyRounded
         }
+    }
+
+    /// Compose the Phase 1f per-mode verdict table. For each of
+    /// the five IEEE 754-2019 rounding modes the driver swept
+    /// (`swept_modes`), the corresponding entry records
+    /// `CorrectlyRounded` when no mismatch or panic in this
+    /// outcome was tagged with that mode, `HasErrors` when at
+    /// least one was. Modes the driver did NOT sweep read
+    /// `Unswept` (the Phase 1f transitional state; never the
+    /// resting state at v1.0 per ADR-0038's no-narrowing
+    /// principle).
+    pub fn rounding_status_per_mode(&self, swept_modes: &[RoundingMode]) -> PerModeStatus {
+        let mut status = PerModeStatus::all(RoundingStatus::Unswept);
+        let entries: [(RoundingMode, &mut RoundingStatus); 5] = [
+            (RoundingMode::NearestEven, &mut status.ne),
+            (RoundingMode::NearestAway, &mut status.na),
+            (RoundingMode::TowardZero, &mut status.tz),
+            (RoundingMode::TowardPositive, &mut status.tp),
+            (RoundingMode::TowardNegative, &mut status.tn),
+        ];
+        for (mode, slot) in entries {
+            if !swept_modes.contains(&mode) {
+                // Already initialized to Unswept.
+                continue;
+            }
+            let any_failure = self.mismatch.iter().any(|(_, m, _, _)| *m == mode)
+                || self.panic.iter().any(|(_, m, _)| *m == mode);
+            *slot = if any_failure {
+                RoundingStatus::HasErrors
+            } else {
+                RoundingStatus::CorrectlyRounded
+            };
+        }
+        status
     }
 }
 
@@ -122,8 +165,7 @@ pub fn outcome_to_status_row(
         domain_coverage,
         oracle: oracle_name,
         oracle_independence: "independent",
-        rounding_modes: modes.to_vec(),
-        rounding_status: outcome.rounding_status(),
+        rounding_status: outcome.rounding_status_per_mode(modes),
         worst_ulp: 0.0,
         mismatch_count: outcome.mismatch.len() as u32,
         inconclusive_count: outcome.inconclusive.len() as u32,

@@ -76,7 +76,7 @@ specials = ["trig"]
 # rationale. Slice 7b will widen `exp-log` to depend on `agm`
 # when on-the-fly transcendental constants land; until then, AGM
 # is genuinely standalone.
-agm = ["big"]
+agm = ["big", "exp-log"]
 
 # Integral special functions: Ei (exponential integral), Si (sine
 # integral), Ci (cosine integral), li (logarithmic integral). Slice

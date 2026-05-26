@@ -67,6 +67,7 @@ use crate::big::BigFloat;
 use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
+use crate::status::Status;
 
 #[cfg(feature = "exp-log")]
 pub(crate) mod acosh;
@@ -532,6 +533,42 @@ pub(crate) fn pi_over_2_at(prec: u32) -> BigFloat {
         },
         _ => unreachable!("pi_via_agm returns a Normal"),
     }
+}
+
+/// Returns `π` rounded to the requested precision under the
+/// caller's IEEE rounding mode.
+///
+/// The companion to [`pi_at`] (which is NE-only). Special-case
+/// kernel returns (e.g. `atan(±∞) = ±π/2`, `acos(0) = π/2`,
+/// `atan2(+0, -0) = π`) must use this helper when the kernel was
+/// invoked under a directed rounding mode; routing the NE-only
+/// `pi_at` return through the kernel's final `round_to_precision`
+/// is correct only under NE (the NE-only result happens to be on
+/// the same side of the f32 grid boundary in every direction).
+///
+/// Slice p1.25 (ADR-0038) added this helper after the oracle
+/// sweep surfaced 2 mismatches on `acos(0)` under TZ and TN: the
+/// pre-existing path returned `pi_over_2_at(target)` directly,
+/// which is NE-rounded π/2; directed modes need the
+/// boost-then-round-under-mode pattern.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_at_round(target: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let boost = target.saturating_add(128);
+    pi_at(boost)
+        .round_to_precision(target, mode)
+        .expect("target precision >= 1")
+}
+
+/// Returns `π/2` rounded to the requested precision under the
+/// caller's IEEE rounding mode. See [`pi_at_round`] for rationale.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_over_2_at_round(target: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let boost = target.saturating_add(128);
+    pi_over_2_at(boost)
+        .round_to_precision(target, mode)
+        .expect("target precision >= 1")
 }
 
 /// Returns `2/π` rounded to the requested precision.

@@ -4,11 +4,16 @@ kernel_kind        = "primary"
 domain_coverage    = "sampled(65536)"
 oracle             = "MPFR"
 oracle_independence = "independent"
-rounding_modes     = "RNE"
-rounding_status    = "correctly-rounded"
 worst_ulp          = 0
 mismatch_count     = 0
 inconclusive_count = 0
 panic_count        = 0
 vectors            = ""
 lm_seeds_run       = 50
+
+[rounding_status]
+NE = "correctly-rounded"
+NA = "correctly-rounded"
+TZ = "correctly-rounded"
+TP = "correctly-rounded"
+TN = "correctly-rounded"

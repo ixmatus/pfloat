@@ -18,6 +18,11 @@
 //!     ./target/release/examples/oracle_sweep --function sqrt \
 //!         --sample 65536 --mode RNE
 //!
+//!     # Sweep one function at 2^16 = 65536 sampled inputs under
+//!     # every IEEE rounding mode (Phase 1f, ADR-0038).
+//!     ./target/release/examples/oracle_sweep --function sqrt \
+//!         --sample 65536 --mode all
+//!
 //!     # Exhaustive 2^32 sweep of one function (long; minutes to
 //!     # hours per the kernel cost).
 //!     ./target/release/examples/oracle_sweep --function sqrt \
@@ -146,10 +151,21 @@ impl Args {
                 }
                 "--mode" => {
                     let s = args.next().ok_or("--mode needs an argument")?;
-                    modes = s
-                        .split(',')
-                        .map(parse_mode)
-                        .collect::<Result<Vec<_>, _>>()?;
+                    modes = if s == "all" {
+                        // Phase 1f shortcut: sweep all five IEEE
+                        // modes in one invocation (ADR-0038).
+                        vec![
+                            RoundingMode::NearestEven,
+                            RoundingMode::NearestAway,
+                            RoundingMode::TowardZero,
+                            RoundingMode::TowardPositive,
+                            RoundingMode::TowardNegative,
+                        ]
+                    } else {
+                        s.split(',')
+                            .map(parse_mode)
+                            .collect::<Result<Vec<_>, _>>()?
+                    };
                 }
                 "--output-status" => {
                     output_status =
@@ -230,7 +246,9 @@ Options:
     --sample N        Sample N consecutive f32 bit patterns
                       starting at 0. Default: 2^20 (1048576).
     --mode MODES      Comma-separated rounding modes (RNE, RNA,
-                      RZ, RP, RM). Default: RNE.
+                      RZ, RP, RM), or `all` for every IEEE 754-2019
+                      mode (Phase 1f shortcut per ADR-0038).
+                      Default: RNE.
     --output-status DIR  Write per-function TOML status rows here.
                          Default: tests/oracle/status.
     --output-vectors DIR Write per-function regression corpus here.
@@ -310,7 +328,20 @@ fn run() -> Result<u32, String> {
         std::fs::write(&status_path, row.to_toml())
             .map_err(|e| format!("write {}: {e}", status_path.display()))?;
 
-        if row.rounding_status == RoundingStatus::HasErrors {
+        // Phase 1f (ADR-0038) schema: the row's per-mode table
+        // carries one verdict per IEEE rounding mode. Treat the
+        // function as has-errors if ANY of the swept modes reports
+        // HasErrors; Unswept entries don't count (they document
+        // modes the current invocation did not sweep).
+        let any_errors = [
+            row.rounding_status.ne,
+            row.rounding_status.na,
+            row.rounding_status.tz,
+            row.rounding_status.tp,
+            row.rounding_status.tn,
+        ]
+        .contains(&RoundingStatus::HasErrors);
+        if any_errors {
             has_errors_count += 1;
         }
     }

@@ -12,7 +12,7 @@ mod oracle;
 
 use oracle::{
     outcome_to_status_row, pfloat_kernel, run_function, write_mismatch_corpus, DomainCoverage,
-    FnId, Kernel, MpfrOracle, RoundingStatus, StatusRow,
+    FnId, Kernel, MpfrOracle, PerModeStatus, RoundingStatus, StatusRow,
 };
 use pfloat::RoundingMode;
 
@@ -67,6 +67,11 @@ fn run_function_catches_panic_from_kernel() {
 
 #[test]
 fn status_row_toml_emission_matches_schema() {
+    // Phase 1f schema (ADR-0038): the `rounding_modes` scalar is
+    // gone; a `[rounding_status]` table emits NE/NA/TZ/TP/TN. NE
+    // carries the existing data; the four directed modes read
+    // `unswept` at p1.23 and migrate to `correctly-rounded` as the
+    // per-family slices (p1.24 through p1.34) sweep them.
     let row = StatusRow {
         function: "sqrt",
         order: String::new(),
@@ -74,8 +79,7 @@ fn status_row_toml_emission_matches_schema() {
         domain_coverage: DomainCoverage::Sampled(1024),
         oracle: "MPFR",
         oracle_independence: "independent",
-        rounding_modes: vec![NE],
-        rounding_status: RoundingStatus::CorrectlyRounded,
+        rounding_status: PerModeStatus::ne_only(RoundingStatus::CorrectlyRounded),
         worst_ulp: 0.0,
         mismatch_count: 0,
         inconclusive_count: 0,
@@ -84,20 +88,28 @@ fn status_row_toml_emission_matches_schema() {
         lm_seeds_run: 0,
     };
     let toml = row.to_toml();
-    // Spot-check the schema fields named in ADR-0034.
+    // Spot-check the schema fields named in ADR-0034 and the
+    // Phase 1f schema migration recorded in ADR-0038.
     assert!(toml.contains("function           = \"sqrt\""));
     assert!(toml.contains("order              = \"\""));
     assert!(toml.contains("kernel_kind        = \"primary\""));
     assert!(toml.contains("domain_coverage    = \"sampled(1024)\""));
     assert!(toml.contains("oracle             = \"MPFR\""));
     assert!(toml.contains("oracle_independence = \"independent\""));
-    assert!(toml.contains("rounding_modes     = \"RNE\""));
-    assert!(toml.contains("rounding_status    = \"correctly-rounded\""));
     assert!(toml.contains("worst_ulp          = 0"));
     assert!(toml.contains("mismatch_count     = 0"));
     assert!(toml.contains("inconclusive_count = 0"));
     assert!(toml.contains("panic_count        = 0"));
     assert!(toml.contains("vectors            = \"\""));
+    assert!(toml.contains("[rounding_status]"));
+    assert!(toml.contains("NE = \"correctly-rounded\""));
+    assert!(toml.contains("NA = \"unswept\""));
+    assert!(toml.contains("TZ = \"unswept\""));
+    assert!(toml.contains("TP = \"unswept\""));
+    assert!(toml.contains("TN = \"unswept\""));
+    // The pre-migration scalar field must NOT appear.
+    assert!(!toml.contains("rounding_modes     ="));
+    assert!(!toml.contains("rounding_status    ="));
 }
 
 #[test]

@@ -2,14 +2,20 @@
 //!
 //! Naively `exp(x) − 1` loses precision near zero: for `x ≈ 2^−n`,
 //! `exp(x) ≈ 1 + x`, so the subtraction cancels the leading bits of
-//! the sum and the result has ~`n` bits of cancellation. This
-//! wrapper boosts the working precision by the cancellation amount
+//! the sum and the result has ~`n` bits of cancellation. The
+//! kernel boosts the working precision by the cancellation amount
 //! before calling `exp`, then subtracts.
 //!
 //! For `|x|` so small that `expm1(x)` rounds to `x` at the target
 //! precision (specifically, `x.exponent ≤ −target − 8`, so the
 //! `x²/2` term is below half a ULP of `x`), the kernel short-
 //! circuits and returns `x` directly without invoking `exp` at all.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The cancellation-boost composition runs inside the
+//! eval closure at each Ziv working precision; the outer envelope
+//! certifies the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
@@ -22,6 +28,8 @@ use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
+
+use super::ziv::ziv_round;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -112,38 +120,51 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
-    // |x| < 2^(-target-8) ⇒ expm1(x) = x to target precision.
-    if e <= -i64::from(target_precision) - 8 {
-        let (rounded, status) = x
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
-    }
-
+    // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
+    // bits when x is small. The boost moves INSIDE the Ziv eval
+    // closure so each working-precision retry inherits it.
+    //
+    // The pre-Phase-1f kernel had a short-circuit at
+    // `e ≤ -target - 8` that returned `x rounded under mode`.
+    // That shortcut was NE-correct (when x²/2 < ULP/2, expm1(x)
+    // rounds to x under NE) but produced wrong directed-mode
+    // results: for positive small x under TP, true expm1(x) > x
+    // is strictly above x, so TP must round up to the next-up
+    // f32 neighbour, but the short-circuit returned x. Pf-l6s5
+    // precedent applies: trust the Ziv driver to certify the
+    // correct rounding mode behaviour. The Ziv loop converges
+    // in 1-2 iterations on tiny-x inputs.
     let cancellation: u32 = if e < 0 {
         u32::try_from(-e).unwrap_or(u32::MAX)
     } else {
         0
     };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(cancellation)
-        .min(target_precision.saturating_add(1024));
 
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let (e_x, exp_status) = x_w.exp(RoundingMode::NearestEven);
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (diff, sub_status) = e_x.sub(&one, RoundingMode::NearestEven);
-
-    let (rounded, round_status) = diff
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, exp_status | sub_status | round_status)
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing composition (`exp(x_w) − 1`) at a
+    // working precision boosted by `cancellation` above the Ziv
+    // driver's requested working precision `w`, then rounds the
+    // composition's result to `w` under NE so the Ziv interval
+    // test sees a w-precision value with the cancellation absorbed.
+    let (result, status) = ziv_round(
+        |w| {
+            let inner_w = w.saturating_add(cancellation).min(w.saturating_add(1024));
+            let x_w = x
+                .round_to_precision(inner_w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let (e_x, _) = x_w.exp(RoundingMode::NearestEven);
+            let one = BigFloat::try_from_i64_exact(1, inner_w).expect("precision >= 1");
+            let (diff, _) = e_x.sub(&one, RoundingMode::NearestEven);
+            diff.round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0
+        },
+        target_precision,
+        mode,
+    );
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]

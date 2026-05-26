@@ -65,6 +65,30 @@ correctly rounded `tan` followed by a correctly rounded reciprocal
 is not a correctly rounded `cot`, so the alias would have enabled
 a status table overclaim.
 
+## Phase 1.5: five-mode kernel completeness
+
+Extend the correctly-rounded claim to every IEEE 754-2019 rounding
+mode uniformly across the v1.0 surface. The arithmetic core
+(add, sub, mul, div, sqrt, fma, parse) is five-mode correct by
+construction today; the Ziv-driven cohort (pow, exp, ln, tanh,
+lgamma, erf, bessel_j) is five-mode correct via the slice p1.2 and
+p1.4 envelope; everything else is correctly rounded under
+NearestEven only and faithful within 1 ULP at directed-mode ties.
+Phase 1.5 migrates every remaining v1.0-surface kernel through the
+`src/math/ziv.rs` driver (or a multi-arg sibling), widens the
+differential and oracle harnesses to verify all five modes
+bit-exact, and deletes DESIGN.md "Caveats and open questions" §1
+at the end of the phase. The strategic commitment is in ADR-0038
+(accepted 2026-05-25): no "faithful" rounding_status verdicts, no
+cohort labels in public docs, no narrowing-of-claim shortcuts; the
+intractability fork is drop-from-surface or extend-with-reformulation,
+not qualify-the-claim. The per-kernel audit derivation lives at
+`docs/decisions/plans/phase-1f-five-mode-completeness.md`. Phase
+1.5 closes before slice 8c (v1.0 tag) opens; `pf-g8h` gains a
+dependency on every Phase 1.5 slice's bead. Wall-clock estimate:
+3 to 5 months at the current slice cadence across 16 slices
+(p1.22 through p1.37).
+
 ## Phase 2: libm spinoff
 
 A thin shell over verified pfloat: widen, compute, round, return,

@@ -43,9 +43,10 @@
 
 use core::cmp::Ordering;
 
-use pfloat::{BigFloat, RoundingMode, Sign};
-use rug::float::Round;
-use rug::Float;
+use pfloat::{BigFloat, Parts, RoundingMode, Sign};
+use rug::float::{Round, Special};
+use rug::integer::Order;
+use rug::{Float, Integer};
 
 const F32_PREC: u32 = 24;
 const F32_BIAS: i64 = 127;
@@ -145,6 +146,88 @@ pub fn bf_to_f32_bits(bf: &BigFloat) -> u32 {
         .to_bits()
 }
 
+/// Convert a [`BigFloat`] to a [`rug::Float`] at the same precision,
+/// bit-exact regardless of the rounding mode that produced the value.
+///
+/// Mirrors the `bigfloat_to_rug` helper in `tests/differential/mod.rs`;
+/// duplicated here because each integration-test crate compiles its
+/// own copy of `tests/oracle/` and `tests/differential/`, and the two
+/// modules do not (and should not) share state at the source level.
+/// The conversion reads pfloat's raw mantissa limbs via [`Parts`] and
+/// builds the corresponding [`Float`] via [`Integer::from_digits`] +
+/// `mul_2si`; the construction is exact because pfloat's mantissa
+/// carries exactly `precision` significant bits (top-bit-set) and
+/// the destination is built at the same precision.
+fn bigfloat_to_rug(value: &BigFloat) -> Float {
+    let p = value.precision();
+    match value.parts() {
+        Parts::Zero { sign } => signed(Float::with_val(p, 0u32), sign),
+        Parts::Infinity { sign } => signed(Float::with_val(p, Special::Infinity), sign),
+        Parts::Nan { .. } => Float::with_val(p, Special::Nan),
+        Parts::Normal {
+            sign,
+            exponent,
+            mantissa,
+            precision: _precision,
+        } => {
+            let int = Integer::from_digits(mantissa, Order::Lsf);
+            let mut f = Float::with_val(p, &int);
+            let stored_bits = (mantissa.len() as i64) * 64;
+            let shift: i64 = exponent + 1 - stored_bits;
+            // In-place exact 2^shift; chunked so any i64 shift works
+            // even though rug's mul_2si takes a `long`.
+            let mut remaining = shift;
+            while remaining != 0 {
+                let step = if remaining >= 0 {
+                    remaining.min(i64::from(i32::MAX)) as i32
+                } else {
+                    remaining.max(i64::from(i32::MIN)) as i32
+                };
+                f <<= step;
+                remaining -= i64::from(step);
+            }
+            signed(f, sign)
+        }
+    }
+}
+
+fn signed(f: Float, sign: Sign) -> Float {
+    if matches!(sign, Sign::Negative) {
+        -f
+    } else {
+        f
+    }
+}
+
+/// Round a [`BigFloat`] to a binary32 bit pattern under the
+/// requested IEEE rounding mode.
+///
+/// The mode-aware companion to [`bf_to_f32_bits`] (which is NE-only
+/// through the Display + Rust `f32` parser bridge per
+/// `feedback_bf_to_f32_directed_mode`). Routes the `BigFloat`
+/// through `bigfloat_to_rug` to a precision-matching [`rug::Float`]
+/// (a bit-exact conversion that preserves the value regardless of
+/// the rounding mode that produced it), then delegates to the
+/// existing [`round_f32`] to apply the rounding mode at the f32
+/// boundary (including the `NearestAway` synthesis via
+/// [`round_ties_to_away_f32`] for the mode MPFR has no primitive
+/// for).
+///
+/// At `p = 24` the `BigFloat` lands exactly on the f32 grid and the
+/// conversion is a bit-exact re-encode; at higher precisions the
+/// rug→f32 round picks the f32-grid neighbour determined by `mode`.
+/// This lifts the silent NE-only override the Display+parse bridge
+/// applies at `p > 24` (slice p1.4 lesson). Returns `None` for NaN
+/// (no unique f32 rounding under IEEE NaN-equality conventions).
+///
+/// Lifted into the harness at Phase 1f slice p1.23 (ADR-0038); the
+/// pre-existing `bf_to_f32_bits` remains as the NE-only fast path
+/// for callers that only need NE behaviour.
+pub fn certified_round_bf_to_f32(bf: &BigFloat, mode: RoundingMode) -> Option<u32> {
+    let rug_val = bigfloat_to_rug(bf);
+    round_f32(&rug_val, mode).map(f32::to_bits)
+}
+
 /// Round a `rug::Float` to `f32` under the requested rounding mode.
 /// Returns `None` when the value is NaN: NaN has no unique f32 it
 /// "rounds to" (`NaN != NaN` under IEEE), so the certified-rounding
@@ -168,11 +251,31 @@ pub fn round_f32(value: &Float, mode: RoundingMode) -> Option<f32> {
 /// because MPFR offers no such mode (`MPFR_RNDA` is directed
 /// round-away-from-zero, not ties-to-away). Mirrors the L-M
 /// differential lane's `round_ties_to_away` helper, sized for f32.
+///
+/// Overflow handling: when |value| exceeds `f32::MAX`, IEEE 754
+/// §4.3 specifies that `roundTiesToEven` and `roundTiesToAway` both
+/// saturate to ±∞ (the halfway between `max_finite` and 2^128 is at
+/// `max_finite + 2^103`, and any value above that overflows to ±∞
+/// under both nearest modes). The distance-based comparison below
+/// treats +∞ as infinitely far, which incorrectly picks `max_finite`
+/// for any finite value above `max_finite`. Handle overflow first.
 fn round_ties_to_away_f32(value: &Float) -> f32 {
+    if value.is_infinite() {
+        return value.to_f32_round(Round::Nearest);
+    }
+    // Overflow check: NA above max_finite rounds to ±∞ per IEEE 754.
+    // The directed-round upward already gives +∞ in that case; if
+    // lo (Round::Zero) differs from hi (Round::AwayZero) AND hi is
+    // infinite, the value is past the overflow boundary.
     let lo = value.to_f32_round(Round::Zero);
     let hi = value.to_f32_round(Round::AwayZero);
     if lo == hi {
         return lo;
+    }
+    if hi.is_infinite() {
+        // value's magnitude exceeds max_finite. Under NA, IEEE 754
+        // §4.3 rounds to ±∞.
+        return hi;
     }
     // Distances at the value's working precision, computed without
     // further rounding.

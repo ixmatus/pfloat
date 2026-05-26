@@ -2,13 +2,19 @@
 //! argument.
 //!
 //! Naïvely `ln(1 + x)` loses precision near zero: for `x ≈ 2^−n`,
-//! the addition `1 + x` cancels the leading bits of `x`. The wrapper
+//! the addition `1 + x` cancels the leading bits of `x`. The kernel
 //! boosts working precision by `−exponent(x)` bits, computes
 //! `1 + x` and `ln` at that precision, then rounds back.
 //!
 //! For `|x|` so small that `log1p(x)` rounds to `x` at target
 //! precision (`x.exponent ≤ −target − 8`), the kernel short-circuits
 //! and returns `x` directly.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The cancellation-boost composition runs inside the
+//! eval closure at each Ziv working precision; the outer envelope
+//! certifies the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
@@ -25,6 +31,8 @@ use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
+
+use super::ziv::ziv_round;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -133,37 +141,51 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
-    // |x| < 2^(-target-8) ⇒ log1p(x) = x to target precision.
-    if e <= -i64::from(target_precision) - 8 {
-        let (rounded, status) = x
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
-    }
-
+    // Cancellation boost: `1 + x` cancels ~|exponent(x)| leading
+    // bits when x is small. The boost moves INSIDE the Ziv eval
+    // closure so each working-precision retry inherits it.
+    //
+    // The pre-Phase-1f kernel had a short-circuit at
+    // `e ≤ -target - 8` that returned `x rounded under mode`.
+    // That shortcut was NE-correct but produced wrong
+    // directed-mode results (same shape as expm1 — for positive
+    // small x under TP, true log1p(x) < x but rounds up under TP
+    // to x's neighbour ABOVE; for negative small x under TZ, true
+    // log1p(x) > x and rounds toward zero away from x). The Ziv
+    // driver converges in 1-2 iterations on tiny-x inputs and
+    // certifies the correct rounding-mode behaviour.
     let cancellation: u32 = if e < 0 {
         u32::try_from(-e).unwrap_or(u32::MAX)
     } else {
         0
     };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(cancellation)
-        .min(target_precision.saturating_add(1024));
 
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (one_plus_x, add_status) = one.add(&x_w, RoundingMode::NearestEven);
-    let (ln_val, ln_status) = one_plus_x.ln(RoundingMode::NearestEven);
-    let (rounded, round_status) = ln_val
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, add_status | ln_status | round_status)
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing composition `ln(1 + x_w)` at a
+    // working precision boosted by `cancellation` above the Ziv
+    // driver's requested working precision `w`, then rounds the
+    // composition's result to `w` under NE so the Ziv interval
+    // test sees a w-precision value with the cancellation absorbed.
+    let (result, status) = ziv_round(
+        |w| {
+            let inner_w = w.saturating_add(cancellation).min(w.saturating_add(1024));
+            let x_w = x
+                .round_to_precision(inner_w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let one = BigFloat::try_from_i64_exact(1, inner_w).expect("precision >= 1");
+            let (one_plus_x, _) = one.add(&x_w, RoundingMode::NearestEven);
+            let (ln_val, _) = one_plus_x.ln(RoundingMode::NearestEven);
+            ln_val
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0
+        },
+        target_precision,
+        mode,
+    );
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]

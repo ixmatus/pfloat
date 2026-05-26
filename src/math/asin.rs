@@ -6,6 +6,11 @@
 //! the divisor is `1` and the argument is `±1`, giving
 //! `2 · atan(±1) = ±π/2` as required.
 //!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.25,
+//! ADR-0038). The `|x| = 1` special case returns `±π/2` rounded
+//! under the caller's mode via [`super::pi_over_2_at_round`].
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `asin(±0) = ±0`.
@@ -27,7 +32,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::atan::atan_finite_unsigned;
-use super::pi_over_2_at;
+use super::pi_over_2_at_round;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `asin(self)` rounded under `mode` to `self.precision`.
@@ -110,44 +116,57 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (nan, Status::INVALID);
         }
         Some(Ordering::Equal) => {
-            // asin(±1) = ±π/2.
-            let pi_2 = pi_over_2_at(target_precision);
+            // asin(±1) = ±π/2. Mode-aware to keep directed-mode
+            // rounding correct (slice p1.25; the NE-only
+            // `pi_over_2_at` return drops the directed-mode info
+            // at the target-precision round).
+            let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
             let signed = if matches!(sign, Sign::Negative) {
                 pi_2.negated()
             } else {
                 pi_2
             };
-            return (signed, Status::OK);
+            crate::status::auto_raise(status);
+            return (signed, status);
         }
         _ => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let abs_x_w = abs_x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing identity
+    // `asin(|x|) = 2 · atan(|x| / (1 + sqrt(1 − |x|²)))` at working
+    // precision `w` under NE; the outer envelope certifies the
+    // rounding-mode interval test on the final round to target.
+    // The sign-flip for negative x happens inside eval so the
+    // returned value's class matches the kernel's domain.
+    let (result, status) = ziv_round(
+        |w| {
+            let abs_x_w = abs_x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
 
-    let (x_sq, _) = abs_x_w.mul(&abs_x_w, RoundingMode::NearestEven);
-    let (one_minus_sq, _) = one.sub(&x_sq, RoundingMode::NearestEven);
-    let (s, _) = one_minus_sq.sqrt(RoundingMode::NearestEven);
-    let (denom, _) = one.add(&s, RoundingMode::NearestEven);
-    let (y, _) = abs_x_w.div(&denom, RoundingMode::NearestEven);
-    let atan_y = atan_finite_unsigned(&y, working_prec);
-    let (twice, _) = two.mul(&atan_y, RoundingMode::NearestEven);
+            let (x_sq, _) = abs_x_w.mul(&abs_x_w, RoundingMode::NearestEven);
+            let (one_minus_sq, _) = one.sub(&x_sq, RoundingMode::NearestEven);
+            let (s, _) = one_minus_sq.sqrt(RoundingMode::NearestEven);
+            let (denom, _) = one.add(&s, RoundingMode::NearestEven);
+            let (y, _) = abs_x_w.div(&denom, RoundingMode::NearestEven);
+            let atan_y = atan_finite_unsigned(&y, w);
+            let (twice, _) = two.mul(&atan_y, RoundingMode::NearestEven);
 
-    let signed = if matches!(sign, Sign::Negative) {
-        twice.negated()
-    } else {
-        twice
-    };
-    let (rounded, status) = signed
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+            if matches!(sign, Sign::Negative) {
+                twice.negated()
+            } else {
+                twice
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]

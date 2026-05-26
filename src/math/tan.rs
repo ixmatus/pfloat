@@ -18,6 +18,13 @@
 //! large but finite result rather than `±∞`. This matches MPFR's
 //! behavior and IEEE 754-2019's expectation for "transcendental"
 //! tangent.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.26,
+//! ADR-0038). The ratio composition runs inside the eval closure
+//! at each Ziv working precision; the range-cap NaN check
+//! pre-empts Ziv at the maximum working precision the driver
+//! could request.
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -32,6 +39,7 @@ use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
 use super::trig_reduce::{reduce, Reduction};
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `tan(self)` rounded under `mode` to `self.precision`.
@@ -100,32 +108,35 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-
-    let Some(Reduction { quadrant, r }) = reduce(x, working_prec) else {
+    // Range-cap check at the maximum Ziv working precision (sin
+    // family precedent).
+    let ziv_max_working = target_precision.saturating_add(1024);
+    if reduce(x, ziv_max_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
         return (nan, Status::INVALID);
-    };
+    }
 
-    let s = sin_taylor(&r, working_prec);
-    let c = cos_taylor(&r, working_prec);
-
-    let result_unsigned = match quadrant {
-        0 | 2 => s.div(&c, RoundingMode::NearestEven).0,
-        _ => {
-            // quadrants 1, 3: tan(x) = −cos(r) / sin(r).
-            let neg_c = c.negated();
-            neg_c.div(&s, RoundingMode::NearestEven).0
-        }
-    };
-
-    let (rounded, status) = result_unsigned
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
+            let s = sin_taylor(&r, w);
+            let c = cos_taylor(&r, w);
+            match quadrant {
+                0 | 2 => s.div(&c, RoundingMode::NearestEven).0,
+                _ => {
+                    // quadrants 1, 3: tan(x) = −cos(r) / sin(r).
+                    let neg_c = c.negated();
+                    neg_c.div(&s, RoundingMode::NearestEven).0
+                }
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]

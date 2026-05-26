@@ -1,0 +1,19 @@
+function           = "Kn"
+order              = "10"
+kernel_kind        = "primary"
+domain_coverage    = "sampled(65536)"
+oracle             = "Arb"
+oracle_independence = "independent"
+worst_ulp          = 0
+mismatch_count     = 0
+inconclusive_count = 0
+panic_count        = 0
+vectors            = ""
+lm_seeds_run       = 0
+
+[rounding_status]
+NE = "correctly-rounded"
+NA = "correctly-rounded"
+TZ = "correctly-rounded"
+TP = "correctly-rounded"
+TN = "correctly-rounded"

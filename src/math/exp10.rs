@@ -1,10 +1,16 @@
 //! `exp10(x) = 10^x`: decimal exponential.
 //!
 //! Composition: `10^x = exp(x · ln(10))`. The kernel computes the
-//! product at working precision `target + 64` against `ln(10)` (from
+//! product at working precision against `ln(10)` (from
 //! [`super::ln_10_at`], which evaluates `ln(10)` lazily per call),
 //! then dispatches to `exp`. Special cases compose through the same
 //! pattern as `exp2`.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.24,
+//! ADR-0038). The `exp · ln(10)` composition has no cancellation
+//! regime; the Ziv envelope's working-precision growth certifies
+//! the rounding-mode interval test on the final round.
 //!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
@@ -24,6 +30,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ln_10_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `10^self` rounded under `mode` to `self.precision`.
@@ -106,19 +113,29 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let ln_10 = ln_10_at(working_prec);
-    let (product, mul_status) = x_w.mul(&ln_10, RoundingMode::NearestEven);
-    let (result, exp_status) = product.exp(RoundingMode::NearestEven);
-    let (rounded, round_status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, mul_status | exp_status | round_status)
+    // Ziv-driven correct rounding under every IEEE mode. The
+    // composition `exp(x · ln(10))` has no cancellation regime; the
+    // Ziv driver's working-precision growth handles the rounding-
+    // mode interval test at the final round to target.
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let ln_10 = ln_10_at(w);
+            let (product, _) = x_w.mul(&ln_10, RoundingMode::NearestEven);
+            let (e_val, _) = product.exp(RoundingMode::NearestEven);
+            e_val
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0
+        },
+        target_precision,
+        mode,
+    );
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]

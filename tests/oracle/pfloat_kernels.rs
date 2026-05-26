@@ -50,7 +50,7 @@
 
 use pfloat::RoundingMode;
 
-use super::convert::{bf24_of_bits, bf_to_f32_bits};
+use super::convert::bf24_of_bits;
 use super::types::FnId;
 
 /// Default kernel-call precision for the f32 oracle pipeline. At
@@ -129,9 +129,14 @@ const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 ///   already documented).
 fn verification_precision(f: FnId) -> u32 {
     match f {
-        FnId::BesselJ1 | FnId::BesselJn(_) | FnId::BesselI1 | FnId::BesselIn(_) => {
-            BESSEL_TINY_VERIFICATION_PRECISION
-        }
+        FnId::BesselJ1
+        | FnId::BesselJn(_)
+        | FnId::BesselI0
+        | FnId::BesselI1
+        | FnId::BesselIn(_)
+        | FnId::BesselK0
+        | FnId::BesselK1
+        | FnId::BesselKn(_) => BESSEL_TINY_VERIFICATION_PRECISION,
         FnId::Erf | FnId::Li => ERF_VERIFICATION_PRECISION,
         _ => DEFAULT_VERIFICATION_PRECISION,
     }
@@ -205,5 +210,14 @@ pub fn pfloat_kernel(f: FnId, input: u32, mode: RoundingMode) -> u32 {
         FnId::BesselK1 => x.k1(mode).0,
         FnId::BesselKn(n) => x.kn(n, mode).0,
     };
-    bf_to_f32_bits(&result)
+    // Bridge the kernel's `BigFloat` result to f32 bits under the
+    // caller's rounding mode. Slice p1.23 (ADR-0038) replaced the
+    // NE-only `bf_to_f32_bits` bridge here with the mode-aware
+    // `certified_round_bf_to_f32`, so the harness no longer silently
+    // re-rounds directed-mode kernel outputs to NE at the conversion
+    // step. For NaN results the helper returns `None`; map that to
+    // the f32 default NaN bit pattern so callers downstream can
+    // compare via the NaN-aware equality from
+    // `feedback_oracle_harness_nan_aware`.
+    super::convert::certified_round_bf_to_f32(&result, mode).unwrap_or_else(|| f32::NAN.to_bits())
 }

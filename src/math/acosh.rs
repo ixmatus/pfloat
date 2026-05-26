@@ -22,6 +22,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -36,6 +38,10 @@ impl BigFloat {
     }
 
     /// `acosh(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.27, ADR-0038).
     pub fn acosh_round(
         &self,
         target_precision: u32,
@@ -127,23 +133,32 @@ fn acosh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (x_minus_one, _) = x_w.sub(&one, RoundingMode::NearestEven);
-    let (x_plus_one, _) = x_w.add(&one, RoundingMode::NearestEven);
-    let (prod, _) = x_minus_one.mul(&x_plus_one, RoundingMode::NearestEven);
-    let (s, _) = prod.sqrt(RoundingMode::NearestEven);
-    let (arg, _) = x_minus_one.add(&s, RoundingMode::NearestEven);
-    let (result, _) = arg.log1p(RoundingMode::NearestEven);
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing log1p-based identity
+    // `acosh(x) = log1p((x − 1) + sqrt((x − 1)(x + 1)))` at
+    // working precision `w` under NE; the outer envelope certifies
+    // the rounding-mode interval test. log1p is Ziv-driven (slice
+    // p1.24) and the identity avoids the near-1 cancellation of
+    // the naive `ln(x + sqrt(x² − 1))` form.
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            let (x_minus_one, _) = x_w.sub(&one, RoundingMode::NearestEven);
+            let (x_plus_one, _) = x_w.add(&one, RoundingMode::NearestEven);
+            let (prod, _) = x_minus_one.mul(&x_plus_one, RoundingMode::NearestEven);
+            let (s, _) = prod.sqrt(RoundingMode::NearestEven);
+            let (arg, _) = x_minus_one.add(&s, RoundingMode::NearestEven);
+            arg.log1p(RoundingMode::NearestEven).0
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]

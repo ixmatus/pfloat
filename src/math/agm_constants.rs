@@ -853,6 +853,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "trig")]
     #[test]
     fn pi_agm_matches_hardcoded_at_1024_bits() {
         let computed = pi_via_agm(1024);

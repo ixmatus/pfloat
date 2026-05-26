@@ -32,8 +32,8 @@
 mod differential;
 
 use differential::{
-    bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, rug_from_i64, NEAREST_EVEN_ROUNDING_MODES,
-    TRANSCENDENTAL_PRECISIONS,
+    bigfloat_from_i64, bigfloat_to_rug, mpfr_oracle_for_mode, rug_from_i64,
+    BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 use pfloat::RoundingMode;
 
@@ -66,7 +66,7 @@ const DYADIC: &[(i64, i64)] = &[
 #[test]
 fn zeta_matches_mpfr() {
     for &p in TRANSCENDENTAL_PRECISIONS {
-        for &mode in NEAREST_EVEN_ROUNDING_MODES {
+        for &mode in BIT_EXACT_ROUNDING_MODES {
             for &(num, den) in DYADIC {
                 let x_bf = if den == 1 {
                     bigfloat_from_i64(num, p)
@@ -75,23 +75,23 @@ fn zeta_matches_mpfr() {
                         .div(&bigfloat_from_i64(den, p), RoundingMode::NearestEven);
                     q
                 };
-                let x_rg = if den == 1 {
-                    rug_from_i64(num, p)
-                } else {
-                    rug_from_i64(num, p) / rug_from_i64(den, p)
-                };
 
                 let bf_r = {
                     let (r, _s) = x_bf.zeta(mode);
                     bigfloat_to_rug(&r)
                 };
-                let rug_r = rug::Float::with_val_round(
+                let rug_r = mpfr_oracle_for_mode(
+                    |prec, round| {
+                        let xr = if den == 1 {
+                            rug_from_i64(num, prec)
+                        } else {
+                            rug_from_i64(num, prec) / rug_from_i64(den, prec)
+                        };
+                        rug::Float::with_val_round(prec, xr.zeta_ref(), round).0
+                    },
+                    mode,
                     p,
-                    x_rg.zeta_ref(),
-                    mpfr_round_of(mode)
-                        .expect("NE-only lane: NearestEven has an MPFR equivalent (pf-suo)"),
-                )
-                .0;
+                );
                 assert_eq!(bf_r, rug_r, "ζ({num}/{den}) at p={p}, mode={mode:?}");
             }
         }

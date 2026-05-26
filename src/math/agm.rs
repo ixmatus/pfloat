@@ -50,6 +50,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -66,6 +68,10 @@ impl BigFloat {
     }
 
     /// `agm(self, other)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.36, ADR-0038).
     pub fn agm_round(
         &self,
         other: &Self,
@@ -153,63 +159,64 @@ fn agm_kernel(
         return (z, Status::OK);
     }
 
-    // Both operands are now finite and strictly positive.
-    let working_prec = target_precision.saturating_add(64);
+    // Both operands are now finite and strictly positive. Ziv-driven
+    // correct rounding under every IEEE mode: the eval closure
+    // captures (a, b) and runs the Gauss AGM iteration at working
+    // precision w. Quadratic convergence doubles the bit agreement
+    // each step, so Ziv adds at most one extra iteration per retry
+    // (O(log w) → O(log 2w) ≈ +1).
+    let (result, status) = ziv_round(
+        |w| {
+            let mut a_n = a
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let mut b_n = b
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
 
-    let mut a_n = a
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let mut b_n = b
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
+            // Canonicalize so a_n >= b_n. The iteration is symmetric
+            // in (a, b), so this only tidies the convergence trace.
+            if matches!(a_n.partial_cmp(&b_n).0, Some(Ordering::Less)) {
+                core::mem::swap(&mut a_n, &mut b_n);
+            }
 
-    // Canonicalize so a_n >= b_n. The iteration is symmetric in
-    // (a, b), so this only tidies the convergence trace.
-    if matches!(a_n.partial_cmp(&b_n).0, Some(Ordering::Less)) {
-        core::mem::swap(&mut a_n, &mut b_n);
-    }
+            let max_iter = 64u32;
+            let convergence_exponent_floor = -i64::from(w) - 4;
+            let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
 
-    // Quadratic convergence doubles the bit agreement each step.
-    // 64 iterations supports working precisions up to ~2^64 bits,
-    // which is well past any precision pfloat admits.
-    let max_iter = 64u32;
-    let convergence_exponent_floor = -i64::from(working_prec) - 4;
+            for _ in 0..max_iter {
+                let (diff, _) = a_n.sub(&b_n, RoundingMode::NearestEven);
+                let abs_diff = diff.abs();
+                let converged = match &abs_diff.class {
+                    Class::Zero { .. } => true,
+                    Class::Normal { exponent, .. } => *exponent < convergence_exponent_floor,
+                    _ => false,
+                };
+                if converged {
+                    break;
+                }
 
-    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+                let (sum, _) = a_n.add(&b_n, RoundingMode::NearestEven);
+                let (am, _) = sum.div(&two, RoundingMode::NearestEven);
+                let (prod, _) = a_n.mul(&b_n, RoundingMode::NearestEven);
+                let (gm, _) = prod.sqrt(RoundingMode::NearestEven);
+                a_n = am;
+                b_n = gm;
+            }
 
-    for _ in 0..max_iter {
-        let (diff, _) = a_n.sub(&b_n, RoundingMode::NearestEven);
-        let abs_diff = diff.abs();
-        let converged = match &abs_diff.class {
-            Class::Zero { .. } => true,
-            Class::Normal { exponent, .. } => *exponent < convergence_exponent_floor,
-            _ => false,
-        };
-        if converged {
-            break;
-        }
-
-        let (sum, _) = a_n.add(&b_n, RoundingMode::NearestEven);
-        let (am, _) = sum.div(&two, RoundingMode::NearestEven);
-        let (prod, _) = a_n.mul(&b_n, RoundingMode::NearestEven);
-        let (gm, _) = prod.sqrt(RoundingMode::NearestEven);
-        a_n = am;
-        b_n = gm;
-    }
-
-    // After convergence the AM and GM agree to working precision;
-    // averaging them absorbs any final 1-ULP separation before the
-    // target-precision round.
-    let (sum, _) = a_n.add(&b_n, RoundingMode::NearestEven);
-    let (result, _) = sum.div(&two, RoundingMode::NearestEven);
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+            // After convergence the AM and GM agree to working
+            // precision; averaging them absorbs any final 1-ULP
+            // separation.
+            let (sum, _) = a_n.add(&b_n, RoundingMode::NearestEven);
+            sum.div(&two, RoundingMode::NearestEven).0
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 fn is_negative(x: &BigFloat) -> bool {

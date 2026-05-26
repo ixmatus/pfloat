@@ -15,6 +15,14 @@
 //! series converge geometrically; termination is when a term falls
 //! below `2^−working_prec` relative to the running sum.
 //!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.26,
+//! ADR-0038). The Payne-Hanek reduction + quadrant-dispatched
+//! Taylor composition runs inside the eval closure at each Ziv
+//! working precision; the range-cap NaN check pre-empts Ziv at
+//! the maximum working precision the driver could request, so
+//! every Ziv iteration's `reduce` call succeeds.
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `sin(±0) = ±0`.
@@ -35,6 +43,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::trig_reduce::{reduce, Reduction};
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `sin(self)` rounded under `mode` to `self.precision`.
@@ -104,27 +113,42 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-
-    let Some(Reduction { quadrant, r }) = reduce(x, working_prec) else {
+    // Range-cap check at the maximum Ziv working precision. The
+    // 4096-bit 2/π reduction table caps the supported |x| at
+    // roughly `2^(4096 − working − slack)`; reduction failure at
+    // some Ziv-grown w would leave the eval closure with no
+    // sensible value to return. Pre-check at `target + 1024` (the
+    // Ziv ceiling) so any input that passes here passes every Ziv
+    // working precision the driver walks.
+    let ziv_max_working = target_precision.saturating_add(1024);
+    if reduce(x, ziv_max_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
         return (nan, Status::INVALID);
-    };
+    }
 
-    let result_unsigned = match quadrant {
-        0 => sin_taylor(&r, working_prec),
-        1 => cos_taylor(&r, working_prec),
-        2 => sin_taylor(&r, working_prec).negated(),
-        _ => cos_taylor(&r, working_prec).negated(), // quadrant 3
-    };
-
-    let (rounded, status) = result_unsigned
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs Payne-Hanek reduction + quadrant-dispatched
+    // Taylor at working precision `w` under NE; the outer envelope
+    // certifies the rounding-mode interval test.
+    let (result, status) = ziv_round(
+        |w| {
+            // Range-cap check confirmed at ziv_max_working above; any
+            // `w ≤ ziv_max_working` succeeds.
+            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
+            match quadrant {
+                0 => sin_taylor(&r, w),
+                1 => cos_taylor(&r, w),
+                2 => sin_taylor(&r, w).negated(),
+                _ => cos_taylor(&r, w).negated(),
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// `sin(r) = r − r³/3! + r⁵/5! − …` for `|r| ≤ π/4`.

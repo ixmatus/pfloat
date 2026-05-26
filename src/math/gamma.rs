@@ -36,6 +36,7 @@ use crate::mantissa::limbs_for;
 
 use super::lgamma::is_integer_test;
 use super::pi_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `gamma(self)` rounded under `mode` to `self.precision`.
@@ -46,6 +47,10 @@ impl BigFloat {
     }
 
     /// `gamma(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.29, ADR-0038).
     pub fn gamma_round(
         &self,
         target_precision: u32,
@@ -126,26 +131,82 @@ fn gamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         return (nan, Status::INVALID);
     }
 
-    let working_prec = target_precision
-        .saturating_add(64)
-        .min(target_precision.saturating_add(512));
-    let (ln_abs_gamma, _) = x
-        .lgamma_round(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1");
+    // Positive-integer exact fast path. For positive integer `n`
+    // where `(n−1)!` is exactly representable in target_precision
+    // bits, gamma(n) = (n−1)! exactly under any rounding mode. The
+    // exp(lgamma) chain returns a value epsilon-away from the exact
+    // factorial; under NE that rounds correctly, but under directed
+    // modes the epsilon's sign tips the rounding to the adjacent
+    // ULP. The exact factorial dispatch is mode-independent and
+    // sidesteps the Ziv interval test's inability to certify
+    // exactly-representable true values.
+    if let Some(exact) = try_gamma_pos_integer_exact(x, target_precision) {
+        return (exact, Status::OK);
+    }
 
-    let (abs_gamma, _) = ln_abs_gamma.exp(RoundingMode::NearestEven);
-
-    let result_sign = gamma_sign_of(x, working_prec);
-    let result = if matches!(result_sign, Sign::Negative) {
-        abs_gamma.negated()
-    } else {
-        abs_gamma
-    };
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure composes lgamma (Ziv-driven internally per the
+    // already-Ziv cohort + Spouge dispatch from pf-l6s5) and exp
+    // (Ziv-driven, slice p1.2) at working precision `w`, then
+    // applies the sign from gamma_sign_of. gamma_sign_of returns a
+    // binary Sign that is robust away from negative-integer poles
+    // (those are handled by the special-case dispatch above), so
+    // the sign does not participate in the Ziv interval test.
+    let (result, status) = ziv_round(
+        |w| {
+            let (ln_abs_gamma, _) = x
+                .lgamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (abs_gamma, _) = ln_abs_gamma.exp(RoundingMode::NearestEven);
+            let result_sign = gamma_sign_of(x, w);
+            if matches!(result_sign, Sign::Negative) {
+                abs_gamma.negated()
+            } else {
+                abs_gamma
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
+}
+
+/// If `x` is a positive integer `n` and `(n−1)!` is exactly
+/// representable in `target_precision` bits, returns `(n−1)!` at
+/// target precision; otherwise returns `None`. The fast path
+/// sidesteps the `exp(lgamma)` chain's noise floor that tips
+/// directed-mode rounding off the exact factorial.
+///
+/// The iteration accumulates `1 · 2 · 3 · … · (n−1)` at
+/// `target_precision`; the first multiplication that rounds (the
+/// `Status::INEXACT` flag) signals that the running factorial no
+/// longer fits exactly, so the function returns `None` and the
+/// caller falls through to the Ziv envelope. The cap on iterations
+/// is a safety bound — even at `target_precision = 4096`, only
+/// `n ≲ 500` factorials fit, so 512 is generous.
+fn try_gamma_pos_integer_exact(x: &BigFloat, target_precision: u32) -> Option<BigFloat> {
+    if !matches!(x.sign(), Sign::Positive) || x.is_zero() || !is_integer_test(x) {
+        return None;
+    }
+    let one = BigFloat::try_from_i64_exact(1, target_precision).ok()?;
+    let mut acc = one.clone();
+    let mut k = BigFloat::try_from_i64_exact(2, target_precision).ok()?;
+    for _ in 0..512 {
+        // Stop when k ≥ x (so the loop multiplies by 2, 3, …, n−1).
+        match k.partial_cmp(x).0 {
+            Some(core::cmp::Ordering::Less) => {}
+            _ => return Some(acc),
+        }
+        let (next_acc, status) = acc.mul(&k, RoundingMode::NearestEven);
+        if status.inexact() {
+            return None;
+        }
+        acc = next_acc;
+        let (next_k, _) = k.add(&one, RoundingMode::NearestEven);
+        k = next_k;
+    }
+    None
 }
 
 /// Sign of `Γ(x)` for finite non-zero `x` that is not a negative

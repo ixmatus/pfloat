@@ -537,18 +537,20 @@ sections that read against the renumbered phase plan.
 ## Caveats and open questions
 
 - Ziv's strategy at unbounded precision is unproven to terminate
-  in pathological cases. MPFR has the same caveat. Slice 7c
-  (ADR-0022) implements the strategy for `pow` via the interval
-  test, with the iteration cap fixed at 5 and stated in the
-  `pow_round` doc comment; on the measure-zero exact-tie inputs that
-  exhaust the cap the result may be 1 ULP off in directed modes.
-  Kernels still on the fixed 64-bit guard (`exp`, `ln`, `sin`, …)
-  carry the original caveat until a later slice extends the driver.
+  in pathological cases. MPFR has the same caveat. The driver
+  fixes the iteration cap at 5 and applies the interval test
+  uniformly across the v1.0 surface (slice 7c ADR-0022 for pow;
+  Phase 1f ADR-0038 for the remaining transcendentals). On the
+  measure-zero exact-tie inputs that exhaust the cap the result
+  may be 1 ULP off in directed modes; this is the same
+  unbounded-precision termination caveat MPFR carries. The Phase
+  1f audit at
+  `docs/decisions/plans/phase-1f-five-mode-completeness.md` carries
+  the per-kernel derivation for every migration.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
   square-and-multiply fast path, every other case evaluates
-  `exp(y · ln(x))` at working precision. It is the first
-  transcendental off the NearestEven-only differential tier.
+  `exp(y · ln(x))` at working precision.
 - Performance vs MPFR will not fully close in 1.0. MPFR carries
   decades of hand-tuned assembly via GMP. The target is "documented
   gap, never absurd"; principles forbid reaching for FFI to close

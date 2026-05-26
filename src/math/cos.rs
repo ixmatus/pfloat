@@ -11,6 +11,12 @@
 //! Taylor series for `sin(r)` and `cos(r)` are shared with
 //! [`super::sin`].
 //!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.26,
+//! ADR-0038). Same shape as `sin`: range-cap pre-check, then the
+//! composition runs inside the eval closure at each Ziv working
+//! precision.
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `cos(±0) = 1`.
@@ -31,6 +37,7 @@ use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
 use super::trig_reduce::{reduce, Reduction};
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `cos(self)` rounded under `mode` to `self.precision`.
@@ -101,27 +108,31 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-
-    let Some(Reduction { quadrant, r }) = reduce(x, working_prec) else {
+    // Range-cap check at the maximum Ziv working precision (sin
+    // family precedent).
+    let ziv_max_working = target_precision.saturating_add(1024);
+    if reduce(x, ziv_max_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
         return (nan, Status::INVALID);
-    };
+    }
 
-    let result_unsigned = match quadrant {
-        0 => cos_taylor(&r, working_prec),
-        1 => sin_taylor(&r, working_prec).negated(),
-        2 => cos_taylor(&r, working_prec).negated(),
-        _ => sin_taylor(&r, working_prec), // quadrant 3
-    };
-
-    let (rounded, status) = result_unsigned
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
+            match quadrant {
+                0 => cos_taylor(&r, w),
+                1 => sin_taylor(&r, w).negated(),
+                2 => cos_taylor(&r, w).negated(),
+                _ => sin_taylor(&r, w),
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]

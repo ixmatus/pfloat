@@ -20,6 +20,8 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
+use super::ziv::ziv_round;
+
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
@@ -34,6 +36,10 @@ impl BigFloat {
     }
 
     /// `asinh(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.27, ADR-0038).
     pub fn asinh_round(
         &self,
         target_precision: u32,
@@ -93,31 +99,40 @@ fn asinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the cancellation-resistant identity
+    // `asinh(|x|) = log1p(|x| + |x|²/(sqrt(|x|²+1)+1))` on |x| at
+    // working precision `w`, with sign reapplied. The composition
+    // has no cancellation regime (every term in the log1p argument
+    // is non-negative, divisor ≥ 2). log1p is Ziv-driven (slice
+    // p1.24).
     let sign = x.sign();
     let abs_x = x.abs();
-    let x_w = abs_x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let (x_sq, _) = x_w.mul(&x_w, RoundingMode::NearestEven);
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (x_sq_plus_one, _) = x_sq.add(&one, RoundingMode::NearestEven);
-    let (s, _) = x_sq_plus_one.sqrt(RoundingMode::NearestEven);
-    let (s_plus_one, _) = s.add(&one, RoundingMode::NearestEven);
-    let (correction, _) = x_sq.div(&s_plus_one, RoundingMode::NearestEven);
-    let (arg, _) = x_w.add(&correction, RoundingMode::NearestEven);
-    let (lp, _) = arg.log1p(RoundingMode::NearestEven);
-    let signed = if matches!(sign, Sign::Negative) {
-        lp.negated()
-    } else {
-        lp
-    };
-    let (rounded, status) = signed
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = abs_x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            let (x_sq, _) = x_w.mul(&x_w, RoundingMode::NearestEven);
+            let (x_sq_plus_one, _) = x_sq.add(&one, RoundingMode::NearestEven);
+            let (s, _) = x_sq_plus_one.sqrt(RoundingMode::NearestEven);
+            let (s_plus_one, _) = s.add(&one, RoundingMode::NearestEven);
+            let (correction, _) = x_sq.div(&s_plus_one, RoundingMode::NearestEven);
+            let (arg, _) = x_w.add(&correction, RoundingMode::NearestEven);
+            let (lp, _) = arg.log1p(RoundingMode::NearestEven);
+            if matches!(sign, Sign::Negative) {
+                lp.negated()
+            } else {
+                lp
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]
