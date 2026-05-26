@@ -43,6 +43,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::euler_gamma_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `Ei(self)` rounded under `mode` to `self.precision`.
@@ -53,6 +54,10 @@ impl BigFloat {
     }
 
     /// `Ei(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.30, ADR-0038).
     pub fn ei_round(
         &self,
         target_precision: u32,
@@ -119,23 +124,29 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         Class::Normal { .. } => {}
     }
 
+    // Regime decision is pinned from target_precision so it does not
+    // flip across Ziv retries (slice p1.4 erf precedent). The
+    // working-precision boost inside ei_series (the +extra term for
+    // |x|·log₂ e cancellation) is applied INSIDE the eval closure.
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    let threshold = asymptotic_threshold_exponent(target_precision);
-    let result = if e_x >= threshold {
-        ei_asymptotic(x, target_precision)
-    } else {
-        ei_series(x, target_precision)
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            if use_asymptotic {
+                ei_asymptotic(x, w)
+            } else {
+                ei_series(x, w)
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// Smallest binary exponent of `|x|` at which the asymptotic series

@@ -38,6 +38,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::pi_over_2_at;
+use super::pi_over_2_at_round;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `Si(self)` rounded under `mode` to `self.precision`.
@@ -48,6 +50,10 @@ impl BigFloat {
     }
 
     /// `Si(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.30, ADR-0038).
     pub fn si_round(
         &self,
         target_precision: u32,
@@ -99,44 +105,52 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
             return (z, Status::OK);
         }
         Class::Infinity { sign } => {
-            // Si(±∞) = ±π/2.
-            let mut half_pi = pi_over_2_at(target_precision);
-            if matches!(sign, Sign::Negative) {
-                half_pi = half_pi.negated();
-            }
-            let (rounded, status) = half_pi
-                .round_to_precision(target_precision, mode)
-                .expect("precision >= 1");
+            // Si(±∞) = ±π/2. The irrational-constant special case
+            // is mode-aware via pi_over_2_at_round (slice p1.25
+            // discipline; see feedback_irrational_constant_special_
+            // case_mode_aware).
+            let (half_pi, status) = pi_over_2_at_round(target_precision, mode);
+            let result = if matches!(sign, Sign::Negative) {
+                half_pi.negated()
+            } else {
+                half_pi
+            };
             auto_raise(status);
-            return (rounded, status);
+            return (result, status);
         }
         Class::Normal { .. } => {}
     }
 
+    // Regime decision pinned from target_precision so it does not
+    // flip across Ziv retries. Si is odd; compute on |x| and reapply
+    // sign inside the eval closure so the Ziv interval test sees the
+    // signed value.
     let sign = x.sign();
     let abs_x = x.abs();
     let e_x = match &abs_x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    let threshold = asymptotic_threshold_exponent(target_precision);
-    let result_abs = if e_x >= threshold {
-        si_asymptotic(&abs_x, target_precision)
-    } else {
-        si_series(&abs_x, target_precision)
-    };
-    let result = if matches!(sign, Sign::Negative) {
-        result_abs.negated()
-    } else {
-        result_abs
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            let result_abs = if use_asymptotic {
+                si_asymptotic(&abs_x, w)
+            } else {
+                si_series(&abs_x, w)
+            };
+            if matches!(sign, Sign::Negative) {
+                result_abs.negated()
+            } else {
+                result_abs
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// Smallest binary exponent of `|x|` at which the asymptotic

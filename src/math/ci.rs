@@ -41,6 +41,7 @@ use crate::mantissa::limbs_for;
 
 use super::euler_gamma_at;
 use super::si::{asymptotic_threshold_exponent, si_ci_f, si_ci_g};
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `Ci(self)` rounded under `mode` to `self.precision`.
@@ -51,6 +52,10 @@ impl BigFloat {
     }
 
     /// `Ci(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.30, ADR-0038).
     pub fn ci_round(
         &self,
         target_precision: u32,
@@ -126,23 +131,30 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         }
     }
 
+    // Regime decision pinned from target_precision so it does not
+    // flip across Ziv retries (slice p1.4 erf precedent). The
+    // working-precision boost inside ci_series (the +extra term for
+    // x·log₂ e alternating cancellation) is applied INSIDE the eval
+    // closure.
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    let threshold = asymptotic_threshold_exponent(target_precision);
-    let result = if e_x >= threshold {
-        ci_asymptotic(x, target_precision)
-    } else {
-        ci_series(x, target_precision)
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    let (result, status) = ziv_round(
+        |w| {
+            if use_asymptotic {
+                ci_asymptotic(x, w)
+            } else {
+                ci_series(x, w)
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// Convergent alternating series for `Ci(x)`, `x > 0` (DLMF 6.6.6).
