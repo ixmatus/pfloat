@@ -7,6 +7,11 @@
 //! `atan(y) = y − y³/3 + y⁵/5 − …` then converges at roughly four
 //! bits per term.
 //!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.25,
+//! ADR-0038). The `atan(±∞) = ±π/2` special case rounds via
+//! [`super::pi_over_2_at_round`].
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `atan(±0) = ±0`.
@@ -24,7 +29,8 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::pi_over_2_at;
+use super::ziv::ziv_round;
+use super::{pi_over_2_at, pi_over_2_at_round};
 
 impl BigFloat {
     /// `atan(self)` rounded under `mode` to `self.precision`.
@@ -86,31 +92,40 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (z, Status::OK);
         }
         Class::Infinity { sign } => {
-            // atan(±∞) = ±π/2.
-            let pi_2 = pi_over_2_at(target_precision);
+            // atan(±∞) = ±π/2. Mode-aware (slice p1.25).
+            let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
             let signed = if matches!(sign, Sign::Negative) {
                 pi_2.negated()
             } else {
                 pi_2
             };
-            return (signed, Status::OK);
+            crate::status::auto_raise(status);
+            return (signed, status);
         }
         Class::Normal { .. } => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let result = atan_finite_unsigned(&x.abs(), working_prec);
-
-    let result_signed = if matches!(x.sign(), Sign::Negative) {
-        result.negated()
-    } else {
-        result
-    };
-    let (rounded, status) = result_signed
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure runs the existing half-angle reduction + Taylor
+    // composition (atan_finite_unsigned on |x|) at working precision
+    // `w`; the sign-flip for negative x happens inside eval so the
+    // returned value's class matches the kernel's domain.
+    let is_negative = matches!(x.sign(), Sign::Negative);
+    let abs_x = x.abs();
+    let (result, status) = ziv_round(
+        |w| {
+            let result = atan_finite_unsigned(&abs_x, w);
+            if is_negative {
+                result.negated()
+            } else {
+                result
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 /// `atan(|x|)` for finite normal positive `x`. Returns a value in

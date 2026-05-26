@@ -14,6 +14,14 @@
 //!
 //! `atan2(NaN, _) = atan2(_, NaN) = NaN`; signaling NaN raises
 //! `INVALID`.
+//!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver on the
+//! finite/nonzero finite path (slice p1.25, ADR-0038). Every
+//! special case that returns an irrational constant (`±π`,
+//! `±π/2`, `±π/4`, `±3π/4`) rounds via the mode-aware helpers
+//! [`super::pi_at_round`] / [`super::pi_over_2_at_round`] (or the
+//! local boost-then-round pattern for the `π/4` / `3π/4` cases).
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -26,7 +34,8 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::{pi_at, pi_over_2_at};
+use super::ziv::ziv_round;
+use super::{pi_at, pi_at_round, pi_over_2_at_round};
 
 impl BigFloat {
     /// `atan2(self, x)` returns the polar angle of `(x, self)`.
@@ -99,144 +108,170 @@ fn atan2_kernel(
     let y_sign = y.sign();
     let x_sign = x.sign();
 
-    // Both infinite: atan2(±∞, ±∞) ∈ {±π/4, ±3π/4}.
+    // Both infinite: atan2(±∞, ±∞) ∈ {±π/4, ±3π/4}. Compute at
+    // boosted precision and round to target under mode (slice
+    // p1.25 — directed-mode awareness for the irrational-constant
+    // returns).
     if y.is_infinite() && x.is_infinite() {
-        let pi = pi_at(target_precision);
-        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
-        let four = BigFloat::try_from_i64_exact(4, target_precision).expect("precision >= 1");
+        let boost = target_precision.saturating_add(128);
+        let pi = pi_at(boost);
+        let four = BigFloat::try_from_i64_exact(4, boost).expect("precision >= 1");
         let (pi_4, _) = pi.div(&four, RoundingMode::NearestEven);
-        let result_abs = if matches!(x_sign, Sign::Positive) {
+        let abs_unrounded = if matches!(x_sign, Sign::Positive) {
             pi_4
         } else {
             // 3π/4
-            let three = BigFloat::try_from_i64_exact(3, target_precision).expect("precision >= 1");
-            let (three_pi_4, _) = three.mul(&pi_4, RoundingMode::NearestEven);
-            let _ = one;
-            three_pi_4
+            let three = BigFloat::try_from_i64_exact(3, boost).expect("precision >= 1");
+            three.mul(&pi_4, RoundingMode::NearestEven).0
         };
-        let signed = if matches!(y_sign, Sign::Negative) {
-            result_abs.negated()
+        let signed_unrounded = if matches!(y_sign, Sign::Negative) {
+            abs_unrounded.negated()
         } else {
-            result_abs
+            abs_unrounded
         };
-        return (signed, Status::OK);
+        let (rounded, status) = signed_unrounded
+            .round_to_precision(target_precision, mode)
+            .expect("target precision >= 1");
+        auto_raise(status);
+        return (rounded, status);
     }
 
     // y is ±∞, x finite: ±π/2.
     if y.is_infinite() {
-        let pi_2 = pi_over_2_at(target_precision);
+        let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
         let signed = if matches!(y_sign, Sign::Negative) {
             pi_2.negated()
         } else {
             pi_2
         };
-        return (signed, Status::OK);
+        auto_raise(status);
+        return (signed, status);
     }
 
     // x is ±∞, y finite (and not infinite from above).
     if x.is_infinite() {
         let result = if matches!(x_sign, Sign::Positive) {
-            // +∞: angle = ±0 with sign of y.
-            BigFloat::try_new_zero(y_sign, target_precision).expect("precision >= 1")
+            // +∞: angle = ±0 with sign of y. Exact; no mode needed.
+            (
+                BigFloat::try_new_zero(y_sign, target_precision).expect("precision >= 1"),
+                Status::OK,
+            )
         } else {
-            // −∞: angle = ±π with sign of y.
-            let pi = pi_at(target_precision);
+            // −∞: angle = ±π with sign of y. Mode-aware.
+            let (pi, status) = pi_at_round(target_precision, mode);
             if matches!(y_sign, Sign::Negative) {
-                pi.negated()
+                (pi.negated(), status)
             } else {
-                pi
+                (pi, status)
             }
         };
-        return (result, Status::OK);
+        auto_raise(result.1);
+        return result;
     }
 
     // y = ±0, x finite (and not infinite from above).
     if y.is_zero() {
-        let result = match (y_sign, &x.class) {
+        let (result, status) = match (y_sign, &x.class) {
             (
                 Sign::Positive,
                 Class::Zero {
                     sign: Sign::Positive,
                 },
-            ) => BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1"),
+            ) => (
+                BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1"),
+                Status::OK,
+            ),
             (
                 Sign::Negative,
                 Class::Zero {
                     sign: Sign::Positive,
                 },
-            ) => BigFloat::try_new_zero(Sign::Negative, target_precision).expect("precision >= 1"),
+            ) => (
+                BigFloat::try_new_zero(Sign::Negative, target_precision).expect("precision >= 1"),
+                Status::OK,
+            ),
             (
                 Sign::Positive,
                 Class::Zero {
                     sign: Sign::Negative,
                 },
-            ) => pi_at(target_precision),
+            ) => pi_at_round(target_precision, mode),
             (
                 Sign::Negative,
                 Class::Zero {
                     sign: Sign::Negative,
                 },
-            ) => pi_at(target_precision).negated(),
-            // x finite normal (sign-only dispatch).
-            (s, _) if matches!(x_sign, Sign::Positive) => {
-                BigFloat::try_new_zero(s, target_precision).expect("precision >= 1")
+            ) => {
+                let (pi, status) = pi_at_round(target_precision, mode);
+                (pi.negated(), status)
             }
+            // x finite normal (sign-only dispatch).
+            (s, _) if matches!(x_sign, Sign::Positive) => (
+                BigFloat::try_new_zero(s, target_precision).expect("precision >= 1"),
+                Status::OK,
+            ),
             (s, _) => {
-                let pi = pi_at(target_precision);
+                let (pi, status) = pi_at_round(target_precision, mode);
                 if matches!(s, Sign::Negative) {
-                    pi.negated()
+                    (pi.negated(), status)
                 } else {
-                    pi
+                    (pi, status)
                 }
             }
         };
-        return (result, Status::OK);
+        auto_raise(status);
+        return (result, status);
     }
 
     // x = ±0, y finite non-zero: ±π/2 with sign of y.
     if x.is_zero() {
-        let pi_2 = pi_over_2_at(target_precision);
+        let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
         let signed = if matches!(y_sign, Sign::Negative) {
             pi_2.negated()
         } else {
             pi_2
         };
-        return (signed, Status::OK);
+        auto_raise(status);
+        return (signed, status);
     }
 
-    // Both finite and nonzero. Compute atan(y/x) and adjust by π
-    // for the second/third quadrant.
-    let working_prec = target_precision.saturating_add(64);
-    let y_w = y
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let (ratio, _) = y_w.div(&x_w, RoundingMode::NearestEven);
-    let (at, _) = ratio.atan(RoundingMode::NearestEven);
+    // Both finite and nonzero. Ziv-driven correct rounding under
+    // every IEEE mode. The eval closure captures y and x and runs
+    // the existing finite-case composition (`atan(y/x)` + quadrant
+    // shift) at working precision `w` under NE. The quadrant shift
+    // for x < 0 uses pi_at(w) so the working-precision π scales
+    // with the Ziv guard.
+    let (result, status) = ziv_round(
+        |w| {
+            let y_w = y
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let (ratio, _) = y_w.div(&x_w, RoundingMode::NearestEven);
+            let (at, _) = ratio.atan(RoundingMode::NearestEven);
 
-    let result = if matches!(x_sign, Sign::Positive) {
-        at
-    } else {
-        // x < 0: shift by ±π depending on sign of y.
-        let pi = pi_at(working_prec);
-        if matches!(y_sign, Sign::Positive) {
-            let (shifted, _) = at.add(&pi, RoundingMode::NearestEven);
-            shifted
-        } else {
-            let (shifted, _) = at.sub(&pi, RoundingMode::NearestEven);
-            shifted
-        }
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+            if matches!(x_sign, Sign::Positive) {
+                at
+            } else {
+                let pi = pi_at(w);
+                if matches!(y_sign, Sign::Positive) {
+                    let (shifted, _) = at.add(&pi, RoundingMode::NearestEven);
+                    shifted
+                } else {
+                    let (shifted, _) = at.sub(&pi, RoundingMode::NearestEven);
+                    shifted
+                }
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]

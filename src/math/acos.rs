@@ -10,6 +10,12 @@
 //! and avoids the catastrophic cancellation that `π/2 − asin(x)`
 //! would suffer near `x = 1` (where `asin → π/2`).
 //!
+//! Correctly rounded under every IEEE 754-2019 rounding mode via
+//! the shared [`crate::math::ziv::ziv_round`] driver (slice p1.25,
+//! ADR-0038). The `x = 0` and `x = -1` special cases return
+//! `π/2` and `π` respectively, rounded under the caller's mode via
+//! [`super::pi_over_2_at_round`] and [`super::pi_at_round`].
+//!
 //! Special cases per IEEE 754-2019 §9.2:
 //!
 //! - `acos(+1) = +0`.
@@ -31,7 +37,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::atan::atan_finite_unsigned;
-use super::{pi_at, pi_over_2_at};
+use super::ziv::ziv_round;
+use super::{pi_at, pi_at_round, pi_over_2_at_round};
 
 impl BigFloat {
     /// `acos(self)` rounded under `mode` to `self.precision`.
@@ -89,8 +96,13 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (nan, Status::OK);
         }
         Class::Zero { .. } => {
-            // acos(0) = π/2.
-            return (pi_over_2_at(target_precision), Status::OK);
+            // acos(0) = π/2. Round under the caller's mode (slice
+            // p1.25 surfaced the NE-only `pi_over_2_at` return as
+            // 1-ULP wrong under TZ/TN; the helper boosts precision
+            // and rounds to target under mode).
+            let (rounded, status) = pi_over_2_at_round(target_precision, mode);
+            crate::status::auto_raise(status);
+            return (rounded, status);
         }
         Class::Infinity { .. } => {
             let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
@@ -120,7 +132,10 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     }
     match x.partial_cmp(&neg_one_at_input).0 {
         Some(Ordering::Equal) => {
-            return (pi_at(target_precision), Status::OK);
+            // acos(-1) = π. Round under the caller's mode.
+            let (rounded, status) = pi_at_round(target_precision, mode);
+            crate::status::auto_raise(status);
+            return (rounded, status);
         }
         Some(Ordering::Less) => {
             let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
@@ -131,41 +146,48 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         _ => {}
     }
 
-    let working_prec = target_precision.saturating_add(64);
-    let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The
+    // eval closure carries the two-branch composition: for x ≥ 0
+    // use `2·atan(sqrt((1−x)/(1+x)))`; for x < 0 use
+    // `π − 2·atan(sqrt((1+x)/(1−x)))`. Both forms avoid the
+    // catastrophic cancellation `π/2 − asin(x)` would suffer near
+    // x = ±1. The branch dispatch is on `x.sign()` (Class-level,
+    // independent of working precision) so it stays inside eval.
+    let is_negative = matches!(x.sign(), Sign::Negative);
+    let (result, status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
 
-    let result = if matches!(x.sign(), Sign::Negative) {
-        // acos(x) = π − 2·atan(sqrt((1 + x) / (1 − x))) for x < 0.
-        let (one_plus_x, _) = one.add(&x_w, RoundingMode::NearestEven);
-        let (one_minus_x, _) = one.sub(&x_w, RoundingMode::NearestEven);
-        let (ratio, _) = one_plus_x.div(&one_minus_x, RoundingMode::NearestEven);
-        let (arg, _) = ratio.sqrt(RoundingMode::NearestEven);
-        let at = atan_finite_unsigned(&arg, working_prec);
-        let (twice, _) = two.mul(&at, RoundingMode::NearestEven);
-        let pi = pi_at(working_prec);
-        let (diff, _) = pi.sub(&twice, RoundingMode::NearestEven);
-        diff
-    } else {
-        // acos(x) = 2·atan(sqrt((1 − x) / (1 + x))) for x > 0.
-        let (one_minus_x, _) = one.sub(&x_w, RoundingMode::NearestEven);
-        let (one_plus_x, _) = one.add(&x_w, RoundingMode::NearestEven);
-        let (ratio, _) = one_minus_x.div(&one_plus_x, RoundingMode::NearestEven);
-        let (arg, _) = ratio.sqrt(RoundingMode::NearestEven);
-        let at = atan_finite_unsigned(&arg, working_prec);
-        let (twice, _) = two.mul(&at, RoundingMode::NearestEven);
-        twice
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+            if is_negative {
+                let (one_plus_x, _) = one.add(&x_w, RoundingMode::NearestEven);
+                let (one_minus_x, _) = one.sub(&x_w, RoundingMode::NearestEven);
+                let (ratio, _) = one_plus_x.div(&one_minus_x, RoundingMode::NearestEven);
+                let (arg, _) = ratio.sqrt(RoundingMode::NearestEven);
+                let at = atan_finite_unsigned(&arg, w);
+                let (twice, _) = two.mul(&at, RoundingMode::NearestEven);
+                let pi = pi_at(w);
+                let (diff, _) = pi.sub(&twice, RoundingMode::NearestEven);
+                diff
+            } else {
+                let (one_minus_x, _) = one.sub(&x_w, RoundingMode::NearestEven);
+                let (one_plus_x, _) = one.add(&x_w, RoundingMode::NearestEven);
+                let (ratio, _) = one_minus_x.div(&one_plus_x, RoundingMode::NearestEven);
+                let (arg, _) = ratio.sqrt(RoundingMode::NearestEven);
+                let at = atan_finite_unsigned(&arg, w);
+                let (twice, _) = two.mul(&at, RoundingMode::NearestEven);
+                twice
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
 }
 
 #[cfg(test)]
