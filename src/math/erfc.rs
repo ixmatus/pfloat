@@ -35,6 +35,7 @@ use crate::mantissa::limbs_for;
 
 use super::erf::{asymptotic_threshold_exponent, erf_maclaurin};
 use super::two_over_sqrt_pi_at;
+use super::ziv::ziv_round;
 
 impl BigFloat {
     /// `erfc(self)` rounded under `mode` to `self.precision`.
@@ -45,6 +46,10 @@ impl BigFloat {
     }
 
     /// `erfc(self)` with explicit result precision.
+    ///
+    /// Correctly rounded under every IEEE 754-2019 rounding mode
+    /// via the shared `crate::math::ziv::ziv_round` driver (slice
+    /// p1.28, ADR-0038).
     pub fn erfc_round(
         &self,
         target_precision: u32,
@@ -116,53 +121,65 @@ fn erfc_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
-    // For x < 0, reflect via 2 − erfc(|x|). The subtraction loses
-    // at most one bit because erfc(|x|) ≤ 2.
-    if matches!(x.sign(), Sign::Negative) {
-        let abs_x = x.abs();
-        let working_prec = target_precision.saturating_add(8);
-        let (erfc_abs, _) = abs_x
-            .erfc_round(working_prec, RoundingMode::NearestEven)
-            .expect("precision >= 1");
-        let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
-        let (result, _) = two.sub(&erfc_abs, RoundingMode::NearestEven);
-        let (rounded, status) = result
-            .round_to_precision(target_precision, mode)
-            .expect("precision >= 1");
-        auto_raise(status);
-        return (rounded, status);
-    }
-
-    let e_x = match &x.class {
+    // The regime decision is fixed once from target_precision so it
+    // does not flip across Ziv retries (slice p1.4 erf precedent).
+    // For x < 0 the reflection `2 − erfc(|x|)` is applied inside the
+    // eval closure; the regime is decided on |x|.
+    let sign = x.sign();
+    let abs_x = x.abs();
+    let e_x = match &abs_x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    let threshold = asymptotic_threshold_exponent(target_precision);
-    let result = if e_x >= threshold {
-        // Asymptotic produces target precision directly.
-        let working_prec = target_precision
-            .saturating_add(64)
-            .min(target_precision.saturating_add(512));
-        erfc_asymptotic(x, working_prec)
-    } else {
-        // Small-x path: 1 − erf_maclaurin(x) at boosted working
-        // precision so the cancellation preserves target bits.
-        let working_prec = target_precision
-            .saturating_add(64)
-            .saturating_add(128)
-            .min(target_precision.saturating_add(512));
-        let erf_val = erf_maclaurin(x, working_prec);
-        let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-        let (diff, _) = one.sub(&erf_val, RoundingMode::NearestEven);
-        diff
-    };
-
-    let (rounded, status) = result
-        .round_to_precision(target_precision, mode)
-        .expect("precision >= 1");
+    // Ziv-driven correct rounding under every IEEE mode. The eval
+    // closure carries the regime dispatch on |x| and the negative-x
+    // reflection (`2 − erfc(|x|)` loses at most one bit because
+    // erfc(|x|) ≤ 2). The +128-bit Maclaurin cancellation boost is
+    // preserved INSIDE eval(w) so the `1 − erf_maclaurin` subtraction
+    // retains target bits when erf(x) is close to 1.
+    let (result, status) = ziv_round(
+        |w| {
+            let v = erfc_at_w(&abs_x, w, use_asymptotic);
+            if matches!(sign, Sign::Negative) {
+                let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
+                two.sub(&v, RoundingMode::NearestEven).0
+            } else {
+                v
+            }
+        },
+        target_precision,
+        mode,
+    );
     auto_raise(status);
-    (rounded, status)
+    (result, status)
+}
+
+/// Evaluate `erfc(|x|)` at the supplied working precision under
+/// `NearestEven`. The regime decision is fixed by the caller from
+/// `target_precision` so it does not flip across Ziv retries. The
+/// Maclaurin branch applies an additional +128-bit cancellation
+/// boost so `1 − erf_maclaurin(x)` retains the target bits even
+/// when `erf(x)` approaches 1.
+fn erfc_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFloat {
+    if use_asymptotic {
+        // Asymptotic's smallest-term truncation gives target precision
+        // directly at the supplied working precision; the
+        // asymptotic_threshold_exponent gate guarantees this.
+        erfc_asymptotic(abs_x, working_prec)
+    } else {
+        // Cancellation boost for `1 − erf(x)` when erf(x) is close to 1.
+        // erf_maclaurin already boosts internally for series convergence
+        // (peak term at n ≈ x²); the additional +128 here covers the
+        // subtraction cancellation after the series has converged.
+        let inner_w = working_prec
+            .saturating_add(128)
+            .min(working_prec.saturating_add(512));
+        let erf_val = erf_maclaurin(abs_x, inner_w);
+        let one = BigFloat::try_from_i64_exact(1, inner_w).expect("precision >= 1");
+        one.sub(&erf_val, RoundingMode::NearestEven).0
+    }
 }
 
 /// `erfc(x)` for positive `x` past the asymptotic threshold, via
