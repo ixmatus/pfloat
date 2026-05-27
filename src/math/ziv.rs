@@ -100,15 +100,47 @@ fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
 /// [`crate::math::ziv_calibration`] (pf-yupm, ADR-0039). Every call
 /// site supplies an explicitly-named constant; the driver carries no
 /// implicit default. Active sweep-time verification of each kernel's
-/// bound is pf-tqzz (slice p1g.3).
+/// bound is pf-tqzz (slice p1g.3) via [`ziv_round_capturing`].
 pub(crate) fn ziv_round(
     eval: impl Fn(u32) -> BigFloat,
     target: u32,
     mode: RoundingMode,
     error_guard: u32,
 ) -> (BigFloat, Status) {
+    let (cand, status, _converged_working, _eval_intermediate) =
+        ziv_round_capturing(eval, target, mode, error_guard);
+    (cand, status)
+}
+
+/// Trace returned by [`ziv_round_capturing`]: the rounded candidate
+/// at the caller's target precision, the IEEE status, the working
+/// precision at which the Ziv interval test converged (or capped),
+/// and the `eval(working)` intermediate at the converging iteration.
+///
+/// The trailing two fields are the quantities pf-tqzz (slice p1g.3)
+/// asserts against the rigorous Arb midpoint on every f32 input.
+/// Production callers use [`ziv_round`], which destructures with `_`
+/// for those fields; the compiler discards the trailing `BigFloat`
+/// allocation in the success path. The fallback (cap-exhaustion)
+/// path holds one extra `BigFloat` across iterations bounded by
+/// [`ZIV_MAX_ITERS`].
+pub(crate) type ZivTrace = (BigFloat, Status, u32, BigFloat);
+
+/// Same as [`ziv_round`] but additionally returns the working
+/// precision at which the interval test converged and the
+/// `eval(working)` intermediate at that iteration. This is the
+/// shape the pf-tqzz cross-check (slice p1g.3) consumes to assert
+/// `|eval(working) − rigorous_midpoint| ≤ 2^(error_guard − working)
+/// · |rigorous_midpoint|` for every swept f32 input. Production
+/// callers use the thin [`ziv_round`] wrapper above.
+pub(crate) fn ziv_round_capturing(
+    eval: impl Fn(u32) -> BigFloat,
+    target: u32,
+    mode: RoundingMode,
+    error_guard: u32,
+) -> ZivTrace {
     let mut guard = ZIV_BASE_GUARD;
-    let mut fallback: Option<(BigFloat, Status)> = None;
+    let mut fallback: Option<ZivTrace> = None;
     for _ in 0..ZIV_MAX_ITERS {
         let working = target.saturating_add(guard);
         let y = eval(working);
@@ -126,16 +158,16 @@ pub(crate) fn ziv_round(
             // The whole uncertainty interval rounds to one value:
             // correct rounding is settled.
             auto_raise(status);
-            return (cand, status);
+            return (cand, status, working, y);
         }
 
-        fallback = Some((cand, status));
+        fallback = Some((cand, status, working, y));
         guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
     }
     // Cap reached on a pathologically hard input: best effort.
-    let (cand, status) = fallback.expect("ZIV_MAX_ITERS >= 1");
+    let (cand, status, working, y) = fallback.expect("ZIV_MAX_ITERS >= 1");
     auto_raise(status);
-    (cand, status)
+    (cand, status, working, y)
 }
 
 #[cfg(test)]
