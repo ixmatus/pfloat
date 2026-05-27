@@ -546,7 +546,20 @@ sections that read against the renumbered phase plan.
   unbounded-precision termination caveat MPFR carries. The Phase
   1f audit at
   `docs/decisions/plans/phase-1f-five-mode-completeness.md` carries
-  the per-kernel derivation for every migration.
+  the per-kernel derivation for every migration. The pre-Phase-1g
+  empirical-slack framing for `ZIV_ERROR_GUARD = 24`
+  ("comfortably under 2²⁴ ULP" at all working precisions this
+  driver runs) is superseded by the per-kernel calibrated bound
+  in `src/math/ziv_calibration.rs` (Phase 1g `pf-yupm`), with the
+  bound actively guarded at every f32 input by the per-release
+  oracle-sweep cross-check (`pf-tqzz`,
+  `tests/oracle_cross_check_smoke.rs`). The driver interval test's
+  soundness theorem is formally stated and Kani-scaffolded at
+  `src/verify/ziv_soundness.rs` (`pf-hdh8`); the
+  `BoundedBigFloat<80>` fixed-array encoding for the universal-
+  quantification discharge is recorded in ADR-0039 as post-v1.0
+  follow-up. Phase 1g closure prose at
+  `docs/decisions/plans/phase-1g-verification-closure.md`.
 - `pow(x, y)` is correctly rounded under every IEEE rounding mode
   (subject to the Ziv cap above): an exact integer `y` takes a
   square-and-multiply fast path, every other case evaluates
