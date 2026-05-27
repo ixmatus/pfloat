@@ -251,6 +251,11 @@ def handle_request(line: str) -> str:
     if line == "ready?":
         return "OK ready"
     parts = line.split()
+    # Dispatch on the first token if it is an explicit verb. The
+    # pre-pf-tqzz protocol used implicit "CERTIFY" with the 4-token
+    # form (fn_id, order, input_hex, mode); backward-compatible.
+    if parts and parts[0] == "MIDPOINT":
+        return handle_midpoint(parts[1:])
     if len(parts) != 4:
         return f"ERR malformed request: expected 4 tokens, got {len(parts)}"
     fn_id, order, input_hex, mode = parts
@@ -345,6 +350,83 @@ def handle_request(line: str) -> str:
     if last_error is not None:
         return f"ERR Ziv exhausted ({ZIV_MAX_PREC} bits); last error: {last_error}"
     return "INC"
+
+
+def handle_midpoint(args: list[str]) -> str:
+    """Process a MIDPOINT request.
+
+    Request shape (verb already stripped)::
+
+        <fn_id> <order_or_dash> <input_bits_hex> <oracle_prec>
+
+    Computes the function at ``oracle_prec`` and returns the
+    midpoint of the resulting Arb ball as a signed
+    mantissa-and-binary-exponent triple. The midpoint is the centre
+    of the ball; the Arb ball's radius bounds how far it can be
+    from the true value, and at ``oracle_prec >= working_prec + 64``
+    the midpoint is accurate to well within the pf-tqzz cross-check
+    tolerance (``2^(error_guard - working_prec) * |midpoint|``).
+
+    Response shape::
+
+        OK <sign> <mantissa_hex> <exponent>
+
+    where ``sign`` is ``+`` or ``-``, ``mantissa_hex`` is the
+    absolute integer mantissa as a lowercase hex string (no ``0x``
+    prefix), and ``exponent`` is a signed decimal integer such that
+    ``value = sign * mantissa * 2^exponent``. The triple is the
+    exact arf representation of the ball midpoint (``arf.man_exp``).
+
+    Errors return ``ERR <message>``; ``INC`` is returned when the
+    ball is non-finite (NaN or unbounded) and the midpoint has no
+    finite representation.
+
+    pf-tqzz (slice p1g.3, ADR-0039).
+    """
+    if len(args) != 4:
+        return f"ERR MIDPOINT: expected 4 args, got {len(args)}"
+    fn_id, order, input_hex, oracle_prec_str = args
+    try:
+        input_bits = int(input_hex, 16)
+    except ValueError:
+        return f"ERR MIDPOINT malformed input_hex: {input_hex}"
+    if not 0 <= input_bits <= 0xFFFF_FFFF:
+        return f"ERR MIDPOINT input_bits out of u32 range: {input_hex}"
+    try:
+        oracle_prec = int(oracle_prec_str)
+    except ValueError:
+        return f"ERR MIDPOINT malformed oracle_prec: {oracle_prec_str}"
+    if not 1 <= oracle_prec <= ZIV_MAX_PREC:
+        return f"ERR MIDPOINT oracle_prec out of range [1, {ZIV_MAX_PREC}]: {oracle_prec}"
+
+    ctx.prec = oracle_prec
+    try:
+        x_arb = arb_from_f32_bits(input_bits)
+        result_ball = dispatch(fn_id, order, x_arb)
+    except Exception as e:
+        return f"ERR MIDPOINT {type(e).__name__}: {e}"
+
+    if result_ball.is_nan() or not result_ball.is_finite():
+        return "INC"
+
+    # mid() returns the arf centre of the ball. arf.man_exp() returns
+    # an exact (mantissa, exponent) pair such that the arf value
+    # equals mantissa * 2^exponent. The mantissa fits the arf's
+    # storage precision (which is at least oracle_prec when the ball
+    # was computed at ctx.prec = oracle_prec).
+    try:
+        mid_arf = result_ball.mid()
+        man, exp = mid_arf.man_exp()
+        man_int = int(man)
+        exp_int = int(exp)
+    except Exception as e:
+        return f"ERR MIDPOINT midpoint extraction failed: {type(e).__name__}: {e}"
+
+    if man_int == 0:
+        return "OK + 0 0"
+    sign_str = "-" if man_int < 0 else "+"
+    abs_man_hex = format(abs(man_int), "x")
+    return f"OK {sign_str} {abs_man_hex} {exp_int}"
 
 
 def main() -> None:

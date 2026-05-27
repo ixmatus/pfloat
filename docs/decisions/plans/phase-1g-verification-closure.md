@@ -234,17 +234,101 @@ kernel hits this threshold.
 
 ## Arb cross-check protocol extension (p1g.3, pf-tqzz)
 
-To be populated at slice p1g.3.
+### Status at p1g.3 parts 1 & 2 landing
 
-Protocol extension (skeleton):
+**Landed:**
 
-- **New worker verb:** `MIDPOINT <fn_id> <order_or_dash> <input_hex> <working_prec> <oracle_prec>`.
-- **Worker computation:** `python-flint` ball arithmetic at `oracle_prec ≥ working_prec + 64`; return ball midpoint as a lossless BigFloat triple.
-- **Response shape:** `OK <sign_hex> <exp_hex> <mantissa_hex>` (lossless), `INC`, or `ERR <msg>`.
-- **Spike kernel:** `exp` (simplest, well-characterized).
-- **Sweep cost:** ~3.1M new Arb calls per release (mode-independent midpoint, one per `(kernel, input)`).
+- **Driver foundation (p1g.3 part 1, commit 35e3ee3).** New
+  `ziv_round_capturing` in `src/math/ziv.rs` returns
+  `ZivTrace = (BigFloat, Status, u32, BigFloat)` exposing the
+  converged working precision and the eval(w) intermediate. The
+  pre-existing `ziv_round` becomes a thin wrapper that destructures
+  with `_` for the trailing pair; the 39 existing call sites stay
+  unchanged.
 
-Spike output and per-kernel cross-check results land at slice p1g.3.
+- **Worker protocol extension (p1g.3 part 2).** New `MIDPOINT` verb
+  in `scripts/arb_oracle_worker.py` reads
+  `MIDPOINT <fn_id> <order_or_dash> <input_hex> <oracle_prec>`,
+  computes the function at `ctx.prec = oracle_prec` via `python-
+  flint` ball arithmetic, and returns the ball midpoint via
+  `arf.man_exp()` as a lossless triple
+  `OK <sign> <mantissa_hex> <exponent>` (or `INC` for non-finite,
+  `ERR <msg>` on failure). The verb dispatches on the first
+  request token; the original 4-token implicit "CERTIFY" form
+  stays backward-compatible.
+
+- **Rust parser and oracle method (p1g.3 part 2).** New
+  `ArbOracle::midpoint(f, input, oracle_prec) -> Result<Float,
+  MidpointError>` in `tests/oracle/arb.rs` parses the wire format
+  back into a `rug::Float` at `oracle_prec`: hex-encoded
+  absolute mantissa via `rug::Integer::parse_radix`, signed lift
+  via `Float::with_val(prec, &signed)`, scaled by `<< exp` or `>>
+  -exp` for the binary exponent. Mode-independent (the midpoint
+  request has no mode parameter; the mode applies downstream when
+  the cross-check assertion rounds the gap).
+
+- **End-to-end smoke (p1g.3 part 2).** New
+  `tests/oracle_arb_midpoint_smoke.rs` exercises the wire format
+  on three Arb-primary kernels: `Si(0) = 0` (zero-encoded wire
+  form), `Si(1) ≈ 0.946083070367183` (NIST DLMF 6.7.1 reference,
+  matches within 1e-13 f64 tolerance at oracle_prec=128), and
+  `K_0(1) ≈ 0.421...` (NIST DLMF 10.32.9 sanity, finite-positive
+  range check). All three pass under the Arb venv at
+  `${HOME}/.cache/pfloat-arb-oracle/venv`.
+
+### Remaining for full pf-tqzz acceptance (follow-up sub-slice)
+
+The wire format is validated; the cross-check sweep harness
+remains. The deferred work:
+
+1. **Per-kernel `<fn>_round_capturing` wrappers**, one per
+   five-mode-correct `FnId`. Each kernel function gets a thin
+   `#[cfg(any(test, feature = "ziv-instrumented"))] pub fn
+   <fn>_round_capturing(...) -> ZivTrace` that calls
+   `ziv_round_capturing` with the same per-kernel `error_guard`
+   the production path uses. Mechanical 47-kernel pass.
+
+2. **MPFR-side midpoint** for the 35 MPFR-primary kernels (the
+   `MIDPOINT` verb only knows the 12 Arb-primary `FnId`s today).
+   Add a `MpfrOracle::midpoint` method that calls
+   `mpfr_<fn>(..., RoundNearest)` at `oracle_prec` and returns
+   the result as `rug::Float`. MPFR's correct-rounding at
+   `oracle_prec >= working_prec + 64` is itself the rigorous
+   midpoint (no ball-radius adjustment needed because MPFR's
+   directed rounding at `oracle_prec` already brackets the true
+   value within sub-ULP).
+
+3. **`tests/oracle/cross_check.rs` sweep harness**. For each
+   `(kernel, input, mode)` triple in the 65536 × 5 × 47 sweep:
+   call `<fn>_round_capturing` to obtain `(_, _, working,
+   eval_w)`; call `oracle.midpoint(f, input, working + 64)` to
+   obtain `arb_mid` (or MPFR-mid); compute
+   `error = |eval_w - arb_mid|` and `bound = 2^(error_guard -
+   working) * |arb_mid|`; assert `error <= bound`. Fail-fast
+   structured report on any violation.
+
+4. **Cargo.toml `ziv-instrumented` feature** to gate the per-
+   kernel capturing wrappers behind a release-time-only flag.
+
+Estimated effort: 2-4 hours for items 1-3 (mechanical), bounded
+by per-kernel `pub fn` boilerplate generation. The 3.1M Arb
+midpoint calls (~one per kernel-input pair, mode-independent)
+fits the per-release runtime budget; per-push CI unchanged.
+
+### Protocol reference (frozen)
+
+| Direction | Wire format |
+|-----------|-------------|
+| Request   | `MIDPOINT <fn_id> <order_or_dash> <input_hex> <oracle_prec>` |
+| Response (success) | `OK <sign> <mantissa_hex> <exponent>` — value = `sign * mantissa * 2^exponent` |
+| Response (zero) | `OK + 0 0` — exact zero |
+| Response (non-finite) | `INC` — NaN or unbounded ball |
+| Response (error) | `ERR <message>` — worker-side failure |
+
+The `<sign>` token is `+` or `-`; `<mantissa_hex>` is the absolute
+integer mantissa as lowercase hex with no `0x` prefix; `<exponent>`
+is signed decimal. The triple is a faithful representation of the
+Arb ball midpoint at `oracle_prec` precision.
 
 ## Kani soundness theorem (p1g.4, pf-hdh8)
 

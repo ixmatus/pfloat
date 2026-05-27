@@ -52,7 +52,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 
 use rug::float::Special;
-use rug::Float;
+use rug::{Complete, Float};
 
 use pfloat::RoundingMode;
 
@@ -239,6 +239,148 @@ impl ArbOracle {
             }
         }
     }
+}
+
+impl ArbOracle {
+    /// Compute the rigorous-enclosure midpoint of the function at
+    /// `input` (a binary32 bit pattern), at oracle precision
+    /// `oracle_prec >= working_prec + 64`. Returns a [`rug::Float`]
+    /// at `oracle_prec` precision.
+    ///
+    /// The returned midpoint is the centre of the Arb ball at
+    /// `oracle_prec`; the ball's radius bounds how far the midpoint
+    /// can be from the true value, and at the recommended
+    /// `oracle_prec >= working_prec + 64` the radius is well within
+    /// the pf-tqzz cross-check tolerance
+    /// `2^(error_guard - working_prec) * |midpoint|`.
+    ///
+    /// The mode parameter is omitted from the request because the
+    /// midpoint is mode-independent: every IEEE rounding mode of
+    /// the same input value produces the same midpoint candidate
+    /// (the rounding happens downstream when comparing against the
+    /// kernel's eval(w) intermediate).
+    ///
+    /// pf-tqzz (slice p1g.3, ADR-0039). Panics on a non-Arb-primary
+    /// `FnId`; the caller (cross-check harness) is responsible for
+    /// routing other `FnId`s through MPFR (see [`super::cross_check`]).
+    pub fn midpoint(&self, f: FnId, input: u32, oracle_prec: u32) -> Result<Float, MidpointError> {
+        let (fn_id, order) = fnid_to_worker_args(f);
+        let request = format!("MIDPOINT {fn_id} {order} {input:08x} {oracle_prec}");
+        let response = self.request(&request).map_err(MidpointError::Worker)?;
+        parse_midpoint_response(&response, oracle_prec)
+    }
+}
+
+/// Errors returned by [`ArbOracle::midpoint`].
+#[derive(Debug)]
+pub enum MidpointError {
+    /// The worker reported `INC` (NaN or unbounded ball); the
+    /// midpoint has no finite representation.
+    Inconclusive,
+    /// The worker reported `ERR <msg>`; the message is preserved
+    /// verbatim.
+    WorkerError(String),
+    /// The Arb subprocess request itself failed (broken pipe,
+    /// failed restart, etc.).
+    Worker(String),
+    /// The response did not parse as a MIDPOINT triple.
+    Malformed(String),
+}
+
+impl std::fmt::Display for MidpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inconclusive => write!(f, "midpoint inconclusive (ball NaN or unbounded)"),
+            Self::WorkerError(msg) => write!(f, "worker error: {msg}"),
+            Self::Worker(msg) => write!(f, "worker request failed: {msg}"),
+            Self::Malformed(msg) => write!(f, "malformed midpoint response: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MidpointError {}
+
+/// Parse a worker MIDPOINT response into a `rug::Float` at
+/// `oracle_prec`.
+///
+/// Response shape per `scripts/arb_oracle_worker.py::handle_midpoint`:
+///
+/// - `OK <sign> <mantissa_hex> <exponent>` — `sign ∈ {+, -}`;
+///   `mantissa_hex` is the absolute integer mantissa as lowercase
+///   hex (no `0x` prefix); `exponent` is signed decimal. The value
+///   is `sign * mantissa * 2^exponent`. The zero case emits
+///   `OK + 0 0` (mantissa `0`, exponent `0`).
+/// - `INC` — the ball is NaN or unbounded.
+/// - `ERR <message>` — worker-side error.
+fn parse_midpoint_response(line: &str, oracle_prec: u32) -> Result<Float, MidpointError> {
+    let mut parts = line.split_whitespace();
+    let tag = parts
+        .next()
+        .ok_or_else(|| MidpointError::Malformed("empty response".to_string()))?;
+    if tag == "INC" {
+        return Err(MidpointError::Inconclusive);
+    }
+    if tag == "ERR" {
+        let msg: String = parts.collect::<Vec<_>>().join(" ");
+        return Err(MidpointError::WorkerError(msg));
+    }
+    if tag != "OK" {
+        return Err(MidpointError::Malformed(format!(
+            "unexpected response tag: {tag}"
+        )));
+    }
+    let sign_str = parts
+        .next()
+        .ok_or_else(|| MidpointError::Malformed("missing sign".to_string()))?;
+    let mant_hex = parts
+        .next()
+        .ok_or_else(|| MidpointError::Malformed("missing mantissa".to_string()))?;
+    let exp_str = parts
+        .next()
+        .ok_or_else(|| MidpointError::Malformed("missing exponent".to_string()))?;
+    if parts.next().is_some() {
+        return Err(MidpointError::Malformed(format!(
+            "trailing data in midpoint response: `{line}`"
+        )));
+    }
+    let exp: i64 = exp_str
+        .parse()
+        .map_err(|e| MidpointError::Malformed(format!("exponent `{exp_str}`: {e}")))?;
+
+    // Zero is encoded as mantissa `0`, exponent `0`; preserve the
+    // unsigned zero so the magnitude comparison downstream stays
+    // total.
+    if mant_hex == "0" {
+        return Ok(Float::with_val(oracle_prec, 0));
+    }
+
+    // Parse the absolute mantissa as a big integer, apply sign,
+    // lift to Float at oracle_prec, then scale by 2^exponent via
+    // a binary shift (rug::Float's Shl/Shr scale by powers of two
+    // exactly).
+    let abs_int = rug::Integer::parse_radix(mant_hex, 16)
+        .map_err(|e| MidpointError::Malformed(format!("mantissa hex `{mant_hex}`: {e}")))?
+        .complete();
+    let signed = if sign_str == "-" {
+        -abs_int
+    } else if sign_str == "+" {
+        abs_int
+    } else {
+        return Err(MidpointError::Malformed(format!(
+            "sign `{sign_str}` not in {{+, -}}"
+        )));
+    };
+    let base = Float::with_val(oracle_prec, &signed);
+    let scaled = if exp >= 0 {
+        let shift =
+            u32::try_from(exp).map_err(|e| MidpointError::Malformed(format!("exp shl: {e}")))?;
+        base << shift
+    } else {
+        let shift =
+            u32::try_from(-exp).map_err(|e| MidpointError::Malformed(format!("exp shr: {e}")))?;
+        base >> shift
+    };
+    Ok(scaled)
 }
 
 impl OracleBackend for ArbOracle {
