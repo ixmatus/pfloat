@@ -14,8 +14,9 @@
 //! result on a power-of-two input rounds to the exact integer at
 //! the 64-bit guard precision.
 
-use crate::big::{BigFloat, BuildError};
+use crate::big::{BigFloat, BuildError, Parts};
 use crate::rounding::RoundingMode;
+use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 #[cfg(feature = "fixed")]
@@ -64,6 +65,23 @@ where
 }
 
 fn log2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    // Power-of-two exact dispatch (pf-kk16, ADR-0039). For
+    // x = 2^k with integer k, log2(2^k) = k exactly. The
+    // composition `ln(x) / ln(2)` at working_prec returns
+    // k + epsilon (epsilon ~ 2^-w from the division of two
+    // working-precision approximations to ln(2^k) and ln(2));
+    // under directed modes the rounded result would land 1 ULP
+    // away from the exact integer. The pre-composition dispatch
+    // detects x via its mantissa-bit-pattern and returns k
+    // directly; if k does not fit at target_precision, fall
+    // through to the composition (which converges correctly via
+    // its 64-bit guard for k representable at target_precision).
+    if let Some(k) = power_of_two_exponent(x) {
+        if let Ok(result) = BigFloat::try_from_i64_exact(k, target_precision) {
+            return (result, Status::OK);
+        }
+    }
+
     let working_prec = target_precision.saturating_add(64);
     let (ln_x, ln_status) = x
         .ln_round(working_prec, RoundingMode::NearestEven)
@@ -75,6 +93,39 @@ fn log2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         .expect("precision >= 1");
     auto_raise(round_status);
     (rounded, ln_status | div_status | round_status)
+}
+
+/// If `x` is `+2^k` for some `k ∈ i64`, returns `Some(k)`;
+/// otherwise returns `None`. A `BigFloat` stores its mantissa in
+/// little-endian limbs with the top bit of the most-significant
+/// limb always set (ADR-0001). A power of two stores as the
+/// most-significant limb equal to `1u64 << 63` with every other
+/// limb zero; the value `2^k` then has `BigFloat::exponent = k`
+/// (the integer interpretation `2^(precision-1)` scaled by
+/// `2^(exponent - precision + 1)` collapses to `2^exponent`).
+/// The check is `O(limbs)`.
+fn power_of_two_exponent(x: &BigFloat) -> Option<i64> {
+    match x.parts() {
+        Parts::Normal {
+            sign: Sign::Positive,
+            exponent,
+            mantissa,
+            ..
+        } => {
+            let top_limb_idx = mantissa.len().checked_sub(1)?;
+            const TOP_BIT_ONLY: u64 = 1u64 << 63;
+            if mantissa[top_limb_idx] != TOP_BIT_ONLY {
+                return None;
+            }
+            for &limb in &mantissa[..top_limb_idx] {
+                if limb != 0 {
+                    return None;
+                }
+            }
+            Some(exponent)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +175,92 @@ mod tests {
         let (r, _) = eight.log2(RoundingMode::NearestEven);
         let three = BigFloat::try_from_i64_exact(3, 113).unwrap();
         assert!(close_at(&r, &three, 113 - 12));
+    }
+
+    #[test]
+    fn log2_powers_of_two_are_exact_under_every_directed_mode() {
+        // pf-kk16 pinning test: the power-of-two pre-composition
+        // dispatch returns the exact integer k under every mode for
+        // x = 2^k. Without the dispatch, the ln(x)/ln(2) composition
+        // returns k + epsilon and TP rounds up to k + ULP for
+        // sufficiently small target precision
+        // (feedback_exact_value_defeats_ziv).
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            for &prec in &[24u32, 53, 113] {
+                for &k in &[0i64, 1, 2, 3, 8, 10, 20] {
+                    let two_to_k = if k == 0 {
+                        BigFloat::try_from_i64_exact(1, prec).unwrap()
+                    } else {
+                        BigFloat::try_from_i64_exact(1i64 << k, prec).unwrap()
+                    };
+                    let (r, status) = two_to_k.log2(mode);
+                    assert!(
+                        status.is_ok(),
+                        "log2(2^{k}) status under {mode:?}@p{prec}: {status:?}"
+                    );
+                    let expected = BigFloat::try_from_i64_exact(k, prec).unwrap();
+                    assert_eq!(
+                        r.partial_cmp(&expected).0,
+                        Some(Ordering::Equal),
+                        "log2(2^{k}) = {k} expected under {mode:?}@p{prec}, got {r:?}"
+                    );
+                    assert_eq!(r.precision(), prec);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn log2_one_is_zero_under_every_directed_mode() {
+        // pf-kk16: log2(1) = log2(2^0) = 0 exactly under every mode.
+        // Covered by the power-of-two dispatch (k=0). Also covered
+        // by ln(1)=0 through the composition path; this test pins
+        // the pre-composition dispatch.
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            for &prec in &[24u32, 53, 113] {
+                let one = BigFloat::try_from_i64_exact(1, prec).unwrap();
+                let (r, _) = one.log2(mode);
+                assert!(
+                    r.is_zero() && !r.is_sign_negative(),
+                    "log2(1) should be +0 under {mode:?}@p{prec}, got {r:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn log2_non_power_of_two_falls_through() {
+        // pf-kk16 regression guard: non-power-of-two inputs still
+        // route through the ln(x)/ln(2) composition (i.e., they are
+        // NOT silently snapped to an integer by the dispatch).
+        // log2(3) ≈ 1.585; check the result is close to 1.585, not
+        // exactly 1 or 2.
+        let three = BigFloat::try_from_i64_exact(3, 113).unwrap();
+        let (r, _) = three.log2(RoundingMode::NearestEven);
+        let one = BigFloat::try_from_i64_exact(1, 113).unwrap();
+        let two = BigFloat::try_from_i64_exact(2, 113).unwrap();
+        assert_ne!(
+            r.partial_cmp(&one).0,
+            Some(Ordering::Equal),
+            "log2(3) must not snap to 1"
+        );
+        assert_ne!(
+            r.partial_cmp(&two).0,
+            Some(Ordering::Equal),
+            "log2(3) must not snap to 2"
+        );
     }
 
     #[test]

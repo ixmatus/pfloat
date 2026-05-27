@@ -27,6 +27,8 @@
 //! `log2` and `log10` kernels compose through `ln_round` and inherit
 //! the same correctness.
 
+use core::cmp::Ordering;
+
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -40,6 +42,7 @@ use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::LN_ERROR_GUARD;
 
 impl BigFloat {
     /// `ln(self)`: returns the natural logarithm rounded under
@@ -143,12 +146,30 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         } => {}
     }
 
-    // x is finite positive normal. Correctly rounded under `mode`
-    // via the Ziv interval test (ADR-0022).
+    // ln(1) = 0 exactly (pf-kk16, ADR-0039). The atanh-series
+    // `ln_at_w` at x = 1 reduces to t = (x-1)/(x+1) = 0/2 = 0,
+    // and every series term has factor t^k (k ≥ 1), so the
+    // working-precision sum is exactly 0; Ziv would in fact
+    // certify the correct rounding through the half_width(0) = 0
+    // exact-match interval test today. The pre-Ziv dispatch
+    // makes the exact-value invariant structural: future
+    // refactors of `ln_at_w` that no longer short-circuit at
+    // t = 0 would still return the correct directed-mode
+    // result through this dispatch (`feedback_exact_value_defeats_ziv`).
+    let one = BigFloat::try_from_i64_exact(1, target_precision).expect("target_precision >= 1");
+    if matches!(x.partial_cmp(&one).0, Some(Ordering::Equal)) {
+        let zero = BigFloat::try_new_zero(Sign::Positive, target_precision)
+            .expect("target_precision >= 1");
+        return (zero, Status::OK);
+    }
+
+    // x is finite positive normal, x ≠ 1. Correctly rounded under
+    // `mode` via the Ziv interval test (ADR-0022).
     ziv_round(
         |working_prec| ln_at_w(x, working_prec),
         target_precision,
         mode,
+        LN_ERROR_GUARD,
     )
 }
 
@@ -266,6 +287,32 @@ mod tests {
         let (r, status) = one.ln(RoundingMode::NearestEven);
         assert!(status.is_ok());
         assert!(r.is_zero(), "ln(1) should be 0, got {r:?}");
+    }
+
+    #[test]
+    fn ln_one_is_zero_under_every_directed_mode() {
+        // pf-kk16 pinning test: the exact-value pre-Ziv dispatch
+        // returns exactly +0 under every mode. Without the dispatch,
+        // the atanh-series composition's tiny noise would tip TP to
+        // the smallest representable positive value at target precision.
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            for &prec in &[24u32, 53, 113] {
+                let one = BigFloat::try_from_i64_exact(1, prec).unwrap();
+                let (r, status) = one.ln(mode);
+                assert!(status.is_ok(), "ln(1) status under {mode:?}@p{prec}");
+                assert!(
+                    r.is_zero() && !r.is_sign_negative(),
+                    "ln(1) should be +0 under {mode:?}@p{prec}, got {r:?}"
+                );
+                assert_eq!(r.precision(), prec);
+            }
+        }
     }
 
     #[test]

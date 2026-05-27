@@ -30,6 +30,7 @@ use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::EXP2_ERROR_GUARD;
 
 impl BigFloat {
     /// `2^self` rounded under `mode` to `self.precision`.
@@ -132,6 +133,7 @@ fn exp2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         },
         target_precision,
         mode,
+        EXP2_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

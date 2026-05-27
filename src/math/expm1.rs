@@ -30,6 +30,7 @@ use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::EXPM1_ERROR_GUARD;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -162,6 +163,7 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         },
         target_precision,
         mode,
+        EXPM1_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

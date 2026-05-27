@@ -222,6 +222,21 @@ invariants that bind regardless of phase work. No Phase 1f slice
 edits the block. The diff regeneration at slice p1.37 is context
 line refresh only; the block content stays bit identical.
 
+**Amendment at Phase 1g closure (2026-05-26, slice p1g.5).**
+ADR-0038's correctness claim is tightened by ADR-0039 (Phase 1g
+closure): the `ZIV_ERROR_GUARD` assumption is calibrated per
+kernel (`pf-yupm`, central table in `src/math/ziv_calibration.rs`),
+actively guarded by the per-release oracle-sweep cross-check
+(`pf-tqzz`, `tests/oracle_cross_check_smoke.rs` + the full
+release sweep), and the driver's interval-test soundness theorem
+is formally stated and Kani-scaffolded over the canonical
+operand-bounding pattern (`pf-hdh8`,
+`src/verify/ziv_soundness.rs`). The `BoundedBigFloat<80>`
+fixed-array encoding for the universal-quantification proof
+discharge is recorded as post-v1.0 follow-up in ADR-0039. Phase 1f's
+no-narrowing-of-the-claim posture stays exactly intact; Phase 1g
+adds the verification-architecture closure layer beneath it.
+
 **Family ordering accounts for inter family dependencies.** The
 audit's recommended ordering puts forward trig (slice p1.26) before
 the gamma family (slice p1.29) so the gamma reflection through

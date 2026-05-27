@@ -39,6 +39,7 @@ use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::TANH_ERROR_GUARD;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -123,6 +124,7 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         |working_prec| tanh_at_w(&abs_x, sign, working_prec),
         target_precision,
         mode,
+        TANH_ERROR_GUARD,
     )
 }
 

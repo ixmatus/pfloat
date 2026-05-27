@@ -158,7 +158,7 @@ pub fn bf_to_f32_bits(bf: &BigFloat) -> u32 {
 /// `mul_2si`; the construction is exact because pfloat's mantissa
 /// carries exactly `precision` significant bits (top-bit-set) and
 /// the destination is built at the same precision.
-fn bigfloat_to_rug(value: &BigFloat) -> Float {
+pub fn bigfloat_to_rug(value: &BigFloat) -> Float {
     let p = value.precision();
     match value.parts() {
         Parts::Zero { sign } => signed(Float::with_val(p, 0u32), sign),

@@ -36,6 +36,7 @@
 
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::BESSEL_I_ERROR_GUARD;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -242,6 +243,7 @@ fn bessel_i_kernel(
                 },
                 target_precision,
                 mode,
+                BESSEL_I_ERROR_GUARD,
             );
             auto_raise(status);
             (result, status)

@@ -37,6 +37,7 @@ use crate::mantissa::limbs_for;
 use super::lgamma::is_integer_test;
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::GAMMA_ERROR_GUARD;
 
 impl BigFloat {
     /// `gamma(self)` rounded under `mode` to `self.precision`.
@@ -167,6 +168,7 @@ fn gamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         },
         target_precision,
         mode,
+        GAMMA_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

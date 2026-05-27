@@ -38,6 +38,7 @@ use crate::mantissa::limbs_for;
 
 use super::atan::atan_finite_unsigned;
 use super::ziv::ziv_round;
+use super::ziv_calibration::ACOS_ERROR_GUARD;
 use super::{pi_at, pi_at_round, pi_over_2_at_round};
 
 impl BigFloat {
@@ -185,6 +186,7 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         },
         target_precision,
         mode,
+        ACOS_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

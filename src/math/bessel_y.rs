@@ -48,6 +48,7 @@
 //! ADR-0024 records the design and the coefficient provenance.
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::BESSEL_Y_ERROR_GUARD;
 use super::{euler_gamma_at, pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -264,6 +265,7 @@ fn bessel_y_kernel(
                 },
                 target_precision,
                 mode,
+                BESSEL_Y_ERROR_GUARD,
             );
             auto_raise(status);
             (result, status)

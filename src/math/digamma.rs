@@ -29,6 +29,7 @@ use crate::mantissa::limbs_for;
 use super::gamma_stirling::stirling_digamma;
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::DIGAMMA_ERROR_GUARD;
 
 impl BigFloat {
     /// `digamma(self)` rounded under `mode` to `self.precision`.
@@ -129,7 +130,12 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
     // regime dispatch (direct Stirling vs shift-then-Stirling) reads
     // from this pinned value inside eval(w).
     let z_min = z_min_for_target(target_precision);
-    let (result, status) = ziv_round(|w| digamma_at_w(x, z_min, w), target_precision, mode);
+    let (result, status) = ziv_round(
+        |w| digamma_at_w(x, z_min, w),
+        target_precision,
+        mode,
+        DIGAMMA_ERROR_GUARD,
+    );
     auto_raise(status);
     (result, status)
 }

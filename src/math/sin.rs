@@ -44,6 +44,7 @@ use crate::mantissa::limbs_for;
 
 use super::trig_reduce::{reduce, Reduction};
 use super::ziv::ziv_round;
+use super::ziv_calibration::SIN_ERROR_GUARD;
 
 impl BigFloat {
     /// `sin(self)` rounded under `mode` to `self.precision`.
@@ -146,6 +147,7 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         },
         target_precision,
         mode,
+        SIN_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

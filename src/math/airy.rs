@@ -42,6 +42,7 @@ use crate::mantissa::limbs_for;
 
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::AIRY_ERROR_GUARD;
 
 /// Which Airy function a kernel invocation evaluates. The four share
 /// the boundary constants, the `f`/`g` Maclaurin series, the
@@ -265,6 +266,7 @@ fn airy_kernel(
         },
         target_precision,
         mode,
+        AIRY_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

@@ -40,6 +40,7 @@ use crate::mantissa::limbs_for;
 use super::gamma_stirling::{spouge_lgamma, stirling_lgamma};
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::LGAMMA_ERROR_GUARD;
 
 impl BigFloat {
     /// `lgamma(self)` rounded under `mode` to `self.precision`.
@@ -135,6 +136,20 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         return (inf, Status::DIV_BY_ZERO);
     }
 
+    // Exactly-representable true value dispatch (pf-kk16, ADR-0039).
+    // lgamma(1) = ln(Γ(1)) = ln(1) = 0 and lgamma(2) = ln(Γ(2)) =
+    // ln(1!) = 0 are both exactly representable at any precision.
+    // For n ≥ 3, lgamma(n) = ln((n−1)!) is irrational (the
+    // factorial is not a power of two), so only n ∈ {1, 2} is in
+    // the exact-value dispatch subset. The Stirling/Spouge
+    // composition at x ∈ {1, 2} would return 0 + epsilon under
+    // directed modes and tip rounding to the smallest representable
+    // value away from zero (the gamma(7) defect-class shape
+    // recorded at `feedback_exact_value_defeats_ziv`).
+    if let Some(exact) = try_lgamma_small_pos_int_exact(x, target_precision) {
+        return (exact, Status::OK);
+    }
+
     // Negative non-integer and positive finite both feed the Ziv
     // driver. The closure dispatches on the sign at each retry.
     let z_min = z_min_for_target(target_precision);
@@ -142,7 +157,26 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         |working_prec| lgamma_at_w(x, z_min, working_prec),
         target_precision,
         mode,
+        LGAMMA_ERROR_GUARD,
     )
+}
+
+/// If `x ∈ {1, 2}` then `lgamma(x) = 0` exactly at any target
+/// precision; otherwise returns `None`. lgamma at other positive
+/// integers is `ln((n−1)!)`, irrational because the factorial is
+/// not a power of two — those route through the Ziv envelope.
+fn try_lgamma_small_pos_int_exact(x: &BigFloat, target_precision: u32) -> Option<BigFloat> {
+    if !matches!(x.sign(), Sign::Positive) || x.is_zero() {
+        return None;
+    }
+    let one = BigFloat::try_from_i64_exact(1, target_precision).ok()?;
+    let two = BigFloat::try_from_i64_exact(2, target_precision).ok()?;
+    if matches!(x.partial_cmp(&one).0, Some(Ordering::Equal))
+        || matches!(x.partial_cmp(&two).0, Some(Ordering::Equal))
+    {
+        return BigFloat::try_new_zero(Sign::Positive, target_precision).ok();
+    }
+    None
 }
 
 /// Evaluate `lgamma(x)` at the supplied working precision via the
@@ -352,6 +386,36 @@ mod tests {
                     100
                 )
         );
+    }
+
+    #[test]
+    fn lgamma_one_two_is_zero_under_every_directed_mode() {
+        // pf-kk16 pinning test: the exact-value pre-Ziv dispatch for
+        // lgamma(1) and lgamma(2) returns exactly +0 under every
+        // mode. Without the dispatch, the Stirling/Spouge composition
+        // returns 0 + epsilon and TP would round up to the smallest
+        // representable positive value (the gamma(7) defect shape
+        // recorded at feedback_exact_value_defeats_ziv).
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            for &prec in &[24u32, 53, 113] {
+                for &n in &[1i64, 2] {
+                    let x = BigFloat::try_from_i64_exact(n, prec).unwrap();
+                    let (r, status) = x.lgamma(mode);
+                    assert!(status.is_ok(), "lgamma({n}) status under {mode:?}@p{prec}");
+                    assert!(
+                        r.is_zero() && !r.is_sign_negative(),
+                        "lgamma({n}) should be +0 under {mode:?}@p{prec}, got {r:?}"
+                    );
+                    assert_eq!(r.precision(), prec);
+                }
+            }
+        }
     }
 
     #[test]

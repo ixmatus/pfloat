@@ -438,3 +438,20 @@ pub use fixed::{ClassFixed, FixedFloat};
 pub use parse::ParseError;
 #[cfg(feature = "big")]
 pub use rounding::RoundingMode;
+
+/// Per-kernel Ziv-driver calibration constants and the
+/// thread-local trace consumer. Re-exported under the
+/// `ziv-instrumented` feature so the pf-tqzz cross-check harness
+/// (ADR-0039, slice p1g.3) can drain the most-recent Ziv trace and
+/// look up the kernel's calibrated `error_guard`. Off in production
+/// builds: the thread-local capture costs nothing without the
+/// feature, and the constants stay `pub(crate)` to internal callers.
+#[cfg(all(
+    any(test, feature = "ziv-instrumented"),
+    feature = "big",
+    feature = "exp-log"
+))]
+pub mod ziv_instrumented {
+    pub use crate::math::ziv::{take_last_trace, ZivTrace};
+    pub use crate::math::ziv_calibration::*;
+}

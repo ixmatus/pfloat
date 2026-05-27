@@ -115,6 +115,15 @@ zeta = ["specials"]
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
+# Phase 1g pf-tqzz cross-check instrumentation: enables a thread-local
+# capture of the last Ziv driver trace (working precision + eval(w)
+# intermediate) so the cross-check sweep (tests/oracle/cross_check.rs)
+# can assert each kernel's actual internal error against its
+# calibrated bound on every f32 input. Adds one RefCell write per
+# `ziv_round` call when enabled; off in production builds so
+# the trace path costs nothing. ADR-0039, slice p1g.3.
+ziv-instrumented = []
+
 # Differential testing against MPFR via `rug` (a safe wrapper over
 # `gmp-mpfr-sys`). ADR-0014 records the choice; ADR-0008 documents
 # the broader oracle policy. The feature gates the differential test
@@ -354,6 +363,23 @@ required-features = ["differential-mpfr"]
 name = "oracle_smoke_gate"
 path = "tests/oracle_smoke_gate.rs"
 required-features = ["differential-mpfr"]
+
+# pf-tqzz cross-check smoke (slice p1g.3, ADR-0039). Per-release
+# (not per-push) cadence per the bead's runtime budget: a smoke
+# subset (~10 inputs per kernel x 5 modes x 7 kernels) fits the
+# differential-arb CI lane and validates the cross-check plumbing
+# end-to-end. The full 65536 x 5 x 47 sweep is the user-driven
+# release-time gate.
+[[test]]
+name = "oracle_cross_check_smoke"
+path = "tests/oracle_cross_check_smoke.rs"
+required-features = ["differential-arb", "ziv-instrumented"]
+
+# Smoke test for the ADR-0039 MIDPOINT verb wire format.
+[[test]]
+name = "oracle_arb_midpoint_smoke"
+path = "tests/oracle_arb_midpoint_smoke.rs"
+required-features = ["differential-arb"]
 
 # Slice p1.3.8: Phase 1 Oracle sweep runner. Manual / release CI
 # only; not built per push. Per ADR-0034 this is the artifact for

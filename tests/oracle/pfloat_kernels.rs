@@ -127,7 +127,7 @@ const BESSEL_TINY_VERIFICATION_PRECISION: u32 = 320;
 ///   were oracle defects; the new sweep's 16386 are real kernel
 ///   defects of the same midpoint-tie shape that pf-z0f / pf-n5d
 ///   already documented).
-fn verification_precision(f: FnId) -> u32 {
+pub fn verification_precision(f: FnId) -> u32 {
     match f {
         FnId::BesselJ1
         | FnId::BesselJn(_)

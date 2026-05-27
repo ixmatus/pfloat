@@ -189,9 +189,9 @@ and `alloc`-free consumers can pick only what they need.
 ## Verification posture
 
 - IEEE 754-2019 conformance vectors and Lefèvre–Muller worst-case-rounding tables run as integration tests.
-- Kani harnesses discharge no-panic, rounding-direction, and sign-of-zero properties on the arithmetic core.
+- Kani harnesses discharge no-panic, rounding-direction, and sign-of-zero properties on the arithmetic core. The Ziv driver's interval-test soundness theorem is formally stated and Kani-scaffolded in `src/verify/ziv_soundness.rs` (ADR-0039); the canonical-class discharge runs on the eight-constant operand-bounding pattern shared with the existing 196 harnesses, and the universal-quantification extension to arbitrary-mantissa values via a fixed-array shadow encoding is recorded as post-v1.0 follow-up.
 - `gmp-mpfr-sys` runs as a feature-gated dev-dependency on a separate Linux CI lane for primary differential testing against MPFR. The default lane stays pure Rust.
-- Phase 1's exhaustive binary32-input sweep (ADR-0035) enumerates every one of the `2^32` possible f32 input values as a test point, computes each function inside pfloat at high working precision (much wider than 32 bits), rounds the result back to f32, and verifies bit-exact agreement against an oracle. f32 is the **test-input grid**, not pfloat's storage type; pfloat operates at arbitrary precision throughout. The sweep cross-checks three independent oracles. Arb via `python-flint` (LGPL, subprocess-only) is the primary oracle for the FnIds MPFR cannot cover (`Si`, `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family). mpmath (BSD, pure Python) cross-checks Arb's certified outputs in the same Python venv. Maxima (GPL, invoked through `nix-shell`) supplies a sampling third opinion on a small pinned corpus of worker outputs. The per-push CI gate stays MPFR-only and Python-free; the per-slice gate exercises the Arb worker plus a per-push diff against the pinned-corpus snapshot; the per-release sweep exercises Arb + mpmath agreement at full binary32-input coverage plus three-way agreement on the pinned corpus.
+- Phase 1's exhaustive binary32-input sweep (ADR-0035) enumerates every one of the `2^32` possible f32 input values as a test point, computes each function inside pfloat at high working precision (much wider than 32 bits), rounds the result back to f32, and verifies bit-exact agreement against an oracle. f32 is the **test-input grid**, not pfloat's storage type; pfloat operates at arbitrary precision throughout. The sweep cross-checks three independent oracles. Arb via `python-flint` (LGPL, subprocess-only) is the primary oracle for the FnIds MPFR cannot cover (`Si`, `Ci`, `li`, `Bi`, `Ai′`, `Bi′`, the Bessel `I`/`K` family). mpmath (BSD, pure Python) cross-checks Arb's certified outputs in the same Python venv. Maxima (GPL, invoked through `nix-shell`) supplies a sampling third opinion on a small pinned corpus of worker outputs. The per-push CI gate stays MPFR-only and Python-free; the per-slice gate exercises the Arb worker plus a per-push diff against the pinned-corpus snapshot; the per-release sweep exercises Arb + mpmath agreement at full binary32-input coverage plus three-way agreement on the pinned corpus. **Phase 1g (ADR-0039)** adds an active cross-check assertion across the per-release sweep: each kernel's `eval(working)` intermediate at the converged Ziv working precision is asserted to lie within the kernel's calibrated `error_guard` bound (per-kernel table in `src/math/ziv_calibration.rs`) of the rigorous-enclosure midpoint computed by the oracle at `oracle_prec ≥ working_prec + 64`. The assumption shipped pre-Phase-1g (`ZIV_ERROR_GUARD = 24` as documentation-tier slack) becomes a property test the per-release lane actively guards.
 - `cargo-fuzz` covers the parser entry points.
 
 ## Conformance evidence
@@ -201,8 +201,8 @@ is asserted independently by `scripts/conformance-counts.sh` and
 gated in CI; one bucket shrinking while another grows cannot hide
 under an aggregate floor.
 
-- **Kani proof harnesses:** 354 `#[kani::proof]`
-  attributes across 61 files in `src/verify/`.
+- **Kani proof harnesses:** 358 `#[kani::proof]`
+  attributes across 62 files in `src/verify/`.
 - **Differential lanes:** 35 `tests/differential_*.rs`
   files. CI sweep 10⁴ inputs per (op × precision × rounding
   mode); `PFLOAT_DEEP=1` escalates to 10⁶ (ADR-0014).

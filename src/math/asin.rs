@@ -34,6 +34,7 @@ use crate::mantissa::limbs_for;
 use super::atan::atan_finite_unsigned;
 use super::pi_over_2_at_round;
 use super::ziv::ziv_round;
+use super::ziv_calibration::ASIN_ERROR_GUARD;
 
 impl BigFloat {
     /// `asin(self)` rounded under `mode` to `self.precision`.
@@ -164,6 +165,7 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         },
         target_precision,
         mode,
+        ASIN_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

@@ -101,6 +101,8 @@ pub(crate) mod sinh;
 pub(crate) mod tanh;
 #[cfg(feature = "exp-log")]
 pub(crate) mod ziv;
+#[cfg(feature = "exp-log")]
+pub(crate) mod ziv_calibration;
 
 #[cfg(feature = "trig")]
 pub(crate) mod acos;

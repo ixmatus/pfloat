@@ -60,6 +60,7 @@ use core::cmp::Ordering;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::math::ziv::ziv_round;
+use crate::math::ziv_calibration::{POW_ERROR_GUARD, POW_INT_ERROR_GUARD};
 use crate::ops::limbs::{extract_as_integer, top_set_bit};
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
@@ -315,6 +316,7 @@ fn pow_positive(
         },
         target_precision,
         mode,
+        POW_ERROR_GUARD,
     )
 }
 
@@ -352,6 +354,7 @@ fn pow_int_path(
         },
         target_precision,
         mode,
+        POW_INT_ERROR_GUARD,
     );
     if bf.is_infinite() || bf.is_zero() {
         // Over/underflowed; let `exp·ln` produce the IEEE status.
