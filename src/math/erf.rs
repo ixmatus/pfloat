@@ -47,6 +47,7 @@ use crate::mantissa::limbs_for;
 use super::erfc::erfc_asymptotic;
 use super::two_over_sqrt_pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::ERF_ERROR_GUARD;
 
 impl BigFloat {
     /// `erf(self)` rounded under `mode` to `self.precision`.
@@ -141,6 +142,7 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         },
         target_precision,
         mode,
+        ERF_ERROR_GUARD,
     )
 }
 

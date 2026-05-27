@@ -42,6 +42,7 @@ use crate::mantissa::limbs_for;
 use super::euler_gamma_at;
 use super::si::{asymptotic_threshold_exponent, si_ci_f, si_ci_g};
 use super::ziv::ziv_round;
+use super::ziv_calibration::CI_ERROR_GUARD;
 
 impl BigFloat {
     /// `Ci(self)` rounded under `mode` to `self.precision`.
@@ -152,6 +153,7 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         },
         target_precision,
         mode,
+        CI_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

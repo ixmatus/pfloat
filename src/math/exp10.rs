@@ -31,6 +31,7 @@ use crate::mantissa::limbs_for;
 
 use super::ln_10_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::EXP10_ERROR_GUARD;
 
 impl BigFloat {
     /// `10^self` rounded under `mode` to `self.precision`.
@@ -133,6 +134,7 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         },
         target_precision,
         mode,
+        EXP10_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

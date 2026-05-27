@@ -132,20 +132,105 @@ as part of the calibration sign-off.
 
 ## Per-function `ZIV_ERROR_GUARD` calibration (p1g.2, pf-yupm)
 
-To be populated at slice p1g.2.
+The `ziv_round` driver carried a single global `ZIV_ERROR_GUARD =
+24` at `src/math/ziv.rs:59` pre-Phase-1g, justified empirically by
+the doc comment at `src/math/ziv.rs:50-58`. Phase 1g moves the
+bound into a per-kernel calibrated value (`pub(crate) const`
+per kernel in `src/math/ziv_calibration.rs`), forces every
+`ziv_round` call site to pass an explicitly-named constant, and
+prepares the structural ground for the pf-tqzz active sweep guard
+(slice p1g.3) which will assert each kernel's calibrated bound
+against the rigorous Arb midpoint on every f32 input.
 
-Per-kernel table (skeleton):
+### Driver signature
 
-| Kernel | Source file | Calibrated bound (bits) | Provenance | Citation |
-|--------|-------------|-------------------------|------------|----------|
-| exp | src/math/exp.rs:132 | 24 (default) | algebraic | exp series at ~4w iterations, each ≤ 1 ULP NE-rounding error, sum well under 2^24 ULP per the ziv.rs:51-58 analysis template |
-| ln | src/math/ln.rs:148 | 24 (default) | algebraic | atanh series at ~w iterations |
-| lgamma | src/math/lgamma.rs:141 | TODO p1g.2 | TODO | Stirling + reflection + recurrence depth |
-| bessel_y | src/math/bessel_y.rs:256 | TODO p1g.2 | TODO (empirical likely; oscillatory regime near zeros) | widened sweep at <commit> |
-| ... | ... | ... | ... | ... |
+`ziv_round`'s `pub(crate)` signature gains a required
+`error_guard: u32` fourth parameter. No implicit default: every
+call site cites a per-kernel constant. The `KNOWN_CALIBRATED_KERNELS`
+acceptance criterion 4 is met structurally by the compiler
+(adding a new kernel that calls `ziv_round` without naming its
+constant fails to type-check) and by the
+`every_per_kernel_bound_fits_under_base_guard_margin` unit test
+in `src/math/ziv_calibration.rs` (which enumerates the constants
+and rules out anything ≥ `ZIV_BASE_GUARD - 16 = 48`).
 
-Full enumeration across the 44 `ziv_round` call sites lands at
-slice p1g.2.
+### Per-kernel calibration table
+
+All kernels at p1g.2 land at `DEFAULT_ERROR_GUARD = 24` by
+algebraic analysis. The shared analysis template (per
+`src/math/ziv.rs:50-58` pre-Phase-1g) is:
+
+> Count floating-point operations on the `eval(w)` path; each
+> NE-rounded op contributes ≤ 1 ULP of accumulated error; sum
+> ≤ op_count ULPs (linear sum is pessimistic); upper bound in
+> bits = ceil(log₂(op_count + safety)). Round up to the next
+> power of two; almost every transcendental kernel lands well
+> under 2²⁴ ULP at all working precisions this driver runs.
+
+Per-kernel evidence cited in the kernel-side `ziv_calibration.rs`
+doc comment. Empirical confirmation across the f32 grid is
+delivered by pf-tqzz at p1g.3; any kernel whose calibrated bound
+is violated at any swept input surfaces as a fatal report, the
+constant widens to the smallest power-of-two passing the sweep,
+and the provenance flips from `algebraic` to
+`empirical (sweep at <commit>)`.
+
+| Kernel | Source file | Constant | Bits | Provenance | Citation |
+|--------|-------------|----------|------|------------|----------|
+| exp | src/math/exp.rs:132 | `EXP_ERROR_GUARD` | 24 | algebraic | exp series ~4w iterations, sum ≤ 2¹⁴ ULP at 1024-bit cap |
+| exp2 | src/math/exp2.rs:119 | `EXP2_ERROR_GUARD` | 24 | algebraic | composition `exp(x·ln(2))` |
+| exp10 | src/math/exp10.rs:120 | `EXP10_ERROR_GUARD` | 24 | algebraic | composition `exp(x·ln(10))` |
+| expm1 | src/math/expm1.rs:149 | `EXPM1_ERROR_GUARD` | 24 | algebraic | cancellation boost inside the eval closure (slice p1.24) |
+| ln | src/math/ln.rs:167 | `LN_ERROR_GUARD` | 24 | algebraic | atanh series ~w/3 iterations |
+| log1p | src/math/log1p.rs:169 | `LOG1P_ERROR_GUARD` | 24 | algebraic | atanh series with tiny-x boost (slice p1.24) |
+| sin | src/math/sin.rs:135 | `SIN_ERROR_GUARD` | 24 | algebraic | Payne-Hanek reduction + quadrant Taylor ~w/2 |
+| cos | src/math/cos.rs:121 | `COS_ERROR_GUARD` | 24 | algebraic | shared range reduction |
+| tan | src/math/tan.rs:121 | `TAN_ERROR_GUARD` | 24 | algebraic | sin/cos composition |
+| asin | src/math/asin.rs:142 | `ASIN_ERROR_GUARD` | 24 | algebraic | `2·atan(|x|/(1+sqrt(1-x²)))` (slice p1.25) |
+| acos | src/math/acos.rs:157 | `ACOS_ERROR_GUARD` | 24 | algebraic | `π - 2·atan(sqrt((1+x)/(1-x)))` (slice p1.25) |
+| atan | src/math/atan.rs:115 | `ATAN_ERROR_GUARD` | 24 | algebraic | unsigned composition on |x| (slice p1.25) |
+| atan2 | src/math/atan2.rs:244 | `ATAN2_ERROR_GUARD` | 24 | algebraic | quadrant-shifted `atan(y/x)` (slice p1.25) |
+| sinh | src/math/sinh.rs:106 | `SINH_ERROR_GUARD` | 24 | algebraic | `(expm1(x)−expm1(−x))/2` (slice p1.27) |
+| cosh | src/math/cosh.rs:107 | `COSH_ERROR_GUARD` | 24 | algebraic | `(exp(x)+exp(−x))/2` |
+| tanh | src/math/tanh.rs:122 | `TANH_ERROR_GUARD` | 24 | algebraic | composition through `tanh_at_w` (slice p1.27) |
+| asinh | src/math/asinh.rs:111 | `ASINH_ERROR_GUARD` | 24 | algebraic | `log1p(|x| + x²/(1+sqrt(1+x²)))` |
+| acosh | src/math/acosh.rs:143 | `ACOSH_ERROR_GUARD` | 24 | algebraic | `log1p((x−1) + sqrt((x−1)(x+1)))` |
+| atanh | src/math/atanh.rs:131 | `ATANH_ERROR_GUARD` | 24 | algebraic | `(log1p(x) − log1p(−x))/2` |
+| pow (`exp·ln`) | src/math/pow.rs:301 | `POW_ERROR_GUARD` | 24 | algebraic | `ln + mul + exp` composition; product bound ≪ 2²⁴ |
+| pow (integer-y) | src/math/pow.rs:343 | `POW_INT_ERROR_GUARD` | 24 | algebraic | ~log₂(|n|) multiplications; n ≤ 2³¹ keeps sum ≤ 2⁵ ULP |
+| gamma | src/math/gamma.rs:155 | `GAMMA_ERROR_GUARD` | 24 | algebraic | `sign(x)·exp(lgamma(x))`; integer-fast-path dispatches exactly (pf-kk16) |
+| lgamma | src/math/lgamma.rs:155 | `LGAMMA_ERROR_GUARD` | 24 | algebraic | Spouge + reflection; ~30 ops at z_min≈20. Empirical confirmation pending pf-tqzz |
+| digamma | src/math/digamma.rs:132 | `DIGAMMA_ERROR_GUARD` | 24 | algebraic | composition through `digamma_at_w` (slice p1.29) |
+| beta | src/math/beta.rs:220, 304 | `BETA_ERROR_GUARD` | 24 | algebraic | `exp(lgamma(x)+lgamma(y)−lgamma(x+y))` composition |
+| erf | src/math/erf.rs:133 | `ERF_ERROR_GUARD` | 24 | algebraic | asymptotic / Maclaurin dispatched at working precision (slice p1.4) |
+| erfc | src/math/erfc.rs:142 | `ERFC_ERROR_GUARD` | 24 | algebraic | `1 − erf(...)` or direct asymptotic (slice p1.28) |
+| Si | src/math/si.rs:136 | `SI_ERROR_GUARD` | 24 | algebraic | Maclaurin or asymptotic (slice p1.30) |
+| Ci | src/math/ci.rs:145 | `CI_ERROR_GUARD` | 24 | algebraic | Maclaurin or asymptotic (slice p1.30) |
+| Li | src/math/li.rs:143 | `LI_ERROR_GUARD` | 24 | algebraic | series summation (slice p1.30) |
+| Ei | src/math/ei.rs:137 | `EI_ERROR_GUARD` | 24 | algebraic | series or asymptotic (slice p1.30) |
+| Airy (Ai/Bi/Ai′/Bi′) | src/math/airy.rs:254 | `AIRY_ERROR_GUARD` | 24 | algebraic | shared eval body (slice p1.31) |
+| Bessel J_n | src/math/bessel_j.rs:210 | `BESSEL_J_ERROR_GUARD` | 24 | algebraic | Maclaurin / Miller / asymptotic dispatched (slice p1.32; oracle bumps to p=320) |
+| Bessel Y_n | src/math/bessel_y.rs:256 | `BESSEL_Y_ERROR_GUARD` | 24 | algebraic | reflection through J's; the oscillatory regime near J zeros may surface as the first empirical-widening candidate at p1g.3 |
+| Bessel I_n | src/math/bessel_i.rs:234 | `BESSEL_I_ERROR_GUARD` | 24 | algebraic | Maclaurin / Miller / asymptotic (slice p1.33) |
+| Bessel K_n | src/math/bessel_k.rs:251 | `BESSEL_K_ERROR_GUARD` | 24 | algebraic | reflection through I's (slice p1.33) |
+| zeta | src/math/zeta.rs:204 | `ZETA_ERROR_GUARD` | 24 | algebraic | Borwein for s>0; FE composing `gamma·sin·pow·zeta_borwein` for s<0 (slice p1.34). Deepest composition on the surface; empirical confirmation pending pf-tqzz |
+| agm | src/math/agm.rs:184 | `AGM_ERROR_GUARD` | 24 | algebraic | Gauss AGM iteration; quadratic convergence, ~log w ops |
+
+39 call sites across 37 kernel modules; 38 distinct per-kernel
+constants (pow has two paths — `exp·ln` and integer-y — each with
+its own constant; beta has two `ziv_round` calls but both inside
+`beta_kernel` so they share `BETA_ERROR_GUARD`). The
+`every_per_kernel_bound_fits_under_base_guard_margin` and
+`calibration_table_enumerates_expected_kernel_count` tests in
+`src/math/ziv_calibration.rs` enforce the count drift guard.
+
+### Risk-mitigation note
+
+Any kernel whose calibrated bound exceeds `ZIV_BASE_GUARD - 16 =
+48` (currently `ZIV_BASE_GUARD = 64` at `src/math/ziv.rs:37`)
+triggers a paired bump to `ZIV_BASE_GUARD` (likely to 96),
+recorded in this doc as a paired decision. At Phase 1g landing no
+kernel hits this threshold.
 
 ## Arb cross-check protocol extension (p1g.3, pf-tqzz)
 

@@ -44,6 +44,7 @@ use crate::mantissa::limbs_for;
 
 use super::euler_gamma_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::EI_ERROR_GUARD;
 
 impl BigFloat {
     /// `Ei(self)` rounded under `mode` to `self.precision`.
@@ -144,6 +145,7 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         },
         target_precision,
         mode,
+        EI_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

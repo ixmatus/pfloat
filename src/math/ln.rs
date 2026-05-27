@@ -42,6 +42,7 @@ use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::LN_ERROR_GUARD;
 
 impl BigFloat {
     /// `ln(self)`: returns the natural logarithm rounded under
@@ -168,6 +169,7 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         |working_prec| ln_at_w(x, working_prec),
         target_precision,
         mode,
+        LN_ERROR_GUARD,
     )
 }
 

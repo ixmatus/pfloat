@@ -51,6 +51,7 @@ use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::AGM_ERROR_GUARD;
 
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
@@ -229,6 +230,7 @@ fn agm_kernel(
         },
         target_precision,
         mode,
+        AGM_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

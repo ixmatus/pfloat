@@ -42,6 +42,7 @@
 //! - `Jₙ(NaN) = NaN`; `sNaN` raises `INVALID`.
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::BESSEL_J_ERROR_GUARD;
 use super::{pi_at, pi_over_2_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -218,6 +219,7 @@ fn bessel_j_kernel(
         },
         target_precision,
         mode,
+        BESSEL_J_ERROR_GUARD,
     )
 }
 

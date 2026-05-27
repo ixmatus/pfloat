@@ -52,6 +52,7 @@
 use super::lgamma::is_integer_test;
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::ZETA_ERROR_GUARD;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -200,7 +201,12 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             // there is no infinite recursion. The FE branch's
             // composition is now correct under every mode because
             // every constituent is.
-            let (result, status) = ziv_round(|w| zeta_finite(x, w), target_precision, mode);
+            let (result, status) = ziv_round(
+                |w| zeta_finite(x, w),
+                target_precision,
+                mode,
+                ZETA_ERROR_GUARD,
+            );
             auto_raise(status);
             (result, status)
         }

@@ -47,16 +47,18 @@ const ZIV_GUARD_CAP: u32 = 1024;
 /// (DESIGN.md §"Ziv's strategy", lines 287-299).
 pub(crate) const ZIV_MAX_ITERS: u32 = 5;
 
-/// Slack, in bits below the working precision, charged to `eval`'s
-/// accumulated `NearestEven` rounding error. `pow_int`'s
-/// square-and-multiply uses ≤ 64 multiplies (≤ 2⁶ ULP) and the
-/// `exp·ln` path a handful of operations, all far under 2²⁴ ULP, so
-/// the half-width `|y|·2^-(w-24)` is a sound upper bound on
-/// `|eval(w) − f(x)|` for the domain the elementary kernels serve
-/// (exp/ln series at ~4·w iterations, lgamma Stirling+product at ~30
-/// ops, all comfortably under 2²⁴ ULP at the working precisions this
-/// driver runs).
-const ZIV_ERROR_GUARD: u32 = 24;
+// The per-kernel `error_guard` argument supplied at every `ziv_round`
+// call site is the slack, in bits below the working precision, the
+// caller charges to `eval`'s accumulated `NearestEven` rounding
+// error. The half-width `|y|·2^-(working - error_guard)` is then a
+// sound upper bound on `|eval(working) − f(x)|` for that kernel.
+// The pre-Phase-1g driver carried a single global `ZIV_ERROR_GUARD =
+// 24` as documentation-tier assumption (DESIGN.md "Caveats and open
+// questions" §1); Phase 1g moves the bound to per-kernel calibrated
+// values in `crate::math::ziv_calibration` and forces every caller
+// to opt in by name (pf-yupm, ADR-0039). Active sweep-time
+// verification of each kernel's bound against the rigorous Arb
+// midpoint is pf-tqzz (slice p1g.3).
 
 /// `|y| · 2^-shift`, formed by decrementing the binary exponent (the
 /// exact power-of-two scaling used elsewhere in the crate, e.g.
@@ -83,20 +85,27 @@ fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
 ///
 /// `eval(working)` returns the kernel's value computed at the working
 /// precision with `NearestEven` internal rounding; its error against
-/// the true value is bounded by the half-width `|y|·2^-(working −
-/// ZIV_ERROR_GUARD)`. If both ends of that uncertainty interval round
-/// to the same `target`-precision value under `mode`, every point in
-/// the interval — including the true value — rounds there too, so
-/// that value is correctly rounded. Otherwise a rounding boundary
-/// lies within the uncertainty: the guard doubles (capped at
-/// [`ZIV_GUARD_CAP`]) and the loop retries, bounded by
+/// the true value is bounded by the half-width
+/// `|y|·2^-(working − error_guard)`. If both ends of that uncertainty
+/// interval round to the same `target`-precision value under `mode`,
+/// every point in the interval — including the true value — rounds
+/// there too, so that value is correctly rounded. Otherwise a
+/// rounding boundary lies within the uncertainty: the guard doubles
+/// (capped at [`ZIV_GUARD_CAP`]) and the loop retries, bounded by
 /// [`ZIV_MAX_ITERS`]. Comparing two *adjacent* guards would falsely
 /// converge on a hard-to-round input (both insufficient guards agree
 /// on the wrong value); the interval test does not.
+///
+/// `error_guard` is the kernel's per-function calibrated bound from
+/// [`crate::math::ziv_calibration`] (pf-yupm, ADR-0039). Every call
+/// site supplies an explicitly-named constant; the driver carries no
+/// implicit default. Active sweep-time verification of each kernel's
+/// bound is pf-tqzz (slice p1g.3).
 pub(crate) fn ziv_round(
     eval: impl Fn(u32) -> BigFloat,
     target: u32,
     mode: RoundingMode,
+    error_guard: u32,
 ) -> (BigFloat, Status) {
     let mut guard = ZIV_BASE_GUARD;
     let mut fallback: Option<(BigFloat, Status)> = None;
@@ -107,7 +116,7 @@ pub(crate) fn ziv_round(
             .round_to_precision(target, mode)
             .expect("target precision >= 1");
 
-        let shift = i64::from(working) - i64::from(ZIV_ERROR_GUARD);
+        let shift = i64::from(working) - i64::from(error_guard);
         let d = half_width(&y, shift);
         let lo = y.sub(&d, RoundingMode::NearestEven).0;
         let hi = y.add(&d, RoundingMode::NearestEven).0;
@@ -132,6 +141,7 @@ pub(crate) fn ziv_round(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::ziv_calibration::DEFAULT_ERROR_GUARD;
 
     #[test]
     fn ziv_round_exact_value_is_bit_exact() {
@@ -150,6 +160,7 @@ mod tests {
                 |w| BigFloat::try_from_i64_exact(8, w).expect("w >= 1"),
                 53,
                 mode,
+                DEFAULT_ERROR_GUARD,
             );
             let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
             assert_eq!(
@@ -185,6 +196,7 @@ mod tests {
                 },
                 target,
                 mode,
+                DEFAULT_ERROR_GUARD,
             );
             let direct = BigFloat::parse_str(digits, target, mode).expect("parse").0;
             assert_eq!(
@@ -208,8 +220,8 @@ mod tests {
             .expect("parse")
             .0
         };
-        let (a, _) = ziv_round(eval, 80, RoundingMode::NearestEven);
-        let (b, _) = ziv_round(eval, 80, RoundingMode::NearestEven);
+        let (a, _) = ziv_round(eval, 80, RoundingMode::NearestEven, DEFAULT_ERROR_GUARD);
+        let (b, _) = ziv_round(eval, 80, RoundingMode::NearestEven, DEFAULT_ERROR_GUARD);
         assert_eq!(a.partial_cmp(&b).0, Some(Ordering::Equal));
     }
 }

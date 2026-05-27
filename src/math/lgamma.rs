@@ -40,6 +40,7 @@ use crate::mantissa::limbs_for;
 use super::gamma_stirling::{spouge_lgamma, stirling_lgamma};
 use super::pi_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::LGAMMA_ERROR_GUARD;
 
 impl BigFloat {
     /// `lgamma(self)` rounded under `mode` to `self.precision`.
@@ -156,6 +157,7 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
         |working_prec| lgamma_at_w(x, z_min, working_prec),
         target_precision,
         mode,
+        LGAMMA_ERROR_GUARD,
     )
 }
 

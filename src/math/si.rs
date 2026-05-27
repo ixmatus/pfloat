@@ -40,6 +40,7 @@ use crate::mantissa::limbs_for;
 use super::pi_over_2_at;
 use super::pi_over_2_at_round;
 use super::ziv::ziv_round;
+use super::ziv_calibration::SI_ERROR_GUARD;
 
 impl BigFloat {
     /// `Si(self)` rounded under `mode` to `self.precision`.
@@ -148,6 +149,7 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         },
         target_precision,
         mode,
+        SI_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

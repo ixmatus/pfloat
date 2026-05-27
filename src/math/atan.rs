@@ -30,6 +30,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::ATAN_ERROR_GUARD;
 use super::{pi_over_2_at, pi_over_2_at_round};
 
 impl BigFloat {
@@ -123,6 +124,7 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         },
         target_precision,
         mode,
+        ATAN_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

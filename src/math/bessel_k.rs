@@ -45,6 +45,7 @@
 //! records the design and the DLMF provenance.
 
 use super::ziv::ziv_round;
+use super::ziv_calibration::BESSEL_K_ERROR_GUARD;
 use super::{euler_gamma_at, pi_at};
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -252,6 +253,7 @@ fn bessel_k_kernel(
                 |w| bessel_k_eval_normal_at_w(m, x, w, use_asymptotic),
                 target_precision,
                 mode,
+                BESSEL_K_ERROR_GUARD,
             );
             auto_raise(status);
             (result, status)

@@ -42,6 +42,7 @@ use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
 use super::ziv::ziv_round;
+use super::ziv_calibration::EXP_ERROR_GUARD;
 
 impl BigFloat {
     /// `exp(self)`: returns `e^x` rounded under `mode` to
@@ -133,6 +134,7 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         |working_prec| exp_at_w(x, working_prec),
         target_precision,
         mode,
+        EXP_ERROR_GUARD,
     )
 }
 

@@ -41,6 +41,7 @@ use super::gamma::gamma_sign_of;
 use super::lgamma::is_integer_test;
 use super::pow::{integer_parity, Parity};
 use super::ziv::ziv_round;
+use super::ziv_calibration::BETA_ERROR_GUARD;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -242,6 +243,7 @@ fn beta_kernel(
         },
         target_precision,
         mode,
+        BETA_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)
@@ -333,6 +335,7 @@ fn beta_case4(
         },
         target_precision,
         mode,
+        BETA_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)

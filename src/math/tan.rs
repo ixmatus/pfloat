@@ -40,6 +40,7 @@ use crate::mantissa::limbs_for;
 use super::sin::{cos_taylor, sin_taylor};
 use super::trig_reduce::{reduce, Reduction};
 use super::ziv::ziv_round;
+use super::ziv_calibration::TAN_ERROR_GUARD;
 
 impl BigFloat {
     /// `tan(self)` rounded under `mode` to `self.precision`.
@@ -134,6 +135,7 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         },
         target_precision,
         mode,
+        TAN_ERROR_GUARD,
     );
     auto_raise(status);
     (result, status)
