@@ -39,8 +39,13 @@ use pfloat::RoundingMode;
 /// Exact positive dyadic-rational inputs (denominator a power of
 /// two, so the constructed argument is bit-identical in pfloat and
 /// rug at every precision). Spans the small-`x` log-series regime
-/// near the pole and the moderate regime; all strictly positive (the
-/// `Y` domain).
+/// near the pole, the moderate regime, and the large-`x` asymptotic
+/// regime past the shared `bessel_j_threshold(1024) = 11` cut (i.e.
+/// `|x| ≥ 2048`); all strictly positive (the `Y` domain). The
+/// `(2049, 1)` and `(4097, 1)` entries are the sub-slice 2b.2.a
+/// boundary-input gate: `Y` shares the threshold with `J` via
+/// `super::bessel_j::bessel_j_threshold` at `bessel_y.rs:255` so
+/// any tightening exercises this lane.
 const DYADIC: &[(i64, i64)] = &[
     (1, 2),
     (1, 4),
@@ -50,6 +55,10 @@ const DYADIC: &[(i64, i64)] = &[
     (9, 2),
     (15, 2),
     (21, 4),
+    (257, 1),
+    (1025, 1),
+    (2049, 1),
+    (4097, 1),
 ];
 
 #[test]

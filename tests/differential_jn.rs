@@ -31,8 +31,17 @@ use pfloat::RoundingMode;
 
 /// Exact dyadic-rational inputs (denominator a power of two, so the
 /// constructed argument is bit-identical in pfloat and rug at every
-/// precision). Spans the tiny `|x| < 1` Maclaurin regime and the
-/// moderate Miller regime, both signs.
+/// precision). Spans the tiny `|x| < 1` Maclaurin regime, the
+/// moderate Miller regime (both signs), and the large-`|x|`
+/// asymptotic regime past `bessel_j_threshold(1024) = 11` (i.e.
+/// `|x| ≥ 2048`) where sub-slice 2b.2.a's tightening of
+/// `src/math/bessel_j.rs:455-464` lives. Before 2b.2.a the integer
+/// sweep in `j0_matches_mpfr` / `j1_matches_mpfr` / `jn_matches_mpfr`
+/// uses `next_i64_in(state, 1, 40)`, which never enters the
+/// asymptotic regime at `p = 1024` (threshold is at `|x| = 2048`);
+/// the `(2049, 1)` and `(4097, 1)` entries are the boundary-input
+/// gate that prevents the 2b.1 false-positive shape (a passing test
+/// at a precision grid that bypasses the modified dispatch).
 const DYADIC: &[(i64, i64)] = &[
     (1, 2),
     (1, 4),
@@ -43,6 +52,10 @@ const DYADIC: &[(i64, i64)] = &[
     (-3, 4),
     (-7, 8),
     (-11, 2),
+    (257, 1),
+    (1025, 1),
+    (2049, 1),
+    (4097, 1),
 ];
 
 #[test]

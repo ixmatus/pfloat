@@ -37,7 +37,7 @@ use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
 use super::trig_reduce::{reduce, Reduction};
-use super::ziv::ziv_round;
+use super::ziv::{ziv_round, ZIV_BASE_GUARD};
 use super::ziv_calibration::COS_ERROR_GUARD;
 
 impl BigFloat {
@@ -109,10 +109,12 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    // Range-cap check at the maximum Ziv working precision (sin
-    // family precedent).
-    let ziv_max_working = target_precision.saturating_add(1024);
-    if reduce(x, ziv_max_working).is_none() {
+    // Range-cap check at the Ziv first-iteration working precision
+    // (sin family precedent; see `sin.rs` for the full pf-1axr
+    // rationale on why this is `target + ZIV_BASE_GUARD` rather than
+    // `target + ZIV_GUARD_CAP`).
+    let ziv_first_working = target_precision.saturating_add(ZIV_BASE_GUARD);
+    if reduce(x, ziv_first_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
@@ -120,19 +122,26 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     }
 
     let (result, status) = ziv_round(
-        |w| {
-            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
-            match quadrant {
+        |w| match reduce(x, w) {
+            Some(Reduction { quadrant, r }) => match quadrant {
                 0 => cos_taylor(&r, w),
                 1 => sin_taylor(&r, w).negated(),
                 2 => cos_taylor(&r, w).negated(),
                 _ => sin_taylor(&r, w),
-            }
+            },
+            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[])
+                .expect("precision >= 1"),
         },
         target_precision,
         mode,
         COS_ERROR_GUARD,
     );
+    // Post-Ziv NaN-to-INVALID surfacing (pf-1axr, sin.rs precedent).
+    if matches!(result.class, Class::Nan { .. }) && !status.invalid() {
+        let merged = status.merge(Status::INVALID);
+        auto_raise(Status::INVALID);
+        return (result, merged);
+    }
     auto_raise(status);
     (result, status)
 }

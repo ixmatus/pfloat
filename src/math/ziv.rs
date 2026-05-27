@@ -33,8 +33,10 @@ use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 /// First Ziv guard: the initial evaluation uses
-/// `target + ZIV_BASE_GUARD` extra bits.
-const ZIV_BASE_GUARD: u32 = 64;
+/// `target + ZIV_BASE_GUARD` extra bits. `pub(super)` so callers (like
+/// `sin_kernel` / `cos_kernel`) can derive their range-cap pre-checks
+/// from the same constant the driver starts from (pf-1axr).
+pub(super) const ZIV_BASE_GUARD: u32 = 64;
 
 /// Maximum extra guard bits above the target precision. The doubling
 /// schedule (64, 128, 256, 512, 1024) reaches this at the last

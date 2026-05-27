@@ -39,7 +39,7 @@ use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
 use super::trig_reduce::{reduce, Reduction};
-use super::ziv::ziv_round;
+use super::ziv::{ziv_round, ZIV_BASE_GUARD};
 use super::ziv_calibration::TAN_ERROR_GUARD;
 
 impl BigFloat {
@@ -109,10 +109,10 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    // Range-cap check at the maximum Ziv working precision (sin
-    // family precedent).
-    let ziv_max_working = target_precision.saturating_add(1024);
-    if reduce(x, ziv_max_working).is_none() {
+    // Range-cap check at the Ziv first-iteration working precision
+    // (pf-1axr; see `sin.rs` for the full rationale).
+    let ziv_first_working = target_precision.saturating_add(ZIV_BASE_GUARD);
+    if reduce(x, ziv_first_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
@@ -120,23 +120,32 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     }
 
     let (result, status) = ziv_round(
-        |w| {
-            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
-            let s = sin_taylor(&r, w);
-            let c = cos_taylor(&r, w);
-            match quadrant {
-                0 | 2 => s.div(&c, RoundingMode::NearestEven).0,
-                _ => {
-                    // quadrants 1, 3: tan(x) = −cos(r) / sin(r).
-                    let neg_c = c.negated();
-                    neg_c.div(&s, RoundingMode::NearestEven).0
+        |w| match reduce(x, w) {
+            Some(Reduction { quadrant, r }) => {
+                let s = sin_taylor(&r, w);
+                let c = cos_taylor(&r, w);
+                match quadrant {
+                    0 | 2 => s.div(&c, RoundingMode::NearestEven).0,
+                    _ => {
+                        // quadrants 1, 3: tan(x) = −cos(r) / sin(r).
+                        let neg_c = c.negated();
+                        neg_c.div(&s, RoundingMode::NearestEven).0
+                    }
                 }
             }
+            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[])
+                .expect("precision >= 1"),
         },
         target_precision,
         mode,
         TAN_ERROR_GUARD,
     );
+    // Post-Ziv NaN-to-INVALID surfacing (pf-1axr, sin.rs precedent).
+    if matches!(result.class, Class::Nan { .. }) && !status.invalid() {
+        let merged = status.merge(Status::INVALID);
+        auto_raise(Status::INVALID);
+        return (result, merged);
+    }
     auto_raise(status);
     (result, status)
 }
