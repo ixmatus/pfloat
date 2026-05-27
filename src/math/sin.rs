@@ -43,7 +43,7 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::trig_reduce::{reduce, Reduction};
-use super::ziv::ziv_round;
+use super::ziv::{ziv_round, ZIV_BASE_GUARD};
 use super::ziv_calibration::SIN_ERROR_GUARD;
 
 impl BigFloat {
@@ -114,15 +114,25 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
-    // Range-cap check at the maximum Ziv working precision. The
-    // 4096-bit 2/π reduction table caps the supported |x| at
-    // roughly `2^(4096 − working − slack)`; reduction failure at
-    // some Ziv-grown w would leave the eval closure with no
-    // sensible value to return. Pre-check at `target + 1024` (the
-    // Ziv ceiling) so any input that passes here passes every Ziv
-    // working precision the driver walks.
-    let ziv_max_working = target_precision.saturating_add(1024);
-    if reduce(x, ziv_max_working).is_none() {
+    // Range-cap check at the Ziv first-iteration working precision.
+    // The 4096-bit 2/π reduction table caps the supported `|x|` at
+    // roughly `2^(4096 − working − slack)`. Pre-check at
+    // `target + ZIV_BASE_GUARD` (the first iteration the driver
+    // runs): if reduce fails here the input is fundamentally out of
+    // range and no Ziv iteration could recover. Higher Ziv
+    // iterations (guard doubling to 128, 256, 512, 1024) may exceed
+    // the table for inputs near the cliff; the closure handles that
+    // by returning NaN and the post-Ziv check below raises INVALID.
+    // The pre-pf-1axr pre-check at `target + 1024` (the Ziv ceiling)
+    // was over-conservative: it fired spuriously at
+    // `target_precision ≥ 3008 − e_x`, blocking any caller above
+    // that cliff even when the first iteration would have succeeded.
+    // pf-1axr surfaced this via `bessel_y_eval_normal_at_w`'s
+    // working-precision boost pushing `bessel_y_asymptotic`'s
+    // internal `cos`/`sin` past the cliff at `Y2(1025)` at `p = 53`
+    // (recurrence working = 3061).
+    let ziv_first_working = target_precision.saturating_add(ZIV_BASE_GUARD);
+    if reduce(x, ziv_first_working).is_none() {
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
         auto_raise(Status::INVALID);
@@ -132,23 +142,35 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs Payne-Hanek reduction + quadrant-dispatched
     // Taylor at working precision `w` under NE; the outer envelope
-    // certifies the rounding-mode interval test.
+    // certifies the rounding-mode interval test. If reduce returns
+    // None at a Ziv-grown `w` (only possible when the pre-check
+    // passed but a doubled-guard working exceeds the table for this
+    // `|x|`), return a NaN at the working precision; Ziv treats the
+    // NaN as "interval can't be certified" and the post-Ziv check
+    // below raises INVALID on the final result.
     let (result, status) = ziv_round(
-        |w| {
-            // Range-cap check confirmed at ziv_max_working above; any
-            // `w ≤ ziv_max_working` succeeds.
-            let Reduction { quadrant, r } = reduce(x, w).expect("range-cap pre-checked");
-            match quadrant {
+        |w| match reduce(x, w) {
+            Some(Reduction { quadrant, r }) => match quadrant {
                 0 => sin_taylor(&r, w),
                 1 => cos_taylor(&r, w),
                 2 => sin_taylor(&r, w).negated(),
                 _ => cos_taylor(&r, w).negated(),
-            }
+            },
+            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[])
+                .expect("precision >= 1"),
         },
         target_precision,
         mode,
         SIN_ERROR_GUARD,
     );
+    // Post-Ziv: a Ziv iteration's reduce hitting the table cap
+    // propagated NaN through the driver; surface as INVALID for
+    // shape-parity with the explicit pre-check path above.
+    if matches!(result.class, Class::Nan { .. }) && !status.invalid() {
+        let merged = status.merge(Status::INVALID);
+        auto_raise(Status::INVALID);
+        return (result, merged);
+    }
     auto_raise(status);
     (result, status)
 }

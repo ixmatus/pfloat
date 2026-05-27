@@ -458,6 +458,17 @@ name = "spouge_lgamma"
 harness = false
 required-features = ["specials"]
 
+# Sub-slice 2b.2.a: Bessel asymptotic-vs-Miller dispatch bench. All
+# four Bessel kernels (J / Y / I / K) share `bessel_j_threshold`
+# (`src/math/bessel_j.rs:455-464`); the cells straddle the current
+# cut at `precision ∈ {256, 1024}`. Save baseline with `--
+# --save-baseline phase2b-bessel-baseline`; re-run with `--baseline
+# phase2b-bessel-baseline` after tightening to diff.
+[[bench]]
+name = "bessel_dispatch"
+harness = false
+required-features = ["bessel"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
