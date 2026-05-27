@@ -444,6 +444,20 @@ missing_panics_doc = "allow"
 name = "mul_thresholds"
 harness = false
 
+# Sub-slice 2b.1: Spouge precision-pegging baseline / regression
+# bench. Sub-slice 2b.1 attempted to tighten `spouge_a_for`'s safety
+# margin from ~700 bits to ~50 bits but the change broke the
+# differential_zeta verification at p=1024 (the FE-branch composition
+# loses more bits than the bound predicted). The implementation
+# change reverted per ADR-0041 (rejected); the bench stays in tree
+# as the measurement infrastructure for the post-v1.0 empirical
+# investigation. `harness = false` per the same pattern;
+# `required-features = ["specials"]` because lgamma lives there.
+[[bench]]
+name = "spouge_lgamma"
+harness = false
+required-features = ["specials"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
