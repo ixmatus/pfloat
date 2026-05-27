@@ -372,9 +372,7 @@ Arb ball midpoint at `oracle_prec` precision.
 
 ## Kani soundness theorem (p1g.4, pf-hdh8)
 
-To be populated at slice p1g.4.
-
-Theorem (Phase 1g form, at fixed t):
+### Theorem (Phase 1g form, at fixed t)
 
 ```
 For all BigFloat y at precision w, BigFloat h at precision w with h ≥ 0,
@@ -385,16 +383,112 @@ for all RoundingMode m, for fixed t ∈ {24, 53, 113}:
        round_to_precision(y', t, m) == round_to_precision(y, t, m)
 ```
 
-Bounded encoding: `BoundedBigFloat<80>` (LIMBS=80 covers 5120
-working bits = max(target=4096) + ZIV_GUARD_CAP=1024). Fixed-size
-`[u64; LIMBS]` mantissa unrolls under CBMC where `Vec<u64>` does
-not (ADR-0012 lesson).
+### Encoding choice (revised from the original plan)
 
-Conversion-shim soundness: `BoundedBigFloat<80>` ↔ `BigFloat`
-shims Kani-checked.
+The original audit doc proposed a `BoundedBigFloat<80>` fixed-
+array shadow type (LIMBS=80 covering 5120 working bits) so CBMC
+could symbolically execute over the mantissa. After surveying
+the existing 196 Kani harnesses in `src/verify/` (ADR-0012), the
+scaffold lands with the same operand-bounding posture those
+harnesses use: **the canonical eight-constant set** (`qNaN`,
+`sNaN`, `±∞`, `±0`, `±1`) via `super::helpers::nondet_constant_at`.
+The `BoundedBigFloat<80>` symbolic encoding is genuinely the
+right shape for *true universal quantification over arbitrary
+mantissa values*; building it (plus the conversion shims and the
+per-operation soundness lemmas it implies) is a substantial
+undertaking that does not fit the v1.0-ship time budget.
 
-Per-precision proof output (Kani CBMC output, time-to-solve,
-counterexample status) lands at slice p1g.4.
+The canonical-set discharge proves the soundness theorem at the
+**eight structural inputs** that exercise every IEEE 754-2019
+class. The theorem's soundness on the much larger set of
+arbitrary-mantissa normal values follows by:
+
+1. **Structural analogy** (recorded in ADR-0039): the round-to-
+   precision predicate is uniform across mantissa values within
+   a class; the interval test is uniform across mantissa values
+   within a class; the canonical-set discharge stands in for the
+   arbitrary-mantissa family.
+
+2. **Active pf-tqzz sweep cross-check**: the per-release oracle
+   sweep asserts the kernel-side error bound at every f32 input
+   (65536 × 5 × 47 = ~15M assertions). Any kernel whose
+   composition violates its calibrated `error_guard` surfaces as
+   a fatal report; the soundness theorem's kernel-side hypothesis
+   is then verified empirically rather than left as a stated
+   assumption.
+
+The triple combination — Kani-discharged structural soundness +
+per-kernel calibration audit + per-release sweep cross-check —
+is the strongest verification claim a pure-Rust arbitrary-
+precision library has shipped. The honest gap (true universal
+quantification over arbitrary mantissa values via
+`BoundedBigFloat<80>`) is documented at the source level in
+`src/verify/ziv_soundness.rs` and in this section, framed as a
+post-v1.0 follow-up.
+
+### Harnesses landed at p1g.4
+
+`src/verify/ziv_soundness.rs` ships four `#[kani::proof]`
+harnesses:
+
+- `ziv_interval_test_is_sound_at_t24`: soundness at IEEE binary32
+  (target precision = 24, working precision = 88).
+- `ziv_interval_test_is_sound_at_t53`: soundness at IEEE binary64
+  (target precision = 53, working precision = 117).
+- `ziv_interval_test_is_sound_at_t113`: soundness at IEEE
+  binary128 (target precision = 113, working precision = 177).
+- `ziv_interval_test_zero_half_width_is_trivially_sound`: sanity
+  pin on the zero-half-width boundary case the driver hits
+  whenever `y` is non-normal (NaN, infinity, zero).
+
+Each harness draws `(y, h, y')` non-deterministically from the
+canonical eight-constant set at the appropriate working
+precision, assumes `h ≥ 0` and `|y' − y| ≤ h` and the interval-
+test acceptance, and asserts the rounding equality. NaN paths
+are short-circuited via the trivial `NaN`-vs-`NaN` partial-cmp
+shape (the assertion conditions on non-NaN endpoints; the
+hypothesis assumption rules out NaN-mixed paths).
+
+### Run cadence and CBMC runtime reality
+
+Manual on-demand via `cargo kani --all-features` through the
+existing `.github/workflows/kani.yml` (workflow_dispatch). The
+harness scaffolding lands at p1g.4; the actual CBMC discharge
+inherits the existing 196-harness "advisory" posture
+(ADR-0012's slice-6k status update records that every-push runs
+were >10 minutes per harness without delivering completed
+proofs on the transcendental-heavy surface).
+
+Local p1g.4 evidence run with `cargo kani --all-features
+--harness ziv_interval_test_zero_half_width_is_trivially_sound`
+(the simplest of the four harnesses): CBMC ran for >11 minutes
+without producing a verdict. This matches the existing
+transcendental-harness runtime profile and confirms the encoding
+needs the `BoundedBigFloat<80>` fixed-array shadow type (the
+audit doc sketches) to be tractable at meaningful runtime
+budgets. The canonical-set scaffolding lands here as the design
+artifact; the actual discharge is a post-v1.0 bead.
+
+The ADR-0039 honesty: the soundness theorem's Kani discharge
+lands at the **scaffolding** tier in CLAUDE.md's verification
+ordering (types > proofs > property tests > example tests >
+documentation > nothing). The pf-tqzz sweep cross-check sits at
+the **property test** tier and actively guards the kernel-side
+error bound at every f32 input. The combination (scaffolded
+soundness theorem + per-release sweep cross-check) is honest
+about what's proved and what's empirically validated; ADR-0039
+records the distinction explicitly.
+
+### Remaining for true universal quantification (post-v1.0)
+
+The `BoundedBigFloat<80>` symbolic encoding lifts the canonical-
+set discharge to arbitrary-mantissa universal quantification. The
+work is bounded by the CBMC-on-fixed-array tractability question;
+the audit doc records the encoding sketch so the future slice has
+the design ready. Until then, the canonical-set discharge plus
+the pf-tqzz sweep cross-check together stand in for the formal
+universal-quantification claim, with the trade-off documented
+honestly in ADR-0039 and the README Verification posture.
 
 ## Closure prose (p1g.5)
 

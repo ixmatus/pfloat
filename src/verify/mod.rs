@@ -119,3 +119,6 @@ mod yn;
 
 #[cfg(feature = "zeta")]
 mod zeta;
+
+#[cfg(feature = "exp-log")]
+mod ziv_soundness;
