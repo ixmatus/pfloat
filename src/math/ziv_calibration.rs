@@ -47,7 +47,7 @@
 /// is the empirical slack the pre-Phase-1g global `ZIV_ERROR_GUARD`
 /// carried; Phase 1g preserves it as the default and forces every
 /// kernel to opt in by name (pf-yupm acceptance criterion 4).
-pub(crate) const DEFAULT_ERROR_GUARD: u32 = 24;
+pub const DEFAULT_ERROR_GUARD: u32 = 24;
 
 // --- Elementary transcendental kernels -------------------------------
 //
@@ -60,153 +60,153 @@ pub(crate) const DEFAULT_ERROR_GUARD: u32 = 24;
 /// `exp`: Taylor series with `~4w` iterations of multiply+add,
 /// each ≤ 1 ULP at working precision. Sum ≤ `2^14` ULP at the
 /// 1024-bit working cap. Algebraic justification, `src/math/exp.rs:132`.
-pub(crate) const EXP_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const EXP_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `exp2`: composition `exp(x · ln(2))` plus the mode-aware
 /// constant scaling. Bounded by `EXP_ERROR_GUARD` plus a constant.
-pub(crate) const EXP2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const EXP2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `exp10`: composition `exp(x · ln(10))`.
-pub(crate) const EXP10_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const EXP10_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `expm1`: composition with cancellation boost inside the eval
 /// closure (slice p1.24); the boost handles the tiny-x cancellation
 /// regime, leaving the outer Ziv bound at the elementary template.
-pub(crate) const EXPM1_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const EXPM1_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `ln`: atanh series with `~w/3` iterations
 /// (`u² ∈ [0, 1/9]`, ~3 bits per term).
-pub(crate) const LN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const LN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `log1p`: atanh series on `(1+x)` with cancellation boost in the
 /// eval closure (slice p1.24's tiny-x boost).
-pub(crate) const LOG1P_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const LOG1P_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Forward trig ----------------------------------------------------
 
 /// `sin`: Payne-Hanek range reduction plus quadrant-dispatched
 /// Taylor at `~w/2` terms.
-pub(crate) const SIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const SIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `cos`: same range reduction; sin/cos share the structure.
-pub(crate) const COS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const COS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `tan`: `sin/cos` composition after the same reduction.
-pub(crate) const TAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const TAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Inverse trig ----------------------------------------------------
 
 /// `asin`: `2·atan(|x|/(1+sqrt(1-x²)))` identity (slice p1.25).
-pub(crate) const ASIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ASIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `acos`: `π - 2·atan(sqrt((1+x)/(1-x)))` identity (slice p1.25).
-pub(crate) const ACOS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ACOS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `atan`: unsigned composition on `|x|` (slice p1.25).
-pub(crate) const ATAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ATAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `atan2`: quadrant-shifted `atan(y/x)` (slice p1.25).
-pub(crate) const ATAN2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ATAN2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Hyperbolic and inverse hyperbolic -------------------------------
 
 /// `sinh`: `(expm1(x) - expm1(-x))/2` composition (slice p1.27).
-pub(crate) const SINH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const SINH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `cosh`: `(exp(x) + exp(-x))/2` composition.
-pub(crate) const COSH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const COSH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `tanh`: composition through `tanh_at_w` helper (slice p1.27).
-pub(crate) const TANH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const TANH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `asinh`: `log1p(|x| + x²/(1+sqrt(1+x²)))`.
-pub(crate) const ASINH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ASINH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `acosh`: `log1p((x-1) + sqrt((x-1)(x+1)))`.
-pub(crate) const ACOSH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ACOSH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `atanh`: `(log1p(x) - log1p(-x))/2`.
-pub(crate) const ATANH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ATANH_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Power kernels ---------------------------------------------------
 
 /// `pow` via `exp(y · ln(x))` (the general path; slice 7c).
 /// Operation count is the sum of `ln` + `mul` + `exp`, each within
 /// its own bound; product bound stays comfortably under `2^24`.
-pub(crate) const POW_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const POW_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `pow` integer-y path via square-and-multiply (slice 7c).
 /// `~log₂(|n|)` multiplications, each ≤ 1 ULP; `n ≤ 2^31` keeps the
 /// sum ≤ `2^5` ULP, well within the default.
-pub(crate) const POW_INT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const POW_INT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Gamma family ----------------------------------------------------
 
 /// `gamma`: `sign(x) · exp(lgamma(x))` composition.
 /// The integer-fast-path dispatches exactly (pf-kk16, slice p1.29).
-pub(crate) const GAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const GAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `lgamma`: Spouge for `x ≥ z_min` + reflection for `x < z_min`,
 /// the more conservative composition of the family. `~30` ops at
 /// `z_min ≈ 20`; algebraic bound well under `2^24` ULP. Empirical
 /// confirmation pending pf-tqzz (p1g.3 active sweep guard).
-pub(crate) const LGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const LGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `digamma`: composition through `digamma_at_w` helper (slice p1.29).
-pub(crate) const DIGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const DIGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `beta`: `exp(lgamma(x) + lgamma(y) - lgamma(x+y))` composition
 /// in the general case; product formula in the integer-arg branch.
-pub(crate) const BETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const BETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Error functions -------------------------------------------------
 
 /// `erf`: asymptotic (large `|x|`) or Maclaurin (small `|x|`)
 /// dispatched at working precision (slice p1.4; oracle bumps to
 /// `p = 53` for the f32-subnormal-midpoint trap).
-pub(crate) const ERF_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ERF_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `erfc`: composition `1 - erf(...)` or direct asymptotic branch
 /// (slice p1.28).
-pub(crate) const ERFC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ERFC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Integral functions ----------------------------------------------
 
 /// `Si`: Maclaurin (small `|x|`) or asymptotic (large `|x|`) branch
 /// (slice p1.30).
-pub(crate) const SI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const SI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Ci`: Maclaurin or asymptotic (slice p1.30).
-pub(crate) const CI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const CI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Li`: series summation (slice p1.30; oracle bumps to `p = 53`).
-pub(crate) const LI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const LI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Ei`: series or asymptotic (slice p1.30).
-pub(crate) const EI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const EI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Airy and Bessel -------------------------------------------------
 
 /// `Airy` (Ai, Bi, Ai', Bi'): shared eval body (slice p1.31).
-pub(crate) const AIRY_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const AIRY_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel J_n`: Maclaurin / Miller recurrence / asymptotic
 /// dispatched at working precision (slice p1.32; oracle bumps to
 /// `p = 320` for the cubic-correction trap).
-pub(crate) const BESSEL_J_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const BESSEL_J_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel Y_n`: reflection formula composing J's and recurrence
 /// (slice p1.32). The oscillatory regime near the J zeros may
 /// surface as the first empirical-widening candidate at p1g.3.
-pub(crate) const BESSEL_Y_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const BESSEL_Y_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel I_n`: Maclaurin / Miller / asymptotic (slice p1.33;
 /// oracle bumps to `p = 320`).
-pub(crate) const BESSEL_I_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const BESSEL_I_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel K_n`: reflection composing I's and recurrence
 /// (slice p1.33).
-pub(crate) const BESSEL_K_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const BESSEL_K_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- zeta ------------------------------------------------------------
 
@@ -214,13 +214,13 @@ pub(crate) const BESSEL_K_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// (`gamma · sin · pow · zeta_borwein` composition) for `s < 0`
 /// (slice p1.34). The composition is the deepest on the surface;
 /// empirical confirmation pending pf-tqzz.
-pub(crate) const ZETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const ZETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- AGM -------------------------------------------------------------
 
 /// `agm`: Gauss AGM iteration with quadratic convergence
 /// (`O(log w)` iterations, each `≤ 1 ULP`).
-pub(crate) const AGM_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+pub const AGM_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 #[cfg(test)]
 mod tests {

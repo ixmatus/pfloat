@@ -124,7 +124,34 @@ pub(crate) fn ziv_round(
 /// allocation in the success path. The fallback (cap-exhaustion)
 /// path holds one extra `BigFloat` across iterations bounded by
 /// [`ZIV_MAX_ITERS`].
-pub(crate) type ZivTrace = (BigFloat, Status, u32, BigFloat);
+pub type ZivTrace = (BigFloat, Status, u32, BigFloat);
+
+// Thread-local capture of the last `ziv_round_capturing` trace.
+// Enabled only under the `ziv-instrumented` feature (and unit-test
+// builds); off in production so the capture costs nothing. The
+// pf-tqzz cross-check harness (slice p1g.3) drains this via
+// `take_last_trace` after every kernel call routed through the
+// public API (`BigFloat::<fn>_round`, etc.), so the cross-check
+// stays generic across the 47 v1.0 kernels without per-kernel
+// `_round_capturing` wrapper boilerplate.
+#[cfg(any(test, feature = "ziv-instrumented"))]
+thread_local! {
+    static LAST_TRACE: core::cell::RefCell<Option<ZivTrace>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Drain the thread-local trace populated by the most-recent
+/// `ziv_round_capturing` (and thus `ziv_round`, which wraps it).
+/// Returns `None` when no Ziv-routed call has been made on this
+/// thread since the last drain. Production builds without the
+/// `ziv-instrumented` feature return `None` unconditionally; the
+/// thread-local does not exist there.
+///
+/// pf-tqzz, slice p1g.3, ADR-0039.
+#[cfg(any(test, feature = "ziv-instrumented"))]
+pub fn take_last_trace() -> Option<ZivTrace> {
+    LAST_TRACE.with(|t| t.borrow_mut().take())
+}
 
 /// Same as [`ziv_round`] but additionally returns the working
 /// precision at which the interval test converged and the
@@ -158,16 +185,21 @@ pub(crate) fn ziv_round_capturing(
             // The whole uncertainty interval rounds to one value:
             // correct rounding is settled.
             auto_raise(status);
-            return (cand, status, working, y);
+            let trace = (cand, status, working, y);
+            #[cfg(any(test, feature = "ziv-instrumented"))]
+            LAST_TRACE.with(|t| *t.borrow_mut() = Some(trace.clone()));
+            return trace;
         }
 
         fallback = Some((cand, status, working, y));
         guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
     }
     // Cap reached on a pathologically hard input: best effort.
-    let (cand, status, working, y) = fallback.expect("ZIV_MAX_ITERS >= 1");
-    auto_raise(status);
-    (cand, status, working, y)
+    let trace = fallback.expect("ZIV_MAX_ITERS >= 1");
+    auto_raise(trace.1);
+    #[cfg(any(test, feature = "ziv-instrumented"))]
+    LAST_TRACE.with(|t| *t.borrow_mut() = Some(trace.clone()));
+    trace
 }
 
 #[cfg(test)]

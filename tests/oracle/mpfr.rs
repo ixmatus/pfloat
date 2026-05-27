@@ -24,7 +24,7 @@
 use core::cmp::Ordering;
 
 use rug::float::Round;
-use rug::ops::AssignRound;
+use rug::ops::{AssignRound, CompleteRound};
 use rug::Float;
 
 use super::types::{Enclosure, FnId, OracleBackend};
@@ -45,6 +45,76 @@ macro_rules! bracket {
             hi: Float::with_val_round($prec, $x.$method($($arg),*), Round::Up).0,
         }
     };
+}
+
+impl MpfrOracle {
+    /// Mode-independent rigorous-enclosure midpoint of the function
+    /// at `input` (binary32 bit pattern), at `oracle_prec` precision.
+    /// Mirrors [`super::arb::ArbOracle::midpoint`] for the 35
+    /// MPFR-primary `FnId`s; the cross-check harness routes each
+    /// `FnId` to the appropriate backend.
+    ///
+    /// MPFR's correct-rounding under `Round::Nearest` at
+    /// `oracle_prec >= working_prec + 64` produces a midpoint
+    /// within sub-ULP of the true value (the round-to-nearest
+    /// closest representable at `oracle_prec`), comfortably below
+    /// the pf-tqzz cross-check tolerance
+    /// `2^(error_guard - working_prec) * |midpoint|`.
+    ///
+    /// pf-tqzz (slice p1g.3, ADR-0039). Panics on an Arb-primary
+    /// `FnId`; the caller is responsible for routing those through
+    /// [`super::arb::ArbOracle::midpoint`].
+    #[must_use]
+    #[allow(clippy::unused_self)]
+    pub fn midpoint(&self, f: FnId, input: u32, oracle_prec: u32) -> Float {
+        let x = Float::with_val(oracle_prec, f32::from_bits(input));
+        match f {
+            // Elementary.
+            FnId::Sqrt => Float::with_val(oracle_prec, x.sqrt_ref()),
+            FnId::Exp => Float::with_val(oracle_prec, x.exp_ref()),
+            FnId::Exp2 => Float::with_val(oracle_prec, x.exp2_ref()),
+            FnId::Exp10 => Float::with_val(oracle_prec, x.exp10_ref()),
+            FnId::Expm1 => Float::with_val(oracle_prec, x.exp_m1_ref()),
+            FnId::Ln => Float::with_val(oracle_prec, x.ln_ref()),
+            FnId::Log1p => Float::with_val(oracle_prec, x.ln_1p_ref()),
+            FnId::Log2 => Float::with_val(oracle_prec, x.log2_ref()),
+            FnId::Log10 => Float::with_val(oracle_prec, x.log10_ref()),
+            FnId::Sin => Float::with_val(oracle_prec, x.sin_ref()),
+            FnId::Cos => Float::with_val(oracle_prec, x.cos_ref()),
+            FnId::Tan => Float::with_val(oracle_prec, x.tan_ref()),
+            FnId::Asin => Float::with_val(oracle_prec, x.asin_ref()),
+            FnId::Acos => Float::with_val(oracle_prec, x.acos_ref()),
+            FnId::Atan => Float::with_val(oracle_prec, x.atan_ref()),
+            FnId::Sinh => Float::with_val(oracle_prec, x.sinh_ref()),
+            FnId::Cosh => Float::with_val(oracle_prec, x.cosh_ref()),
+            FnId::Tanh => Float::with_val(oracle_prec, x.tanh_ref()),
+            FnId::Asinh => Float::with_val(oracle_prec, x.asinh_ref()),
+            FnId::Acosh => Float::with_val(oracle_prec, x.acosh_ref()),
+            FnId::Atanh => Float::with_val(oracle_prec, x.atanh_ref()),
+            // Specials.
+            FnId::Erf => Float::with_val(oracle_prec, x.erf_ref()),
+            FnId::Erfc => Float::with_val(oracle_prec, x.erfc_ref()),
+            FnId::Gamma => Float::with_val(oracle_prec, x.gamma_ref()),
+            FnId::Lgamma => {
+                // MPFR's `ln_abs_gamma_ref` returns an Incomplete
+                // that assigns to `(&mut Float, &mut Ordering)`;
+                // the Ordering slot is the Γ sign byproduct, which
+                // the cross-check ignores (the magnitude is the
+                // load-bearing piece). Mirrors `lgamma_bracket`
+                // below.
+                let mut val = Float::new(oracle_prec);
+                let mut sign_unused = Ordering::Equal;
+                let _ =
+                    (&mut val, &mut sign_unused).assign_round(x.ln_abs_gamma_ref(), Round::Nearest);
+                let _ = sign_unused;
+                val
+            }
+            FnId::Digamma => Float::with_val(oracle_prec, x.digamma_ref()),
+            FnId::Zeta => Float::with_val(oracle_prec, x.zeta_ref()),
+            FnId::Ei => Float::with_val(oracle_prec, x.eint_ref()),
+            other => panic!("MpfrOracle::midpoint called with non-MPFR-primary FnId: {other:?}"),
+        }
+    }
 }
 
 impl OracleBackend for MpfrOracle {

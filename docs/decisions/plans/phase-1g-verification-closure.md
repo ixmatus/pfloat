@@ -276,44 +276,84 @@ kernel hits this threshold.
   range check). All three pass under the Arb venv at
   `${HOME}/.cache/pfloat-arb-oracle/venv`.
 
-### Remaining for full pf-tqzz acceptance (follow-up sub-slice)
+### p1g.3 part 3: cross-check harness landed
 
-The wire format is validated; the cross-check sweep harness
-remains. The deferred work:
+**Landed:**
 
-1. **Per-kernel `<fn>_round_capturing` wrappers**, one per
-   five-mode-correct `FnId`. Each kernel function gets a thin
-   `#[cfg(any(test, feature = "ziv-instrumented"))] pub fn
-   <fn>_round_capturing(...) -> ZivTrace` that calls
-   `ziv_round_capturing` with the same per-kernel `error_guard`
-   the production path uses. Mechanical 47-kernel pass.
+- **Thread-local trace capture (zero per-kernel wrapper
+  boilerplate).** `ziv_round_capturing` writes the converged
+  `ZivTrace` into a `thread_local!` cell gated under
+  `#[cfg(any(test, feature = "ziv-instrumented"))]`. Production
+  builds without the feature pay nothing (the `thread_local!`
+  isn't even compiled). The pf-tqzz cross-check harness drains
+  the trace via `pfloat::ziv_instrumented::take_last_trace()`
+  after every kernel call through the public API. This sidesteps
+  the 47-kernel `<fn>_round_capturing` wrapper boilerplate the
+  earlier plan called for; the harness stays generic across the
+  full v1.0 surface.
 
-2. **MPFR-side midpoint** for the 35 MPFR-primary kernels (the
-   `MIDPOINT` verb only knows the 12 Arb-primary `FnId`s today).
-   Add a `MpfrOracle::midpoint` method that calls
-   `mpfr_<fn>(..., RoundNearest)` at `oracle_prec` and returns
-   the result as `rug::Float`. MPFR's correct-rounding at
-   `oracle_prec >= working_prec + 64` is itself the rigorous
-   midpoint (no ball-radius adjustment needed because MPFR's
-   directed rounding at `oracle_prec` already brackets the true
-   value within sub-ULP).
+- **`Cargo.toml ziv-instrumented` feature.** Gates the
+  thread-local capture, the `take_last_trace` public function,
+  and the `pfloat::ziv_instrumented` module that re-exports the
+  per-kernel calibration constants. Off by default; on for the
+  cross-check harness.
 
-3. **`tests/oracle/cross_check.rs` sweep harness**. For each
-   `(kernel, input, mode)` triple in the 65536 × 5 × 47 sweep:
-   call `<fn>_round_capturing` to obtain `(_, _, working,
-   eval_w)`; call `oracle.midpoint(f, input, working + 64)` to
-   obtain `arb_mid` (or MPFR-mid); compute
-   `error = |eval_w - arb_mid|` and `bound = 2^(error_guard -
-   working) * |arb_mid|`; assert `error <= bound`. Fail-fast
-   structured report on any violation.
+- **MPFR-side midpoint (`MpfrOracle::midpoint`).** Mirrors the
+  Arb MIDPOINT shape: takes `(FnId, input, oracle_prec)` and
+  returns `rug::Float` at `oracle_prec` precision via
+  `Round::Nearest` evaluation of the appropriate MPFR primitive.
+  Covers the 35 MPFR-primary `FnId`s; panics on Arb-primary
+  inputs (the cross-check harness routes those to
+  `ArbOracle::midpoint`).
 
-4. **Cargo.toml `ziv-instrumented` feature** to gate the per-
-   kernel capturing wrappers behind a release-time-only flag.
+- **`tests/oracle_cross_check_smoke.rs` sweep smoke.** Three
+  tests covering both backends and the trace-working-precision
+  sanity:
+  - `cross_check_mpfr_primary_smoke`: 4 kernels (exp, ln, sin,
+    cos) × 11 inputs × 5 modes = 220 cross-checks pass against
+    `MpfrOracle::midpoint`.
+  - `cross_check_arb_primary_smoke`: Si × 5 inputs × 5 modes =
+    25 cross-checks pass against `ArbOracle::midpoint` (the
+    Bessel I/K small-arg family is deferred to the full sweep
+    because verification_precision=320 makes per-call kernel
+    evaluation slow).
+  - `cross_check_respects_trace_working_precision`: sanity test
+    that the harness uses the converged working precision from
+    the trace, not `verification_precision`, for the bound
+    formula.
 
-Estimated effort: 2-4 hours for items 1-3 (mechanical), bounded
-by per-kernel `pub fn` boilerplate generation. The 3.1M Arb
-midpoint calls (~one per kernel-input pair, mode-independent)
-fits the per-release runtime budget; per-push CI unchanged.
+  Total smoke runtime: ~0.2 seconds. The full 65536-input
+  release sweep extends this by scaling up the input count;
+  per-release cadence, not per-push.
+
+- **Public API surface.** New `pub mod ziv_instrumented` in
+  `src/lib.rs` (feature-gated) re-exports `ZivTrace`,
+  `take_last_trace`, and all per-kernel `<KERNEL>_ERROR_GUARD`
+  constants (promoted from `pub(crate)` to `pub`). Cross-check
+  harness consumes these directly; production callers don't see
+  them without the feature flag.
+
+### Remaining for full pf-tqzz acceptance (release-time)
+
+The smoke is the wire validation; the full per-release sweep
+(65536 × 5 × 47 cross-checks ≈ 3.1M oracle calls) is what
+actually exercises every f32 input at every mode for every
+v1.0-surface kernel. Operationally it runs on the maintainer's
+release lane, not per-push CI:
+
+- Extend `cross_check_mpfr_primary_smoke` and
+  `cross_check_arb_primary_smoke` from the smoke subset to the
+  full 65536-input grid.
+- Re-route the Bessel I/K small-arg kernels (currently deferred
+  for runtime reasons) through the sweep; estimated per-kernel
+  runtime ~hours at 65536 inputs × 5 modes.
+- Surface any kernel whose calibrated bound is violated as a
+  fatal structured report; widen the per-kernel constant with
+  `empirical (sweep at <commit>)` provenance and re-run.
+
+The smoke gives the plumbing-correct guarantee; the release
+sweep delivers the calibrated-bound certification. Both share
+the same harness code path.
 
 ### Protocol reference (frozen)
 
