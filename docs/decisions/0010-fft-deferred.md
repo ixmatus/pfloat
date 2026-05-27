@@ -1,7 +1,10 @@
 # ADR-0010: Schönhage-Strassen FFT multiplication deferred to 1.x
 
-- **Status**: accepted
-- **Date**: 2026-05-10
+- **Status**: accepted; amended at Phase 2a slice 2a.1 (2026-05-27)
+  with a measurement-based reconfirmation per ADR-0040. The original
+  deferral stands; the FFT-region cost gap is now characterized
+  rather than assumed.
+- **Date**: 2026-05-10 (amended 2026-05-27)
 
 ## Context
 
@@ -90,11 +93,45 @@ full implementation involves:
 - Threshold tuning for the schoolbook → Karatsuba → FFT crossovers
   on the platforms pfloat targets.
 - Kani-discharged bounding of round-off through the transform, if
-  tractable.
+  tractable. Under the Schönhage-Strassen NTT variant the
+  round-off bound is moot: integer arithmetic in `Z/(2^N + 1)` is
+  exact, so the verification story reduces to modular-arithmetic
+  correctness plus convolution-to-product carry propagation.
 
 Tracked under: GitHub issue (to be filed when 1.0 is tagged) and
 the `2026-mm-dd-fft.md` plan that will produce the corresponding
 ADR.
+
+## Amendment (2026-05-27, Phase 2a slice 2a.1)
+
+The sequencing decision recorded in the project MEMORY entry
+`project_perf_before_full_sweep` (2026-05-26) folded Phase 2 perf
+work into pre-v1.0 scope, reopening the FFT question with a
+measurement-first discipline. Slice 2a.1 of Phase 2a extended
+`benches/mul_thresholds.rs` with a `LIMB_SIZES_TAIL` sweep from 768
+to 65536 limbs on the calibration host (`aarch64-apple-darwin`) and
+landed ADR-0040 with the measurement results.
+
+The measurement reconfirms this ADR's original deferral: pfloat's
+tuned Karatsuba covers the precision range its v1.0-surface
+consumers reach with several decimal orders of headroom (25.3 µs at
+192 limbs equal-size; the FFT-region cost sits in the 30 to 280 ms
+range at 16384 to 65536 limbs, two to three decimal orders above
+where any in-tree caller operates). The original "crossover happens
+at precisions most users do not reach" claim now has a measured
+quantification: the Ziv driver's `ZIV_GUARD_CAP = 1024` (16 limbs)
+bounds the internal working precision at `caller_target + 16
+limbs`, so even an exotic 10000-bit user request stays under 173
+limbs internally, 200× short of the literature crossover.
+
+The "Costs" section's "multiplication at 10⁴+ limbs is slower than
+MPFR" statement stands and is now quantified: 31 ms at 16384 limbs,
+279 ms at 65536 limbs on the reference host.
+
+Phase 2a closes at slice 2a.1; the bead `pf-rh4c` closes as a
+documentation-tier deliverable. No code path changes. The
+bench-tail extension stays in tree for Phase 2b (`pf-6fvx`,
+kernel-specific perf) and for any future 1.x or 2.x revisitation.
 
 ## Related
 
