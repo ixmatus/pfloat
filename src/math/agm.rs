@@ -159,12 +159,27 @@ fn agm_kernel(
         return (z, Status::OK);
     }
 
-    // Both operands are now finite and strictly positive. Ziv-driven
-    // correct rounding under every IEEE mode: the eval closure
-    // captures (a, b) and runs the Gauss AGM iteration at working
-    // precision w. Quadratic convergence doubles the bit agreement
-    // each step, so Ziv adds at most one extra iteration per retry
-    // (O(log w) → O(log 2w) ≈ +1).
+    // Equal-argument fixed-point dispatch (pf-kk16, ADR-0039).
+    // agm(x, x) = x exactly: the iteration is at its fixed point,
+    // so every subsequent (a_n, b_n) pair equals (x, x). Without
+    // the dispatch, the Ziv-wrapped iteration would return x +
+    // epsilon (from the round-to-w step) and tip rounding under
+    // directed modes off the exact value
+    // (`feedback_exact_value_defeats_ziv`).
+    if matches!(a.partial_cmp(b).0, Some(Ordering::Equal)) {
+        let (rounded, status) = a
+            .round_to_precision(target_precision, mode)
+            .expect("precision >= 1");
+        auto_raise(status);
+        return (rounded, status);
+    }
+
+    // Both operands are now finite, strictly positive, and unequal.
+    // Ziv-driven correct rounding under every IEEE mode: the eval
+    // closure captures (a, b) and runs the Gauss AGM iteration at
+    // working precision w. Quadratic convergence doubles the bit
+    // agreement each step, so Ziv adds at most one extra iteration
+    // per retry (O(log w) → O(log 2w) ≈ +1).
     let (result, status) = ziv_round(
         |w| {
             let mut a_n = a
@@ -256,6 +271,38 @@ mod tests {
         let x = BigFloat::try_from_i64_exact(7, 113).unwrap();
         let (r, _) = x.agm(&x, RoundingMode::NearestEven);
         assert_eq!(r.partial_cmp(&x).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn agm_x_x_is_x_under_every_directed_mode() {
+        // pf-kk16 pinning test: the equal-argument fixed-point
+        // dispatch returns x exactly under every mode. Without the
+        // dispatch, the Ziv iteration's round-to-w step would return
+        // x + epsilon and tip directed-mode rounding off the exact
+        // value (feedback_exact_value_defeats_ziv). Exercise an
+        // integer (exactly representable, so the agm value is the
+        // integer) and a non-integer-but-equal pair.
+        for &mode in &[
+            RoundingMode::NearestEven,
+            RoundingMode::TowardPositive,
+            RoundingMode::TowardNegative,
+            RoundingMode::TowardZero,
+            RoundingMode::NearestAway,
+        ] {
+            for &prec in &[24u32, 53, 113] {
+                for &v in &[1i64, 7, 100, -0] {
+                    let x = BigFloat::try_from_i64_exact(v.max(0), prec).unwrap();
+                    let (r, status) = x.agm(&x, mode);
+                    assert!(status.is_ok(), "agm({v},{v}) status under {mode:?}@p{prec}");
+                    assert_eq!(
+                        r.partial_cmp(&x).0,
+                        Some(Ordering::Equal),
+                        "agm({v},{v}) = {v} expected under {mode:?}@p{prec}, got {r:?}"
+                    );
+                    assert_eq!(r.precision(), prec);
+                }
+            }
+        }
     }
 
     #[test]
