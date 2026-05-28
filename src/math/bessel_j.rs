@@ -441,19 +441,96 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
 }
 
 /// Binary-exponent boundary at/above which the DLMF 10.17.3 Hankel
-/// asymptotic is used instead of Miller recurrence.
+/// asymptotic is used instead of Miller recurrence, for **`J` only**.
 ///
 /// The optimally-truncated Bessel-`J` asymptotic has error of order
 /// `e^{−2|x|}`, so reaching `target+64` bits needs
 /// `2|x|·log₂e ≥ target+64`, i.e. `|x| ≳ (target+64)·ln2/2 ≈
 /// 0.347·(target+64)`. Requiring `2^{e_x} ≥ target+64` is strictly
 /// more than enough: a deliberately conservative cut (Miller, always
-/// correct if slower, carries everything below it; the crossover is
-/// not perf-tuned without a bench, CLAUDE.md). Returns the smallest
-/// such `e_x` (the [`super::erf::asymptotic_threshold_exponent`]
-/// integer-loop idiom).
+/// correct if slower, carries everything below it).
+///
+/// Sub-slice 2b.2.a (bench `benches/bessel_dispatch.rs`) confirmed
+/// this conservative cut is **optimal for J specifically**:
+/// `J`'s Miller path has no `eˣ` normalisation (unlike `I`) and no
+/// log-series composing `J + γ + ψ` (unlike `Y`/`K`), so at small
+/// orders Miller is structurally fast and the asymptotic at the
+/// halved-threshold boundary cost +325% (`p = 1024, |x| = 1024`)
+/// and +379% (`p = 256, |x| = 256`). The other three kernels
+/// (`Y`/`I`/`K`) use [`bessel_yik_threshold`], which halves the
+/// conservative cut to capture their 50%–97% wins at the same
+/// boundary inputs (the Y/K log-series and I `eˣ`-boost Miller
+/// paths are dramatically more expensive than the asymptotic
+/// there).
+///
+/// Returns the smallest such `e_x` (the
+/// [`super::erf::asymptotic_threshold_exponent`] integer-loop idiom).
 pub(super) fn bessel_j_threshold(target_precision: u32) -> i64 {
     let need: u64 = u64::from(target_precision) + 64;
+    let mut e: i64 = 0;
+    let mut pow_2: u64 = 1;
+    while pow_2 < need && e < 90 {
+        e += 1;
+        pow_2 = pow_2.saturating_mul(2);
+    }
+    e
+}
+
+/// Tightened companion to [`bessel_j_threshold`] for `Y` / `I` / `K`,
+/// whose below-threshold path is dramatically more expensive than
+/// the asymptotic at the dispatch boundary. Returns
+/// `⌈(target+64)/2⌉` instead of `target+64` (i.e., halves the
+/// over-cut), dropping the threshold exponent by exactly 1 at every
+/// precision.
+///
+/// **(a) Truncation-bound provenance.** The accuracy law (DLMF
+/// 10.17.4 for Y, DLMF 10.40.1/10.40.2 for I/K reusing the J `a_k(ν)`
+/// per ADR-0023) is `e^{−2|x|}` — identical to J's. Reaching
+/// `target+64` bits of accuracy needs `2|x|·log₂e ≥ target+64`,
+/// i.e. `|x| ≳ 0.347·(target+64)`. The halved formulation requires
+/// `2^{e_x} ≥ ⌈(target+64)/2⌉`, which still gives
+/// `|x| ≥ 2^{e_x} ≥ (target+64)/2` and so
+/// `2|x|·log₂e ≥ (target+64)·log₂e ≥ target+64`
+/// (since `log₂e > 1`). The conservative pre-2b.2.a formula
+/// over-cut by 2.88× in `|x|`; the halving shrinks the over-cut
+/// to 1.44× while remaining strictly above the accuracy bound.
+///
+/// **(b) Composition-cancellation enumeration.** `Y` composes the
+/// shared Hankel asymptotic via DLMF 10.17.4 (trig combination of
+/// the same `a_k(ν)`); cancellation in `Y` near the `J` zeros is
+/// bounded by the local phase derivative, `≤ log₂(|x|)` bits at
+/// worst. `I` and `K` compose via DLMF 10.40.1/10.40.2 with
+/// all-positive prefactors (no cancellation). The J/Y Wronskian
+/// `J_{n+1}·Y_n − J_n·Y_{n+1} = 2/(πx)` (DLMF 10.5.2, tested at
+/// `src/math/bessel_y.rs:885-911` at p=200) and the I/K Wronskian
+/// `I_ν·K_{ν+1} + I_{ν+1}·K_ν = 1/x` (DLMF 10.28.2, tested at
+/// `src/math/bessel_k.rs:926-954` at p=200) cancel at most
+/// `log₂(|J·Y'|/(2/(πx)))` ≈ `log₂(|x|)` bits; for `|x| ≤ 2^15`
+/// this is ≤ 15 bits.
+///
+/// **(c) Guard accounting.** With `G = 64` the budget covers
+/// `BESSEL_*_ERROR_GUARD = 24` (Ziv-side calibrated slack per
+/// `src/math/ziv_calibration.rs`) plus `log₂N ≈ 8` bits for
+/// round-off accumulation in `N ≈ √(2|x|) ≈ 256` asymptotic terms
+/// at `|x| ≈ 2^15`, plus 15 bits Wronskian cross-tie cancellation
+/// per (b), plus 17 bits safety margin. The halving consumes
+/// 1 binary exponent (= 1 bit of accuracy via `log₂e ≈ 1.44`) of
+/// the safety margin, leaving 16 bits.
+///
+/// **(d) Boundary-input gate.** Differential test inputs at
+/// `|x| = 257`, `1025`, `2049`, `4097` in
+/// `tests/differential_yn.rs:44-55` exercise this threshold at
+/// `TRANSCENDENTAL_PRECISIONS = [53, 113, 256, 1024]`. The
+/// `(257, 1)` and `(1025, 1)` entries flip dispatch under this
+/// tightening at `p = 256` and `p = 1024` respectively. `IK_TABLE`
+/// at `tests/differential_ik.rs:78-90` covers I/K via the
+/// `(1024, 1)` entry at `p ≤ 256`. The pf-1axr fix to
+/// `bessel_y_eval_normal_at_w`'s working-precision boost (commit
+/// 9b846e6) was a prerequisite: without it, the recurrence path's
+/// internal `cos`/`sin` calls exceeded the trig table's supported
+/// range at the asymptotic dispatch boundary.
+pub(super) fn bessel_yik_threshold(target_precision: u32) -> i64 {
+    let need: u64 = u64::from(target_precision).saturating_add(64).div_ceil(2);
     let mut e: i64 = 0;
     let mut pow_2: u64 = 1;
     while pow_2 < need && e < 90 {

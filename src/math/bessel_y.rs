@@ -245,14 +245,20 @@ fn bessel_y_kernel(
 
             // Pin the base-pair regime decision from target_precision
             // so it does not flip across Ziv retries (slice p1.4 erf
-            // precedent). The bessel_j_threshold grows with precision;
-            // pinning ensures bessel_y01 picks the same regime at every
-            // Ziv iteration.
+            // precedent). Sub-slice 2b.2.a: Y uses the tightened
+            // `bessel_yik_threshold` (not the conservative
+            // `bessel_j_threshold` J keeps) because the log-series
+            // base path is dramatically more expensive than the
+            // asymptotic at the dispatch boundary — the bench
+            // measured 89%–96% reductions at the flip cells
+            // (`Y0_p256_x256` 57.97ms → 6.15ms; `Y0_p1024_x1024`
+            // 2.05s → 85.08ms). See `bessel_yik_threshold`'s doc for
+            // the four-part risk enumeration.
             let e_x = match &x.class {
                 Class::Normal { exponent, .. } => *exponent,
                 _ => 0,
             };
-            let use_asymptotic = e_x >= super::bessel_j::bessel_j_threshold(target_precision);
+            let use_asymptotic = e_x >= super::bessel_j::bessel_yik_threshold(target_precision);
 
             let (result, status) = ziv_round(
                 |w| {
