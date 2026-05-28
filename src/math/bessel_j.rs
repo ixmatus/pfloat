@@ -314,55 +314,46 @@ fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     sum
 }
 
-/// `J_m(ax)` for `m ≥ 0`, `ax ≥ 1`, via Miller backward recurrence
-/// (DLMF 10.6.1) with sum-rule normalization (DLMF 10.12.4).
+/// Smallest Miller backward-recurrence starting index `M` such that
+/// `J_M(x)` (or `I_M(x)`) is below the `2^{−(target+64)}` ULP
+/// threshold needed for the descent to converge.
 ///
-/// The three-term recurrence `𝒞_{ν−1}+𝒞_{ν+1} = (2ν/z)𝒞_ν`
-/// rearranged downward is `f_{k−1} = (2k/x)·f_k − f_{k+1}`. Started
-/// at a high seed index `M` with `f_{M+1}=0`, `f_M=1`, the descent
-/// converges to a fixed multiple `c·J_k(x)` of the recessive
-/// solution. The DLMF 10.12.4 identity
-/// `1 = J_0(x) + 2J_2(x) + 2J_4(x) + ⋯` (re-derived by setting
-/// `t = 1` in the 10.12.1 generating function and using
-/// `J_{−n}=(−1)^n J_n`) gives `S = f_0 + 2(f_2+f_4+⋯) = c·1 = c`, so
-/// `J_m(x) = f_m / S`, every order from one descent.
+/// DLMF 10.19.1 gives the large-order decay
+/// `J_M(x) ∼ (1/√(2πM))·(eX/(2M))^M`; dropping the `1/√(2πM)`
+/// prefactor (which only shrinks the bound) and taking natural logs
+/// gives the requirement `M·(1 + ln(x/(2M))) ≤ −P·ln2` with
+/// `P = target+64`. The function `f(M) = M·(1 + ln(x/(2M)))` is
+/// strictly decreasing in `M` for `M > x/(2e)` (the regime where
+/// `J_M` enters its post-peak decay), so the smallest `M` satisfying
+/// the requirement is the boundary point, found by exponential
+/// search to bracket plus binary search to narrow within the
+/// bracket. Returns the boundary plus a small `+4` safety margin
+/// for `lp = 64`-bit-precision evaluation noise in the `satisfies`
+/// test, clamped between `m_floor` and `1 << 24`.
 ///
-/// `M` is derived, not guessed: DLMF 10.19.1
-/// `J_M(x) ∼ (1/√(2πM))·(eX/(2M))^M` (the prefactor only shrinks the
-/// bound, so dropping it is conservative). Requiring
-/// `(eX/(2M))^M < 2^{−P}`, `P = target+64`, i.e. in natural logs
-/// `M·(1 + ln(x/(2M))) < −P·ln2`, solved by an exponential search
-/// (overshoot ≤ 2× is a deliberate robustness/cost trade; retune
-/// only with a bench, CLAUDE.md) plus a small fixed step guard.
-/// Working precision is boosted `≈ |x|·log₂e` bits for the recurrence
-/// and sum-rule cancellation (the [`super::si`] guard idiom). Returns
-/// the unrounded working-precision value.
-fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
-    let e_x = match &ax.class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-    // Cancellation guard, the src/math/si.rs:163-178 idiom.
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
-    let x = ax
-        .round_to_precision(working, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-
-    // --- seed index M from DLMF 10.19.1 ---------------------------
+/// Sub-slice 2b.3 (`pf-6fvx`) added the binary-refine step over the
+/// pre-existing exponential-only implementation: the exponential
+/// search alone overshoots by up to 2× and the prior `+8` fixed
+/// guard added more; together M was up to ~2.4× the optimum. The
+/// binary refine tightens to the true boundary; `+4` (down from
+/// `+8`) is sufficient slack for the `lp`-precision evaluation
+/// noise once the search is converged. The bench
+/// `benches/bessel_dispatch.rs` Miller-regime cells (`J0_p256_x256`,
+/// `J0_p1024_x1024`, `I0_p256_x256`, `I0_p1024_x1024`) measure the
+/// per-call speedup; see ADR-0047.
+///
+/// Used by both [`bessel_j_miller`] and `bessel_i_miller`
+/// (`super::bessel_i`); the `K` family climbs upward from `K_0`/`K_1`
+/// and does not use Miller, so no `K`-side caller exists.
+pub(super) fn miller_seed_m(
+    ax: &BigFloat,
+    target_precision: u32,
+    e_x: i64,
+    m_floor: i64,
+) -> i64 {
     let p_bits = i64::from(target_precision) + 64;
     let lp = 64u32; // cheap precision for the M-selection test
-    let x_lp = x
+    let x_lp = ax
         .round_to_precision(lp, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
@@ -389,14 +380,97 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
             Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
         )
     };
-    let m_floor = i64::from(m) + 2;
+
     let start = m_floor.max(1i64 << (e_x.max(0) + 2).min(60));
     let cap: i64 = 1 << 24;
-    let mut big_m = start;
-    while big_m < cap && !satisfies(big_m) {
-        big_m = (big_m * 2).min(cap);
+
+    // Exponential bracket: find `hi ≥ start` with `satisfies(hi)`,
+    // and `lo < hi` with `!satisfies(lo)` (or `lo = m_floor` if
+    // `satisfies` already holds at `start`).
+    let mut lo = m_floor;
+    let mut hi = start;
+    while hi < cap && !satisfies(hi) {
+        lo = hi;
+        hi = (hi * 2).min(cap);
     }
-    big_m = (big_m + 8).min(cap).max(m_floor);
+
+    // Binary refine inside `[lo, hi]`, gated on `target_precision`.
+    // The binary search adds ~`log₂((hi-lo))` `satisfies` evaluations
+    // at `lp = 64`-bit precision — roughly 0.4 ms fixed cost on
+    // `aarch64-apple-darwin` for typical brackets. The Miller
+    // recurrence iteration count saved scales linearly with `M` but
+    // each iteration's cost scales with the recurrence's working
+    // precision (target + the `|x|·log₂e` cancellation boost), so
+    // the per-iteration cost is roughly `O(target²)`. Break-even is
+    // around `target ≈ 512`: below that, the fixed search overhead
+    // exceeds the per-iteration savings; above it, the savings
+    // dominate. Sub-slice 2b.3 (ADR-0047) measured `J0_p256_x256`
+    // regressing +31% under unconditional binary refine while
+    // `J0_p1024_x1024` won 55%; gating at `target_precision >= 512`
+    // captures the high-precision wins without the low-precision
+    // regression. The `+4` safety margin protects against
+    // `lp`-precision evaluation noise in `satisfies`; the
+    // pre-2b.3 `+8` (with no binary refine) stays for the
+    // small-target path.
+    let big_m = if target_precision >= 512 {
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            if satisfies(mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi + 4
+    } else {
+        hi + 8
+    };
+    big_m.min(cap).max(m_floor)
+}
+
+/// `J_m(ax)` for `m ≥ 0`, `ax ≥ 1`, via Miller backward recurrence
+/// (DLMF 10.6.1) with sum-rule normalization (DLMF 10.12.4).
+///
+/// The three-term recurrence `𝒞_{ν−1}+𝒞_{ν+1} = (2ν/z)𝒞_ν`
+/// rearranged downward is `f_{k−1} = (2k/x)·f_k − f_{k+1}`. Started
+/// at a high seed index `M` with `f_{M+1}=0`, `f_M=1`, the descent
+/// converges to a fixed multiple `c·J_k(x)` of the recessive
+/// solution. The DLMF 10.12.4 identity
+/// `1 = J_0(x) + 2J_2(x) + 2J_4(x) + ⋯` (re-derived by setting
+/// `t = 1` in the 10.12.1 generating function and using
+/// `J_{−n}=(−1)^n J_n`) gives `S = f_0 + 2(f_2+f_4+⋯) = c·1 = c`, so
+/// `J_m(x) = f_m / S`, every order from one descent.
+///
+/// `M` is derived, not guessed: see [`miller_seed_m`] for the
+/// DLMF 10.19.1 derivation and the sub-slice 2b.3 binary-refine
+/// implementation. Working precision is boosted `≈ |x|·log₂e` bits
+/// for the recurrence and sum-rule cancellation (the [`super::si`]
+/// guard idiom). Returns the unrounded working-precision value.
+fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+    let e_x = match &ax.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    // Cancellation guard, the src/math/si.rs:163-178 idiom.
+    let extra = if e_x <= 0 {
+        64
+    } else {
+        let shift = (e_x + 1).min(20) as u32;
+        let mag: u64 = 1u64 << shift;
+        (mag.saturating_mul(23) / 16).min(4096) as u32
+    };
+    let working = target_precision
+        .saturating_add(64)
+        .saturating_add(extra)
+        .min(target_precision.saturating_add(4096));
+    let x = ax
+        .round_to_precision(working, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    // --- seed index M from DLMF 10.19.1 ---------------------------
+    let m_floor = i64::from(m) + 2;
+    let big_m = miller_seed_m(ax, target_precision, e_x, m_floor);
 
     // --- backward recurrence (DLMF 10.6.1) + sum rule (10.12.4) ---
     let two = BigFloat::try_from_i64_exact(2, working).expect("precision >= 1");
