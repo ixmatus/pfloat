@@ -21,205 +21,34 @@
 //!
 //! This file ships the **smoke subset** (~10 inputs per kernel),
 //! not the full 65536 × 5 × 47 sweep. The full sweep is the per-
-//! release gate the user runs separately; the smoke validates the
-//! plumbing is correct end-to-end and would catch any kernel whose
-//! calibrated bound is grossly wrong. The smoke runtime fits
-//! per-push CI under the existing `differential-arb` lane.
+//! release gate the user runs separately (`examples/pf_tqzz_sweep.rs`,
+//! ADR-0049, pf-hcz4); the smoke validates the plumbing is correct
+//! end-to-end and would catch any kernel whose calibrated bound is
+//! grossly wrong. The smoke runtime fits per-push CI under the
+//! existing `differential-arb` lane.
 //!
 //! The harness gates on both `differential-arb` (for the Arb
 //! subprocess) and `ziv-instrumented` (for the thread-local Ziv
 //! trace capture); without either the cross-check cannot run.
 //! Silently no-op when the Arb venv is unavailable (matches the
 //! `oracle_arb_midpoint_smoke.rs` precedent).
+//!
+//! The actual assertion machinery lives in
+//! [`oracle::cross_check`] and is shared with the full-sweep
+//! example. This file's responsibility is the smoke input grid and
+//! the panic-on-violation UX.
 
 #![cfg(all(unix, feature = "differential-arb", feature = "ziv-instrumented"))]
 
 mod oracle;
 
 use oracle::arb::ArbOracle;
-use oracle::convert::bigfloat_to_rug;
+use oracle::cross_check::{cross_check_one, CheckOutcome};
 use oracle::mpfr::MpfrOracle;
-use oracle::pfloat_kernels::{pfloat_kernel, verification_precision};
+use oracle::pfloat_kernels::verification_precision;
 use oracle::types::FnId;
 
-use pfloat::ziv_instrumented::take_last_trace;
 use pfloat::RoundingMode;
-
-use rug::Float;
-
-/// Map each `FnId` to its per-kernel calibrated `error_guard` bound
-/// from `crate::math::ziv_calibration`. The cross-check assertion
-/// reads this rather than the global `DEFAULT_ERROR_GUARD = 24` to
-/// validate the per-kernel calibration table (pf-yupm, p1g.2).
-fn error_guard_for(f: FnId) -> u32 {
-    use pfloat::ziv_instrumented as zc;
-    match f {
-        FnId::Exp => zc::EXP_ERROR_GUARD,
-        FnId::Exp2 => zc::EXP2_ERROR_GUARD,
-        FnId::Exp10 => zc::EXP10_ERROR_GUARD,
-        FnId::Expm1 => zc::EXPM1_ERROR_GUARD,
-        FnId::Ln => zc::LN_ERROR_GUARD,
-        FnId::Log1p => zc::LOG1P_ERROR_GUARD,
-        FnId::Sin => zc::SIN_ERROR_GUARD,
-        FnId::Cos => zc::COS_ERROR_GUARD,
-        FnId::Tan => zc::TAN_ERROR_GUARD,
-        FnId::Asin => zc::ASIN_ERROR_GUARD,
-        FnId::Acos => zc::ACOS_ERROR_GUARD,
-        FnId::Atan => zc::ATAN_ERROR_GUARD,
-        FnId::Sinh => zc::SINH_ERROR_GUARD,
-        FnId::Cosh => zc::COSH_ERROR_GUARD,
-        FnId::Tanh => zc::TANH_ERROR_GUARD,
-        FnId::Asinh => zc::ASINH_ERROR_GUARD,
-        FnId::Acosh => zc::ACOSH_ERROR_GUARD,
-        FnId::Atanh => zc::ATANH_ERROR_GUARD,
-        FnId::Erf => zc::ERF_ERROR_GUARD,
-        FnId::Erfc => zc::ERFC_ERROR_GUARD,
-        FnId::Gamma => zc::GAMMA_ERROR_GUARD,
-        FnId::Lgamma => zc::LGAMMA_ERROR_GUARD,
-        FnId::Digamma => zc::DIGAMMA_ERROR_GUARD,
-        FnId::Zeta => zc::ZETA_ERROR_GUARD,
-        FnId::Ei => zc::EI_ERROR_GUARD,
-        FnId::Si => zc::SI_ERROR_GUARD,
-        FnId::Ci => zc::CI_ERROR_GUARD,
-        FnId::Li => zc::LI_ERROR_GUARD,
-        FnId::Bi => zc::AIRY_ERROR_GUARD,
-        FnId::AiPrime | FnId::BiPrime => zc::AIRY_ERROR_GUARD,
-        FnId::BesselJ1 | FnId::BesselJn(_) => zc::BESSEL_J_ERROR_GUARD,
-        FnId::BesselI0 | FnId::BesselI1 | FnId::BesselIn(_) => zc::BESSEL_I_ERROR_GUARD,
-        FnId::BesselK0 | FnId::BesselK1 | FnId::BesselKn(_) => zc::BESSEL_K_ERROR_GUARD,
-        // Fall-through for FnIds whose kernel does not go through
-        // ziv_round (e.g., log2 / log10's fixed-guard composition,
-        // sqrt's arithmetic-core path); the cross-check skips them
-        // because no Ziv trace is captured. The DEFAULT here is
-        // only reached if the FnId snuck through the
-        // skip-on-no-trace check below; treat as conservative.
-        _ => zc::DEFAULT_ERROR_GUARD,
-    }
-}
-
-/// Route the midpoint request to the right oracle. The 12
-/// Arb-primary `FnId`s go through `ArbOracle::midpoint`; the
-/// MPFR-primary set goes through `MpfrOracle::midpoint`.
-fn midpoint_for(
-    f: FnId,
-    input: u32,
-    oracle_prec: u32,
-    arb: Option<&ArbOracle>,
-    mpfr: &MpfrOracle,
-) -> Option<Float> {
-    if is_arb_primary(f) {
-        let arb = arb?;
-        arb.midpoint(f, input, oracle_prec).ok()
-    } else {
-        Some(mpfr.midpoint(f, input, oracle_prec))
-    }
-}
-
-fn is_arb_primary(f: FnId) -> bool {
-    matches!(
-        f,
-        FnId::Si
-            | FnId::Ci
-            | FnId::Li
-            | FnId::Bi
-            | FnId::AiPrime
-            | FnId::BiPrime
-            | FnId::BesselI0
-            | FnId::BesselI1
-            | FnId::BesselIn(_)
-            | FnId::BesselK0
-            | FnId::BesselK1
-            | FnId::BesselKn(_)
-    )
-}
-
-/// Run the cross-check assertion for one `(kernel, input, mode)`
-/// triple. Returns `Ok(())` on pass (or skip when the kernel did
-/// not route through Ziv); panics with a structured message on
-/// violation. The smoke subset call sites collect skipped /
-/// inconclusive counts to report at the end.
-fn cross_check_one(
-    f: FnId,
-    input: u32,
-    mode: RoundingMode,
-    arb: Option<&ArbOracle>,
-    mpfr: &MpfrOracle,
-) -> CheckOutcome {
-    // Drain any stale trace from a previous call on this thread.
-    let _ = take_last_trace();
-
-    // Route through the public API; the kernel internally calls
-    // `ziv_round` which writes the trace via the thread-local.
-    let _ = pfloat_kernel(f, input, mode);
-
-    // If the kernel short-circuited (Class::Zero / Infinity / NaN
-    // dispatch, pre-Ziv exact dispatch, fixed-guard composition for
-    // log2 / log10), no trace is captured — nothing to assert
-    // about the calibrated bound at this input.
-    let (_, _, working, eval_w) = match take_last_trace() {
-        Some(trace) => trace,
-        None => return CheckOutcome::SkippedNoZivPath,
-    };
-
-    // Lift `eval_w` (a BigFloat at working precision) into a
-    // rug::Float at `oracle_prec = working + 64`. Extending the
-    // mantissa by 64 zero bits is exact; the value stays bit-
-    // identical to the working-precision BigFloat representation.
-    let oracle_prec = working.saturating_add(64);
-    let eval_w_f_at_w: Float = bigfloat_to_rug(&eval_w);
-    let eval_w_f = Float::with_val(oracle_prec, &eval_w_f_at_w);
-
-    // Fetch the midpoint at oracle_prec from the right backend.
-    let midpoint = match midpoint_for(f, input, oracle_prec, arb, mpfr) {
-        Some(m) => m,
-        None => return CheckOutcome::SkippedNoMidpoint,
-    };
-
-    // If the midpoint is non-finite (NaN, ±∞), the cross-check
-    // assertion does not apply (no notion of "internal error
-    // budget" against a non-finite reference).
-    if !midpoint.is_finite() {
-        return CheckOutcome::SkippedNonFiniteMidpoint;
-    }
-
-    // Compute |eval(w) - midpoint| and the bound
-    //   bound = 2^(error_guard - working) * |midpoint|
-    // both at oracle_prec.
-    let error_guard = error_guard_for(f);
-    let diff: Float = Float::with_val(oracle_prec, &eval_w_f - &midpoint);
-    let abs_diff: Float = diff.abs();
-    let abs_mid: Float = midpoint.clone().abs();
-
-    let shift = i64::from(error_guard) - i64::from(working);
-    let mut bound = abs_mid.clone();
-    // bound *= 2^shift; shift may be negative (typical case where
-    // working > error_guard, so the bound is tiny).
-    if shift >= 0 {
-        let s = u32::try_from(shift).expect("shift fits u32");
-        bound <<= s;
-    } else {
-        let s = u32::try_from(-shift).expect("shift fits u32");
-        bound >>= s;
-    }
-
-    if abs_diff <= bound {
-        CheckOutcome::Pass
-    } else {
-        panic!(
-            "pf-tqzz cross-check violation:\n\
-             kernel = {f:?}\n\
-             input  = 0x{input:08x} (f32 {})\n\
-             mode   = {mode:?}\n\
-             working_prec = {working}\n\
-             error_guard  = {error_guard}\n\
-             |eval(w) - midpoint| = {abs_diff}\n\
-             bound = 2^(error_guard - working) * |midpoint| = {bound}\n\
-             gap   = {gap}",
-            f32::from_bits(input),
-            gap = Float::with_val(oracle_prec, &abs_diff - &bound),
-        );
-    }
-}
 
 #[derive(Debug, Default)]
 struct SmokeStats {
@@ -227,13 +56,6 @@ struct SmokeStats {
     skipped_no_ziv_path: usize,
     skipped_no_midpoint: usize,
     skipped_non_finite: usize,
-}
-
-enum CheckOutcome {
-    Pass,
-    SkippedNoZivPath,
-    SkippedNoMidpoint,
-    SkippedNonFiniteMidpoint,
 }
 
 fn run_smoke_subset(
@@ -251,6 +73,7 @@ fn run_smoke_subset(
                 CheckOutcome::SkippedNoZivPath => stats.skipped_no_ziv_path += 1,
                 CheckOutcome::SkippedNoMidpoint => stats.skipped_no_midpoint += 1,
                 CheckOutcome::SkippedNonFiniteMidpoint => stats.skipped_non_finite += 1,
+                CheckOutcome::Violation(v) => panic!("{}", v.format_panic_message()),
             }
         }
     }
