@@ -495,7 +495,14 @@ fn two_thirds(v: &BigFloat, working: u32) -> BigFloat {
 /// Bi′(x) ~  x^{1/4} e^{+ζ}/( √π) · Σ        v_k/ζ^k
 /// ```
 fn airy_asymptotic_pos(which: AiryFn, x: &BigFloat, target_precision: u32) -> BigFloat {
-    let working = target_precision.saturating_add(64);
+    // ADR-0048: working boost reduced from `+64` to `+32` matching
+    // the actual error budget (`AIRY_ERROR_GUARD = 24` calibrated
+    // Ziv-side slack + `≤ 8` bits `log₂(N)` round-off accumulation
+    // in the `N ≈ √ζ`-term asymptotic sums, see DLMF 9.7.5-9.7.8).
+    // The `+64` was conservative on top of conservative; the Ziv
+    // driver retains the `ZIV_GUARD_CAP = 1024` ceiling for any
+    // hard-to-round inputs.
+    let working = target_precision.saturating_add(32);
     let xw = x
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -554,7 +561,14 @@ fn airy_asymptotic_pos(which: AiryFn, x: &BigFloat, target_precision: u32) -> Bi
 /// Bi′(−t) =  π^{−1/2} t^{ 1/4} ( cos φ · Pv + sin φ · Qv )
 /// ```
 fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> BigFloat {
-    let working = target_precision.saturating_add(64);
+    // ADR-0048: parallel to airy_asymptotic_pos; +64→+32 reduction.
+    // The oscillatory negative-x asymptotic (DLMF 9.7.9-9.7.12) has
+    // the same `≤ 8` bits round-off accumulation in the `Pu`/`Qu`/
+    // `Pv`/`Qv` even/odd-split sums; the `sin`/`cos` of the phase
+    // `φ = ζ − π/4` rely on the trig kernel's correctly-rounded
+    // output (pf-1axr / ADR-0042 fix ensures it works at the
+    // working precisions this kernel reaches).
+    let working = target_precision.saturating_add(32);
     let tw = t
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")

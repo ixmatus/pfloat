@@ -17,19 +17,34 @@
 //! (`airy_asymptotic_pos`/`neg` boost reduction, `airy_series`
 //! guard tightening, boundary-constant memoisation).
 //!
-//! Cells: `precision ∈ {53, 256} × |x| ∈ {2^(T−1), 2^T, 2^(T+1)} ×
-//! Ai` = 6 cells. `T(53) = 7` so the straddle is `|x| ∈ {64, 128,
-//! 256}`; `T(256) = 10` so the straddle is `|x| ∈ {512, 1024,
-//! 2048}`. The `|x|` values are integers parsed exactly at the
-//! target precision.
+//! Cells: `precision ∈ {53, 256} × |x| ∈ {2^T, 2^(T+1)} × Ai` = 4
+//! cells, **all on the asymptotic side of the dispatch**. `T(53) =
+//! 7` gives the asymptotic-side `|x| ∈ {128, 256}`; `T(256) = 10`
+//! gives `|x| ∈ {1024, 2048}`. The `|x|` values are integers parsed
+//! exactly at the target precision.
 //!
-//! `p = 1024` is dropped: `T(1024) = 12` puts the straddle at
-//! `|x| ≈ 4096` and the below-threshold Maclaurin cell would have
-//! working precision `1024 + 64 + (2/3)·2048^{3/2}·log₂e` ≈ 90 000
-//! bits (prohibitive per call). Above-threshold p=1024 cells (e.g.
-//! `|x| = 8192`) could bench fast but only exercise the asymptotic
-//! at extremes; the p=256 cells already cover the asymptotic across
-//! representative `|x|` and precision.
+//! Below-threshold Maclaurin cells are **explicitly excluded**:
+//! - `p=53, |x|=64` (Maclaurin, working ≈ 549 bits): doesn't
+//!   exercise the asymptotic path that's the target of any future
+//!   `airy_asymptotic_pos`/`neg` tightening.
+//! - `p=256, |x|=512` (Maclaurin, working ≈ 11 000 bits):
+//!   prohibitively slow per iteration (~2-3 minutes per call;
+//!   the sub-slice 2b.2.b first baseline attempt was killed
+//!   mid-cell under contention, and the post-ferrodec re-attempt
+//!   for the ADR-0048 baseline took 51 minutes without finishing
+//!   this single cell). With `sample_size = 10` criterion needs
+//!   ~half-hour to collect samples; not worth the wait for any
+//!   change targeting the asymptotic path.
+//! - `p=1024, |x|=2048` Maclaurin would have working ≈ 90 000 bits
+//!   — fundamentally infeasible.
+//!
+//! Future Airy work targeting the **Maclaurin path** (e.g.,
+//! tightening the `(2/3)|x|^{3/2}·log₂e` cancellation guard or
+//! adding the deferred boundary-constant memoisation in
+//! `airy_zero_value`) should add a dedicated bench at smaller
+//! `|x|` (say `|x| ≤ 32`, where the boost is bounded to a few
+//! hundred bits), with `sample_size = 3` or similar to fit the
+//! cell into a finite budget.
 //!
 //! Single kernel (`Ai`): the threshold change affects all four Airy
 //! functions identically (one dispatch, four output formulas);
@@ -45,25 +60,24 @@ use core::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pfloat::{BigFloat, RoundingMode};
 
-/// `(label, target_precision, |x|)` cells. The `|x|` integers
-/// straddle `airy_threshold_exponent(target_precision)`: one binary
-/// exponent below the current cut, one at it, one above.
+/// `(label, target_precision, |x|)` cells. All four cells dispatch
+/// to `airy_asymptotic_pos` (or `_neg` for negative arguments).
+/// One cell at the threshold (`|x| = 2^T`); one above (`|x| =
+/// 2^(T+1)`). Per-cell cost is bounded: at `p = 256, |x| = 2048`
+/// the asymptotic uses `N ≈ √ζ ≈ √(2/3·2048^{3/2}) ≈ 248` terms at
+/// working ≈ 320 bits, ~100 ms per call.
 const CELLS: &[(&str, u32, u32)] = &[
-    // p=53: T(53) = 7, |x| ≥ 128 by the current cut.
-    ("p53_x64", 53, 64),
+    // p=53: T(53) = 7, |x| ≥ 128 enters asymptotic.
     ("p53_x128", 53, 128),
     ("p53_x256", 53, 256),
-    // p=256: T(256) = 10, |x| ≥ 1024 by the current cut.
-    ("p256_x512", 256, 512),
+    // p=256: T(256) = 10, |x| ≥ 1024 enters asymptotic.
     ("p256_x1024", 256, 1024),
     ("p256_x2048", 256, 2048),
 ];
 
-/// The below-threshold Maclaurin path at `p = 256, |x| = 512` has
-/// working precision around 11 000 bits with order-`|x|^{3/2}`
-/// cancellation; per-call cost is on the order of seconds. Bump
-/// `measurement_time` and drop `sample_size` accordingly to keep
-/// the total run finite (~3-6 minutes across the 6 cells).
+/// All four cells are asymptotic; per-call cost ranges from ~ms at
+/// `p=53` to ~hundreds of ms at `p=256, |x|=2048`. Total bench
+/// runs in ~2-3 minutes on a quiet machine.
 const MEASUREMENT_TIME: Duration = Duration::from_secs(20);
 const WARMUP_TIME: Duration = Duration::from_secs(2);
 const SAMPLE_SIZE: usize = 10;
