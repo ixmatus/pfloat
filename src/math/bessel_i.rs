@@ -223,14 +223,23 @@ fn bessel_i_kernel(
             // asymptotic (|x| >= bessel_j_threshold(target_precision)).
             // The tiny vs miller boundary is precision-independent (|x|
             // < 1); the miller vs asymptotic boundary depends on
-            // target_precision via bessel_j_threshold.
+            // target_precision via bessel_yik_threshold.
+            // Sub-slice 2b.2.a: I uses the tightened
+            // `bessel_yik_threshold` (not the conservative
+            // `bessel_j_threshold` J keeps) because I's Miller path
+            // carries the `≈ |x|·log₂e` boost for the `eˣ`
+            // normalisation composition (`bessel_i_miller`, doc at
+            // `src/math/bessel_i.rs:440-446`), making it
+            // dramatically more expensive than the asymptotic at
+            // large `|x|` — the bench measured `I0_p1024_x1024`
+            // dropping 163.74ms → 82.09ms (−50%) at the flip cell.
             let e_x = match &ax.class {
                 Class::Normal { exponent, .. } => *exponent,
                 _ => 0,
             };
             let use_tiny = e_x <= bessel_i_tiny_threshold();
             let use_asymptotic =
-                !use_tiny && e_x >= super::bessel_j::bessel_j_threshold(target_precision);
+                !use_tiny && e_x >= super::bessel_j::bessel_yik_threshold(target_precision);
 
             let (result, status) = ziv_round(
                 |w| {

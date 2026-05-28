@@ -243,11 +243,19 @@ fn bessel_k_kernel(
             // No argument parity (x > 0 only). Pin the base-pair
             // regime decision from target_precision so it does not
             // flip across Ziv retries (slice p1.4 erf precedent).
+            // Sub-slice 2b.2.a: K uses the tightened
+            // `bessel_yik_threshold` (not the conservative
+            // `bessel_j_threshold` J keeps) because the log-series
+            // base path is dramatically more expensive than the
+            // asymptotic at the dispatch boundary — the bench
+            // measured `K0_p256_x256` 71.08ms → 5.89ms (−92%) and
+            // `K0_p1024_x1024` 2.39s → 82.53ms (−97%) at the flip
+            // cells.
             let e_x = match &x.class {
                 Class::Normal { exponent, .. } => *exponent,
                 _ => 0,
             };
-            let use_asymptotic = e_x >= super::bessel_j::bessel_j_threshold(target_precision);
+            let use_asymptotic = e_x >= super::bessel_j::bessel_yik_threshold(target_precision);
 
             let (result, status) = ziv_round(
                 |w| bessel_k_eval_normal_at_w(m, x, w, use_asymptotic),
