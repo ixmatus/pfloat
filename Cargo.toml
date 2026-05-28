@@ -469,6 +469,19 @@ name = "bessel_dispatch"
 harness = false
 required-features = ["bessel"]
 
+# Sub-slice 2b.2.b: Airy asymptotic-vs-Maclaurin dispatch bench.
+# The threshold (`airy_threshold_exponent` at
+# `src/math/airy.rs:392-406`) is already ~1.5% over the strict
+# accuracy bound (the cube-of-|x|³ growth makes it sticky); 2b.2.b
+# closed documentation-tier per ADR-0044. Bench lands as durable
+# measurement infrastructure for any future Airy work
+# (airy_asymptotic_pos/neg boost reduction, boundary-constant
+# memoisation, etc.).
+[[bench]]
+name = "airy_dispatch"
+harness = false
+required-features = ["airy"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
