@@ -474,39 +474,9 @@ fn bessel_i_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
         .expect("precision >= 1")
         .0;
 
-    // --- seed index M (same criterion as bessel_j_miller) ---------
-    let p_bits = i64::from(target_precision) + 64;
-    let lp = 64u32;
-    let x_lp = x
-        .round_to_precision(lp, RoundingMode::NearestEven)
-        .expect("precision >= 1")
-        .0;
-    let ln2 = ci(2, lp).ln(RoundingMode::NearestEven).0;
-    let neg_p_ln2 = {
-        let (v, _) = ci(p_bits, lp).mul(&ln2, RoundingMode::NearestEven);
-        v.negated()
-    };
-    let satisfies = |big_m: i64| -> bool {
-        // lhs = M·(1 + ln(x/(2M))) ; satisfied when lhs ≤ −P·ln2.
-        let mm = ci(big_m, lp);
-        let two_m = ci(2 * big_m, lp);
-        let (y, _) = x_lp.div(&two_m, RoundingMode::NearestEven);
-        let (lny, _) = y.ln(RoundingMode::NearestEven);
-        let (s, _) = ci(1, lp).add(&lny, RoundingMode::NearestEven);
-        let (lhs, _) = mm.mul(&s, RoundingMode::NearestEven);
-        matches!(
-            lhs.partial_cmp(&neg_p_ln2).0,
-            Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
-        )
-    };
+    // --- seed index M (shared with bessel_j_miller via the helper) -
     let m_floor = i64::from(m) + 2;
-    let start = m_floor.max(1i64 << (e_x.max(0) + 2).min(60));
-    let cap: i64 = 1 << 24;
-    let mut big_m = start;
-    while big_m < cap && !satisfies(big_m) {
-        big_m = (big_m * 2).min(cap);
-    }
-    big_m = (big_m + 8).min(cap).max(m_floor);
+    let big_m = super::bessel_j::miller_seed_m(ax, target_precision, e_x, m_floor);
 
     // --- backward recurrence (DLMF 10.29.1) + sum rule (10.35.5) --
     let (inv_ax, _) = ci(1, working).div(&x, RoundingMode::NearestEven);
