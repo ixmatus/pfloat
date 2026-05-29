@@ -3,6 +3,71 @@
 - **Status**: accepted (Phase 5 complete)
 - **Date**: 2026-05-10
 
+## Status update (slice ci-green, 2026-05-29): the lane runs `--release`
+
+The `differential` CI job had been red on every push since the Phase 1f merge
+(2026-05-26), each run hitting GitHub's 6-hour default job timeout. The cause was
+neither a hang nor an inherent cost explosion: the job ran
+`cargo test --features=differential-mpfr --test 'differential_*'` in the **debug**
+profile. pfloat's differential kernels are bignum limb loops the optimiser
+collapses; in debug, with overflow checks live and nothing inlined, each
+multi-limb operation runs roughly an order of magnitude slower. The slice-6h note
+below recorded the full sweep at "roughly 5 minutes total" precisely because it
+was measured under `--release`; the CI job had simply never carried the flag.
+
+Two changes after slice 6h compounded the debug cost until it crossed 6 hours:
+
+- Phase 1f (ADR-0038) widened many kernels from NearestEven-only to all five
+  `BIT_EXACT_ROUNDING_MODES`, an up-to-5× input multiplier on those ops.
+- `TRANSCENDENTAL_PRECISIONS` regained `1024` (the slice 7b AGM-constant
+  follow-up), the per-evaluation cost driver.
+
+Both are coverage worth keeping, so neither is the fix.
+
+### Decision
+
+Run the lane with `--release` and cap the job with `timeout-minutes`. No input,
+mode, or precision coverage is reduced; the work is run optimised rather than run
+less of it (the frugal reading of CLAUDE.md: every cycle should earn its keep,
+and an unoptimised bignum sweep does not).
+
+The plan that opened this slice anticipated reducing the CI sweep size. The
+measurement redirected that: the missing `--release` flag was the whole problem,
+so sweep reduction was unnecessary and would have sacrificed signal for nothing.
+
+### Measurement (receipts)
+
+Apple-silicon dev box, under heavy concurrent load (a parallel ferrodec
+all-features run plus other cargo suites pinning cores), so these are loose
+upper bounds; a clean 4-vCPU runner has no such contention:
+
+- Debug: the per-test sweep could not clear `agm`/`ai` inside a 240 s/test cap;
+  the CI job had been timing out at the 6-hour ceiling.
+- Release: the full 35-file suite completed ~34 of 35 tests in ~16 minutes and
+  was dominated by `differential_zeta::zeta_matches_mpfr`, a single test that ran
+  past 12 minutes on its own. zeta is a single non-parallelizable test function
+  whose `s < 0` points at `p = 1024` compose Γ + sin + pow + Borwein; under the
+  five-mode tier it is the suite's wall-clock floor.
+
+`timeout-minutes: 90` sits an order of magnitude below the old 6-hour ceiling
+while leaving headroom for a cold release build plus the zeta long tail on a
+slower runner. It is a regression tripwire, not a budget: if a future kernel
+genuinely needs more than 90 minutes of release sweep, that is a signal to
+investigate (the obvious first lever being to drop `differential_zeta` to
+NearestEven-only at `p = 1024`, the original user-confirmed posture before the
+Phase 1f widening added the directed modes there), not to raise the cap.
+
+### Consequences
+
+- The lane returns to minutes-scale and CI goes green, unblocking the v1.0
+  ceremony's dependence on a trustworthy `main`.
+- Release disables debug overflow checks. This does not affect the differential
+  comparison: pfloat's kernels produce bit-identical results in both profiles
+  (a user's release build must, or the library would be broken), and the lane
+  asserts bit-exact agreement with MPFR either way.
+- Cold release builds of the test binaries cost more compile time than debug,
+  amortised by `Swatinem/rust-cache`; the run-time win dwarfs it.
+
 ## Status update (slice 7c, 2026-05-16)
 
 Limitation #3 below is closed. Slice 7c (ADR-0022) routes `pow`

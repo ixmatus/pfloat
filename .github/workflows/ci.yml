@@ -114,9 +114,19 @@ jobs:
   # in CI, 10⁶ locally under `PFLOAT_DEEP=1`. The lane is Linux-only
   # because `gmp-mpfr-sys` does not build on stock Windows toolchains;
   # `rug` (the safe wrapper) is gated `cfg(unix)` in `Cargo.toml`.
+  #
+  # The lane runs `--release` (ADR-0014 amendment, slice ci-green):
+  # the kernels are bignum limb loops the optimiser collapses, so a
+  # debug build runs an order of magnitude slower. The lane had been
+  # silently hitting the 6-hour GitHub default timeout in debug since
+  # the Phase 1f five-mode widening; `--release` restores it to the
+  # minutes-scale the slice-6h note recorded, with no loss of input,
+  # mode, or precision coverage. `timeout-minutes` makes a future
+  # regression fail fast instead of burning the full 6-hour ceiling.
   differential:
     name: MPFR differential (linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -125,7 +135,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install MPFR + GMP
         run: sudo apt-get update && sudo apt-get install -y libmpfr-dev libgmp-dev
-      - run: cargo test --features=differential-mpfr --test 'differential_*' --verbose
+      - run: cargo test --release --features=differential-mpfr --test 'differential_*' --verbose
 
   # ---------- Conformance evidence anti-rot gate ----------
   # README's `## Conformance evidence` section reports per-bucket
