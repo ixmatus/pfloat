@@ -37,22 +37,21 @@ const STRINGS: &[&str] = &[
     "-1.5e-20",
 ];
 
-/// ADR-0031 boundary band: just past the prior recalled `1_000_000`
-/// cap, well inside pfloat's derived `~5.785 * 10^7`
-/// pow5-storage-budget cap. These were previously saturated by
-/// pfloat and now parse to correct finite values; the property the
-/// test pins is that pfloat and rug/MPFR agree bit-exact at the new
-/// boundary.
+/// Large in-range decimal exponents: well inside the
+/// `MAX_DECIMAL_EXPONENT = 10^6` cost-budget cap (ADR-0031, amended
+/// for the parse-oom slice), so they parse to correct finite values
+/// rather than saturating. The property the test pins is that pfloat
+/// and rug/MPFR agree bit-exact at a large exponent that exercises
+/// the multi-limb `pow5` and the Algorithm-D divmod, not just the
+/// small canonical strings.
 ///
-/// Kept just past the old cap rather than deep into the widened
-/// band: MPFR's `strtod` at very large decimal exponents becomes the
-/// bottleneck (each parse at `|e| ~ 3 * 10^6` ran into the tens of
-/// minutes locally; the in-band-vs-saturated property does not need
-/// a large offset). Tested separately from [`STRINGS`] so they hit
-/// only the bit-exact comparison and not the Display round-trip —
-/// rendering a value whose binary exponent is in the millions is
-/// its own performance problem, outside slice 8a's scope.
-const BOUNDARY_STRINGS: &[&str] = &["1e1100000", "1e-1100000"];
+/// `10^5` is deliberate: MPFR's `strtod` cost climbs steeply with the
+/// decimal exponent (a parse near the old `~3 * 10^6` band ran into
+/// the tens of minutes locally), and `10^5` keeps both sides fast
+/// while staying an order of magnitude into the large-`pow5` regime.
+/// Tested separately from [`STRINGS`] so they hit only the bit-exact
+/// comparison and not the Display round-trip.
+const BOUNDARY_STRINGS: &[&str] = &["1e100000", "1e-100000"];
 
 #[test]
 fn parse_matches_mpfr_on_canonical_strings() {
@@ -84,15 +83,15 @@ fn parse_matches_mpfr_on_canonical_strings() {
     }
 }
 
-/// Bit-exact parse comparison at the ADR-0031 widened boundary
-/// (between the prior 1e6 cap and the new ~5.785e7 cap). Single
-/// precision `p = 113`: the property the test pins is that pfloat
-/// and rug/MPFR produce the same correctly rounded value at the
-/// boundary; matching across the full sweep precision ladder would
-/// multiply the per-string cost (a few hundred ms of `pow5`) without
-/// adding coverage.
+/// Bit-exact parse comparison at a large in-range decimal exponent
+/// (`10^5`, well inside the `MAX_DECIMAL_EXPONENT = 10^6` cap). Single
+/// precision `p = 113`: the property the test pins is that pfloat and
+/// rug/MPFR produce the same correctly rounded value when the
+/// conversion goes through a multi-limb `pow5` and the Algorithm-D
+/// divmod; matching across the full sweep precision ladder would
+/// multiply the per-string cost without adding coverage.
 #[test]
-fn parse_matches_mpfr_at_widened_boundary() {
+fn parse_matches_mpfr_at_large_in_range_exponent() {
     let p: u32 = 113;
     let mode = RoundingMode::NearestEven;
     for &s in BOUNDARY_STRINGS {

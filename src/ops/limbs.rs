@@ -304,36 +304,174 @@ pub(crate) fn isqrt_limbs(n: &[u64]) -> (Vec<u64>, Vec<u64>) {
 /// "schoolbook" path per the slice 1e plan. Phase 7 may replace
 /// with Knuth Algorithm D (O(n²/64) limb ops) or Newton iteration
 /// (O(M(n))).
+/// Integer `(quotient, remainder)` of `dividend / divisor`, both
+/// little-endian limb slices. `quotient` is returned with
+/// `dividend.len()` limbs and `remainder` with `divisor.len()` limbs
+/// (each value zero-extended into that width).
+///
+/// Knuth Algorithm D (TAOCP vol. 2, §4.3.1), base `2^64`. The earlier
+/// implementation was a bit-at-a-time long division whose cost was
+/// `O(dividend_bits × divisor_limbs)`. For the decimal-conversion
+/// callers (`fmt::compute_scaled`, the negative-exponent
+/// `parse::finite_to_bigfloat`) the dividend and divisor are both
+/// near the parse exponent budget — tens of millions of bits — while
+/// the quotient is only a handful of limbs, so the bit loop was
+/// quadratic in the exponent and let a 10-byte input drive
+/// multi-minute, multi-gigabyte work (slice parse-oom; the libFuzzer
+/// `parse` out-of-memory). Algorithm D is `O(quotient_limbs ×
+/// divisor_limbs)`, linear in the operand size, which bounds that
+/// work to the same magnitude the exact `pow5` itself costs. The
+/// bit-at-a-time routine survives as a test-only oracle
+/// (`divmod_limbs_bitwise`) that this routine is differentially
+/// checked against.
 pub(crate) fn divmod_limbs(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
     debug_assert!(top_set_bit(divisor).is_some(), "divisor must be non-zero");
 
-    let mut quotient = vec![0u64; dividend.len()];
-    // `remainder` needs `divisor.len() + 1` limbs to absorb the
-    // transient overflow during the shift-left-one-bit step before
-    // we subtract divisor back out.
-    let mut remainder = vec![0u64; divisor.len() + 1];
+    let q_len = dividend.len().max(1);
+    let r_len = divisor.len().max(1);
+    let mut quotient = vec![0u64; q_len];
 
-    let dividend_top = match top_set_bit(dividend) {
-        Some(t) => t,
-        None => return (quotient, vec![0u64; divisor.len()]),
-    };
-
-    for bit_idx in (0..=dividend_top).rev() {
-        shift_left_one_bit(&mut remainder);
-        if bit_at(dividend, bit_idx) {
-            remainder[0] |= 1;
-        }
-        if cmp_limbs(&remainder, divisor) != core::cmp::Ordering::Less {
-            limbs_sub_assign(&mut remainder, divisor);
-            let q_idx = bit_idx / 64;
-            if q_idx < quotient.len() {
-                quotient[q_idx] |= 1u64 << (bit_idx % 64);
-            }
-        }
+    // Zero dividend: 0 / d = 0 remainder 0.
+    if top_set_bit(dividend).is_none() {
+        return (quotient, vec![0u64; r_len]);
     }
 
-    remainder.truncate(divisor.len());
+    let n = effective_len(divisor); // significant divisor limbs, >= 1
+    let dn = effective_len(dividend); // significant dividend limbs, >= 1
+
+    // dividend < divisor (strictly fewer significant limbs): quotient
+    // 0, remainder = dividend.
+    if dn < n {
+        let mut remainder = vec![0u64; r_len];
+        remainder[..dividend.len().min(r_len)]
+            .copy_from_slice(&dividend[..dividend.len().min(r_len)]);
+        return (quotient, remainder);
+    }
+
+    // Single-limb divisor: a plain base-2^64 long division, no
+    // normalization needed.
+    if n == 1 {
+        let d = u128::from(divisor[0]);
+        let mut rem: u128 = 0;
+        for i in (0..dn).rev() {
+            let cur = (rem << 64) | u128::from(dividend[i]);
+            quotient[i] = (cur / d) as u64;
+            rem = cur % d;
+        }
+        let mut remainder = vec![0u64; r_len];
+        remainder[0] = rem as u64;
+        return (quotient, remainder);
+    }
+
+    // --- Knuth Algorithm D ---
+    const B: u128 = 1u128 << 64;
+    const MASK: u128 = B - 1;
+
+    // D1. Normalize so the divisor's top limb has its high bit set.
+    let shift = divisor[n - 1].leading_zeros();
+    let v = shl_limbs(&divisor[..n], shift); // length n (top limb high-bit set)
+    let v = &v[..n];
+    let mut u = shl_limbs(&dividend[..dn], shift); // length dn + 1
+    debug_assert_eq!(u.len(), dn + 1);
+    let m = dn - n; // quotient has m + 1 limbs
+
+    let vn1 = u128::from(v[n - 1]);
+    let vn2 = u128::from(v[n - 2]);
+
+    // D2-D7. Main loop, one quotient limb per iteration, top down.
+    for j in (0..=m).rev() {
+        // D3. Estimate qhat = floor((u[j+n]·B + u[j+n-1]) / v[n-1]).
+        let num = (u128::from(u[j + n]) << 64) | u128::from(u[j + n - 1]);
+        let mut qhat = num / vn1;
+        let mut rhat = num % vn1;
+        // The invariant u[j+n] <= v[n-1] bounds qhat <= B, so the
+        // `qhat >= B` test trips at most twice; `||` short-circuits
+        // before `qhat * vn2` can overflow u128.
+        while qhat >= B || qhat * vn2 > (rhat << 64) | u128::from(u[j + n - 2]) {
+            qhat -= 1;
+            rhat += vn1;
+            if rhat >= B {
+                break;
+            }
+        }
+
+        // D4. Multiply and subtract: u[j..=j+n] -= qhat · v.
+        let mut borrow: i128 = 0;
+        for i in 0..n {
+            let p = qhat * u128::from(v[i]);
+            let t = i128::from(u[j + i]) - borrow - (p & MASK) as i128;
+            u[j + i] = t as u64;
+            borrow = (p >> 64) as i128 - (t >> 64);
+        }
+        let t = i128::from(u[j + n]) - borrow;
+        u[j + n] = t as u64;
+
+        // D5/D6. If we subtracted too much, qhat was one too large:
+        // add the divisor back and decrement qhat.
+        if t < 0 {
+            qhat -= 1;
+            let mut carry: u128 = 0;
+            for i in 0..n {
+                let sum = u128::from(u[j + i]) + u128::from(v[i]) + carry;
+                u[j + i] = sum as u64;
+                carry = sum >> 64;
+            }
+            u[j + n] = (u128::from(u[j + n]) + carry) as u64; // final carry discarded
+        }
+
+        quotient[j] = qhat as u64;
+    }
+
+    // D8. Denormalize the remainder (u[0..n] >> shift).
+    let r_norm = shr_limbs(&u[..n], shift);
+    let mut remainder = vec![0u64; r_len];
+    let copy = r_norm.len().min(r_len);
+    remainder[..copy].copy_from_slice(&r_norm[..copy]);
     (quotient, remainder)
+}
+
+/// Significant little-endian limb count (high zero limbs stripped),
+/// always at least 1.
+fn effective_len(x: &[u64]) -> usize {
+    let mut n = x.len();
+    while n > 1 && x[n - 1] == 0 {
+        n -= 1;
+    }
+    n.max(1)
+}
+
+/// Logical left shift of a little-endian limb slice by `s` bits
+/// (`0 ≤ s < 64`). Returns `src.len() + 1` limbs so the shifted-out
+/// high bits are never lost.
+fn shl_limbs(src: &[u64], s: u32) -> Vec<u64> {
+    let mut out = vec![0u64; src.len() + 1];
+    if s == 0 {
+        out[..src.len()].copy_from_slice(src);
+        return out;
+    }
+    let mut carry: u64 = 0;
+    for (i, &x) in src.iter().enumerate() {
+        out[i] = (x << s) | carry;
+        carry = x >> (64 - s);
+    }
+    out[src.len()] = carry;
+    out
+}
+
+/// Logical right shift of a little-endian limb slice by `s` bits
+/// (`0 ≤ s < 64`), returning `src.len()` limbs.
+fn shr_limbs(src: &[u64], s: u32) -> Vec<u64> {
+    if s == 0 {
+        return src.to_vec();
+    }
+    let n = src.len();
+    let mut out = vec![0u64; n];
+    for i in 0..n {
+        let lo = src[i] >> s;
+        let hi = if i + 1 < n { src[i + 1] << (64 - s) } else { 0 };
+        out[i] = lo | hi;
+    }
+    out
 }
 
 /// Schoolbook multiplication of two little-endian limb arrays.
@@ -486,6 +624,99 @@ fn add_into_at_offset(dst: &mut [u64], src: &[u64], offset: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pre-Algorithm-D bit-at-a-time long division, retained as a
+    /// differential oracle for [`divmod_limbs`]. Simple and obviously
+    /// correct (it is the schoolbook restoring algorithm), at the cost
+    /// of being quadratic in the dividend bit length — which is exactly
+    /// why the production routine moved to Algorithm D.
+    fn divmod_limbs_bitwise(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
+        let mut quotient = vec![0u64; dividend.len()];
+        let mut remainder = vec![0u64; divisor.len() + 1];
+        let dividend_top = match top_set_bit(dividend) {
+            Some(t) => t,
+            None => return (quotient, vec![0u64; divisor.len()]),
+        };
+        for bit_idx in (0..=dividend_top).rev() {
+            shift_left_one_bit(&mut remainder);
+            if bit_at(dividend, bit_idx) {
+                remainder[0] |= 1;
+            }
+            if cmp_limbs(&remainder, divisor) != core::cmp::Ordering::Less {
+                limbs_sub_assign(&mut remainder, divisor);
+                let q_idx = bit_idx / 64;
+                if q_idx < quotient.len() {
+                    quotient[q_idx] |= 1u64 << (bit_idx % 64);
+                }
+            }
+        }
+        remainder.truncate(divisor.len());
+        (quotient, remainder)
+    }
+
+    // Deterministic xorshift64 for the differential sweeps.
+    fn xorshift(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    #[test]
+    fn divmod_matches_bitwise_reference() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..5000 {
+            let dlen = 1 + (xorshift(&mut state) % 8) as usize;
+            let vlen = 1 + (xorshift(&mut state) % 8) as usize;
+            let dividend: Vec<u64> = (0..dlen).map(|_| xorshift(&mut state)).collect();
+            let mut divisor: Vec<u64> = (0..vlen).map(|_| xorshift(&mut state)).collect();
+            // Sometimes zero high divisor limbs (trailing-zero form) to
+            // exercise effective-length handling and the single-limb path.
+            if xorshift(&mut state) & 1 == 0 && vlen > 1 {
+                let keep = 1 + (xorshift(&mut state) % vlen as u64) as usize;
+                for limb in divisor.iter_mut().skip(keep) {
+                    *limb = 0;
+                }
+            }
+            if divisor.iter().all(|&x| x == 0) {
+                divisor[0] = 1;
+            }
+            let (q1, r1) = divmod_limbs(&dividend, &divisor);
+            let (q2, r2) = divmod_limbs_bitwise(&dividend, &divisor);
+            assert_eq!(q1, q2, "quotient: {dividend:?} / {divisor:?}");
+            assert_eq!(r1, r2, "remainder: {dividend:?} / {divisor:?}");
+        }
+    }
+
+    #[test]
+    fn divmod_reconstructs_large_nearly_equal() {
+        // The decimal-conversion shape: huge divisor, small quotient.
+        // Verify q·v + r == dividend and r < v at multi-limb scale,
+        // where the bitwise oracle would be too slow to use directly.
+        let mut state: u64 = 0xD1B5_4A32_D192_ED03;
+        for _ in 0..300 {
+            let n = 2 + (xorshift(&mut state) % 40) as usize;
+            let mut divisor: Vec<u64> = (0..n).map(|_| xorshift(&mut state)).collect();
+            *divisor.last_mut().unwrap() |= 1u64 << 63; // top limb non-zero
+            let qfac = 1 + (xorshift(&mut state) % 1_000_000);
+            let add = xorshift(&mut state) % divisor[0].max(1);
+            let mut dividend = multiply_limbs(&divisor, &[qfac]);
+            let _ = limbs_add_assign(&mut dividend, &[add]);
+            let (q, r) = divmod_limbs(&dividend, &divisor);
+            assert_eq!(
+                cmp_limbs(&r, &divisor),
+                core::cmp::Ordering::Less,
+                "remainder >= divisor"
+            );
+            let mut recon = multiply_limbs(&q, &divisor);
+            let _ = limbs_add_assign(&mut recon, &r);
+            assert_eq!(
+                cmp_limbs(&recon, &dividend),
+                core::cmp::Ordering::Equal,
+                "q·v + r != dividend"
+            );
+        }
+    }
 
     #[test]
     fn top_set_bit_works() {

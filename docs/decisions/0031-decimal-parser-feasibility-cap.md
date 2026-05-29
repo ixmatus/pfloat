@@ -1,7 +1,50 @@
 # ADR-0031: Decimal parser feasibility cap and the intrinsic pow5 cost
 
-- **Status**: accepted
-- **Date**: 2026-05-21
+- **Status**: accepted (amended slice parse-oom, 2026-05-29)
+
+## Status update (slice parse-oom, 2026-05-29): cap re-derived from cost, not pow5 storage
+
+The 2026-05-21 decision below set the cap from a **16 MiB `pow5` storage
+budget**, giving `MAX_DECIMAL_EXPONENT = 57_852_468`. A libFuzzer `parse`
+out-of-memory showed that budget under-counted the realized cost: the storage
+of `pow5(|e|)` is only one term, and the conversion *work* around it dominates.
+Measured at the `5.78 × 10^7` cap on Apple silicon:
+
+- `parse_str` of a 10-byte `1e57852468`: ~55 s, ~203 MiB (release).
+- the round-trip through `Display` (`to_string`): the digit-extraction divmod
+  was bit-at-a-time and quadratic in the exponent — tens of seconds at `10^6`,
+  effectively unbounded near the cap — and the whole round-trip exceeded 2 GiB
+  under the fuzzer's AddressSanitizer build (≈10× the release footprint), which
+  is what tripped the libFuzzer 2 GiB out-of-memory limit.
+
+Two fixes followed. First, `divmod_limbs` was reimplemented with Knuth
+Algorithm D (`O(quotient_limbs × divisor_limbs)`), removing the quadratic
+`Display` blow-up; that is a separate commit and is correctness-preserving
+(differentially checked against the old bit-at-a-time routine). Second — this
+amendment — the cap is **re-derived from the conversion cost rather than the
+`pow5` result size**, and lowered to `10^6`:
+
+- `10^6` holds the worst-case parse and format to ~1–2 s and ~10 MiB in
+  release, comfortable under a sanitizer build's memory limit.
+- It still clears every IEEE 754 binary interchange format with vast headroom:
+  `binary128`'s largest finite magnitude is ~`1.19 × 10^4932`, cleared by
+  two-plus orders of magnitude; `binary64`'s ~`1.8 × 10^308` by four. A decimal
+  literal with a larger exponent exceeds any represented quantity, so saturating
+  it (to `±∞`/`±0`) rather than burning unbounded work is the correct behaviour
+  for a resource-bounded parser.
+
+The storage-budget derivation (`POW5_STORAGE_BUDGET_BITS`, the `log2(5)`
+inequality) is therefore retired; the constant is a documented cost budget,
+`MAX_DECIMAL_EXPONENT = 1_000_000`. Behaviour change at the boundary: strings
+with `|exponent|` in `(10^6, 5.785 × 10^7]` — which the 2026-05-21 amendment had
+let parse to finite values — once again saturate. That band is past every
+representable IEEE magnitude, so no real input regresses. The boundary tests
+move in lockstep with the constant.
+
+The intrinsic-`pow5` reasoning in the original decision still stands: correct
+rounding requires the exact `5^|e|`, so the cap remains a structural resource
+budget, not a deferrable bug. Only its *magnitude*, and the dimension it is
+derived from, change.
 
 ## Context
 

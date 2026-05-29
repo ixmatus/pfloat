@@ -84,10 +84,10 @@ impl BigFloat {
     /// Callers handling strings from untrusted sources should bound
     /// the input length before invoking `parse_str`. The decimal
     /// exponent magnitude is capped internally at
-    /// [`MAX_DECIMAL_EXPONENT`] (about `5.78 * 10^7`, derived from a
-    /// 16 MiB `pow5` storage budget; see ADR-0031), so an oversized
-    /// exponent converts to overflow or underflow without further
-    /// allocation; the digit count itself has no such cap.
+    /// [`MAX_DECIMAL_EXPONENT`] (`10^6`, a conversion-cost budget; see
+    /// ADR-0031), so an oversized exponent converts to overflow or
+    /// underflow without further allocation; the digit count itself
+    /// has no such cap.
     pub fn parse_str(
         s: &str,
         precision: u32,
@@ -331,52 +331,45 @@ fn decimal_to_bigfloat(
     }
 }
 
-/// Build the multi-precision integer `m` from digits, then convert
-/// `m × 10^exponent` to a [`BigFloat`] at `precision`, rounding
-/// under `mode`.
-/// Storage budget for the `pow5(|exponent|)` intermediate built by
-/// `finite_to_bigfloat`. 16 MiB is comfortably above any realistic
-/// workload (the existing untrusted-input doc on `parse_str` notes
-/// that `10^9` already exceeds any astronomy use) while keeping the
-/// worst case allocation bounded for adversarial inputs.
-const POW5_STORAGE_BUDGET_BITS: u64 = 16 * 1024 * 1024 * 8;
-
 /// Decimal-exponent magnitude beyond which `finite_to_bigfloat`
 /// short-circuits to `±∞ + OVERFLOW + INEXACT` or
-/// `±0 + UNDERFLOW + INEXACT` without allocating. The cap is a
-/// resource budget: the big `pow5(|e|)` is *intrinsic* to correctly
-/// rounded decimal-to-binary conversion (Clinger 1990; Gay `dtoa`;
-/// even Lemire `fast_float` falls back to an exact bignum on
-/// near-tie inputs), so it cannot be removed without sacrificing
-/// correct rounding. See ADR-0031.
+/// `±0 + UNDERFLOW + INEXACT` without allocating.
 ///
-/// Derived in-code from [`POW5_STORAGE_BUDGET_BITS`]:
+/// The cap is a resource budget. The exact `pow5(|e|)` is *intrinsic*
+/// to correctly rounded decimal-to-binary conversion (Clinger 1990;
+/// Gay `dtoa`; even Lemire `fast_float` falls back to an exact bignum
+/// on near-tie inputs), so it cannot be dropped without sacrificing
+/// correct rounding — but its cost grows with `|e|`, and so does the
+/// matching `Display` digit extraction. The budget bounds that cost.
 ///
-/// ```text
-/// bits(pow5(e)) = ceil(e · log2(5))
-/// log2(5) > 232 / 100 = 2.32   (since log2(5) = 2.321928...)
-/// e · 2.32 ≤ e · log2(5) ≤ POW5_STORAGE_BUDGET_BITS
-/// ⇒ e ≤ POW5_STORAGE_BUDGET_BITS · 100 / 232
-/// ```
+/// The earlier `5.78 × 10^7` value was framed as a 16 MiB `pow5`
+/// *storage* budget, but the binding constraint is the conversion
+/// *work*, not the result size: at that exponent a single adversarial
+/// 10-byte input drove `parse_str` to ~55 s / ~200 MiB, and a
+/// round-trip through `Display` past 2 GiB under the fuzzer's
+/// `AddressSanitizer` build (the libFuzzer `parse` out-of-memory;
+/// slice parse-oom). The cap is therefore set from the cost side.
 ///
-/// The rational lower bound on `log2(5)` (the kept inequality)
-/// makes the integer division conservative: rounding the cap down
-/// keeps the worst case `pow5` strictly inside the budget.
-///
-/// At 16 MiB: `floor(134_217_728 · 100 / 232) = 57_852_468`,
-/// comfortably inside `i32` and ~57× the earlier recalled
-/// `1_000_000` magic.
+/// `10^6` holds the worst-case parse and format to ~1–2 s and ~10 MiB
+/// in release — comfortable under a sanitizer build's memory limit —
+/// while clearing every IEEE 754 binary interchange format with vast
+/// headroom: `binary128`'s largest finite magnitude is ~`1.19 ×
+/// 10^4932`, which `10^6` clears by two-plus orders of magnitude, and
+/// `binary64`'s ~`1.8 × 10^308` by four. A decimal literal with a
+/// larger exponent exceeds any represented quantity, so it saturates
+/// rather than burning unbounded work. ADR-0031 (amended) records the
+/// derivation.
 ///
 /// The parsed decimal exponent is `i32` (the lexer rejects anything
 /// past `i32` with [`ParseError::ExponentOutOfRange`]) and
-/// `i32::MAX · log2(10) ~ 7.1e9` is far below `i64::MAX ~ 9.2e18`,
-/// so no valid parsed input ever overflows pfloat's binary
-/// exponent (ADR-0006). The cap is therefore intrinsically a
-/// resource budget rather than a binary-exponent-fits guard; the
-/// earlier TODO that framed it the other way is recorded as
-/// resolved in ADR-0031.
-const MAX_DECIMAL_EXPONENT: i32 = (POW5_STORAGE_BUDGET_BITS * 100 / 232) as i32;
+/// `i32::MAX · log2(10) ~ 7.1e9` is far below `i64::MAX ~ 9.2e18`, so
+/// a parsed value never overflows pfloat's binary exponent
+/// (ADR-0006); the cap is purely the cost budget.
+const MAX_DECIMAL_EXPONENT: i32 = 1_000_000;
 
+/// Build the multi-precision integer `m` from digits, then convert
+/// `m × 10^exponent` to a [`BigFloat`] at `precision`, rounding
+/// under `mode`.
 fn finite_to_bigfloat(
     digits: &[u8],
     exponent: i32,
@@ -861,40 +854,35 @@ mod tests {
     }
 
     #[test]
-    fn max_decimal_exponent_derived_from_pow5_storage_budget() {
-        // Sanity that the in-code derivation gives the documented
-        // value: 16 MiB * 8 = 134_217_728 bits, * 100 / 232 with
-        // log2(5) > 232/100 ⇒ floor(13_421_772_800 / 232)
-        // = 57_852_468. ADR-0031.
-        assert_eq!(MAX_DECIMAL_EXPONENT, 57_852_468);
+    fn max_decimal_exponent_is_the_cost_budget_cap() {
+        // The cap is a conversion-cost budget (ADR-0031, amended for
+        // the parse-oom slice): 10^6, which clears binary128's
+        // ~1.19e4932 maximum by two-plus orders of magnitude while
+        // bounding the worst-case correctly-rounded conversion.
+        assert_eq!(MAX_DECIMAL_EXPONENT, 1_000_000);
     }
 
     #[test]
-    fn parse_exponent_in_widened_range_is_finite() {
-        // ADR-0031: exponents in (10^6, MAX_DECIMAL_EXPONENT] — past
-        // the prior recalled 1e6 cap, inside the new derived 16 MiB
-        // budget — now parse to a correct finite value rather than
-        // saturating to ±∞. 5×10^6 is ~1.45 MB of `pow5` storage,
-        // comfortable in-budget and fast.
-        let (v, _status) =
-            BigFloat::parse_str("1e5000000", 113, RoundingMode::NearestEven).unwrap();
+    fn parse_exponent_in_range_is_finite() {
+        // A large exponent comfortably inside the cap parses to a
+        // correct finite value rather than saturating. 5×10^5 keeps
+        // the exact `pow5` small and the conversion fast.
+        let (v, _status) = BigFloat::parse_str("1e500000", 113, RoundingMode::NearestEven).unwrap();
         assert!(!v.is_nan() && !v.is_infinite() && !v.is_zero());
     }
 
     #[test]
-    fn parse_exponent_just_past_new_cap_saturates() {
+    fn parse_exponent_just_past_cap_saturates() {
         // Past the budget: ±∞ + OVERFLOW + INEXACT, no allocation.
-        // `57_852_469 = MAX_DECIMAL_EXPONENT + 1`; the literal moves
-        // in lockstep with the derived cap (the
-        // `max_decimal_exponent_derived_from_pow5_storage_budget`
+        // `1_000_001 = MAX_DECIMAL_EXPONENT + 1`; the literal tracks
+        // the cap (the `max_decimal_exponent_is_the_cost_budget_cap`
         // test guards drift).
-        let (v, status) =
-            BigFloat::parse_str("1e57852469", 113, RoundingMode::NearestEven).unwrap();
+        let (v, status) = BigFloat::parse_str("1e1000001", 113, RoundingMode::NearestEven).unwrap();
         assert!(v.is_infinite() && v.is_sign_positive());
         assert!(status.overflow() && status.inexact());
         // Symmetric on the underflow side.
         let (v, status) =
-            BigFloat::parse_str("1e-57852469", 113, RoundingMode::NearestEven).unwrap();
+            BigFloat::parse_str("1e-1000001", 113, RoundingMode::NearestEven).unwrap();
         assert!(v.is_zero() && v.is_sign_positive());
         assert!(status.underflow() && status.inexact());
     }
