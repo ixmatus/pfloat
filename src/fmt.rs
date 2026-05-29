@@ -591,6 +591,36 @@ mod tests {
     }
 
     #[test]
+    fn display_large_exponent_round_trips() {
+        // Regression for the libFuzzer `parse` out-of-memory (slice
+        // parse-oom-divmod). A large decimal exponent drove the
+        // bit-at-a-time `divmod_limbs` into O(exponent²) work and
+        // gigabytes of transient allocation inside the Display digit
+        // extraction (`compute_scaled`). Algorithm D makes that linear
+        // in the operand size. The exponent here is small enough that
+        // the test is fast, yet large enough that the old quadratic
+        // routine took seconds per value. Covers the positive and
+        // negative exponent paths and a non-power-of-ten mantissa.
+        // The exponents stay well inside `MAX_DECIMAL_EXPONENT` so the
+        // exact `pow5` itself is cheap and the test runs in well under
+        // a second.
+        for s in ["1e100000", "-1e100000", "1e-100000", "1.25e50000"] {
+            let v = BigFloat::parse_str(s, 113, RoundingMode::NearestEven)
+                .unwrap()
+                .0;
+            let formatted = v.to_string();
+            let back = BigFloat::parse_str(&formatted, 113, RoundingMode::NearestEven)
+                .unwrap()
+                .0;
+            assert_eq!(
+                back.partial_cmp(&v).0,
+                Some(Ordering::Equal),
+                "round-trip failed: {s} → {formatted}",
+            );
+        }
+    }
+
+    #[test]
     fn pow5_basic() {
         assert_eq!(pow5(0), vec![1]);
         assert_eq!(pow5(1), vec![5]);
