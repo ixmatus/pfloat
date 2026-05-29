@@ -122,7 +122,12 @@ kani = []
 # calibrated bound on every f32 input. Adds one RefCell write per
 # `ziv_round` call when enabled; off in production builds so
 # the trace path costs nothing. ADR-0039, slice p1g.3.
-ziv-instrumented = []
+#
+# Requires `std`: the trace capture is a `std::thread_local!`, the
+# same posture as the `agm_constants` memoization cache. The
+# cross-check consumer (`tests/oracle/cross_check.rs`) is a std-only
+# dev tool, so no-std consumers never need the trace.
+ziv-instrumented = ["std"]
 
 # Differential testing against MPFR via `rug` (a safe wrapper over
 # `gmp-mpfr-sys`). ADR-0014 records the choice; ADR-0008 documents

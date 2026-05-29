@@ -136,8 +136,8 @@ pub type ZivTrace = (BigFloat, Status, u32, BigFloat);
 // public API (`BigFloat::<fn>_round`, etc.), so the cross-check
 // stays generic across the 47 v1.0 kernels without per-kernel
 // `_round_capturing` wrapper boilerplate.
-#[cfg(any(test, feature = "ziv-instrumented"))]
-thread_local! {
+#[cfg(all(feature = "std", any(test, feature = "ziv-instrumented")))]
+std::thread_local! {
     static LAST_TRACE: core::cell::RefCell<Option<ZivTrace>> =
         const { core::cell::RefCell::new(None) };
 }
@@ -150,7 +150,7 @@ thread_local! {
 /// thread-local does not exist there.
 ///
 /// pf-tqzz, slice p1g.3, ADR-0039.
-#[cfg(any(test, feature = "ziv-instrumented"))]
+#[cfg(all(feature = "std", any(test, feature = "ziv-instrumented")))]
 pub fn take_last_trace() -> Option<ZivTrace> {
     LAST_TRACE.with(|t| t.borrow_mut().take())
 }
@@ -188,7 +188,7 @@ pub(crate) fn ziv_round_capturing(
             // correct rounding is settled.
             auto_raise(status);
             let trace = (cand, status, working, y);
-            #[cfg(any(test, feature = "ziv-instrumented"))]
+            #[cfg(all(feature = "std", any(test, feature = "ziv-instrumented")))]
             LAST_TRACE.with(|t| *t.borrow_mut() = Some(trace.clone()));
             return trace;
         }
@@ -199,7 +199,7 @@ pub(crate) fn ziv_round_capturing(
     // Cap reached on a pathologically hard input: best effort.
     let trace = fallback.expect("ZIV_MAX_ITERS >= 1");
     auto_raise(trace.1);
-    #[cfg(any(test, feature = "ziv-instrumented"))]
+    #[cfg(all(feature = "std", any(test, feature = "ziv-instrumented")))]
     LAST_TRACE.with(|t| *t.borrow_mut() = Some(trace.clone()));
     trace
 }

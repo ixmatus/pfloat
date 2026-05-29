@@ -447,6 +447,7 @@ pub use rounding::RoundingMode;
 /// builds: the thread-local capture costs nothing without the
 /// feature, and the constants stay `pub(crate)` to internal callers.
 #[cfg(all(
+    feature = "std",
     any(test, feature = "ziv-instrumented"),
     feature = "big",
     feature = "exp-log"
