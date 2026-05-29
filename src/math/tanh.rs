@@ -9,20 +9,22 @@
 //! precision, the formula collapses to `1/1 = 1` and the sign-
 //! flipped result is `±1` correctly.
 //!
-//! For `|x|` small enough that the cubic correction in the Taylor
-//! expansion `tanh(|x|) = |x| − |x|³/3 + O(|x|⁵)` falls below the
-//! Ziv driver's error guard, the kernel short circuits to `|x|`
-//! with the input's sign (slice p1.4, closes pf-7d7). Without the
-//! short circuit the composition collapses for tiny `|x|`: at
-//! working precision `w`, when `2|x| < 2^−w`, `exp(−2|x|)` rounds
-//! to exactly `1`, the numerator becomes exactly `0`, and the Ziv
-//! interval test certifies `0` because `half_width(0)` is also
-//! `0`. The short circuit threshold is derived in `tanh_at_w`.
+//! The numerator is evaluated through `expm1` as
+//! `1 − e^{−2|x|} = −expm1(−2|x|)`, which avoids the catastrophic
+//! cancellation the bare `1 − e^{−2|x|}` suffers for small `|x|`
+//! (where `e^{−2|x|} ≈ 1`). This both keeps the working-precision
+//! intermediate accurate to the Ziv driver's error guard for tiny
+//! `|x|` (pf-zhcy) and subsumes the former tiny-`|x|` short circuit:
+//! that case (slice p1.4, pf-7d7) returned `|x|` because the
+//! cancelling numerator otherwise collapsed to exactly `0` and the
+//! Ziv interval test certified the false `0`; `expm1` preserves the
+//! tiny numerator `≈ 2|x|`, so the collapse cannot occur and the
+//! special case is gone (ADR-0050).
 //!
 //! Correctly rounded under every IEEE rounding mode via the shared
 //! [`crate::math::ziv::ziv_round`] driver (slice p1.2, ADR-0022).
-//! The composition `(1 − e^{−2|x|}) / (1 + e^{−2|x|})` runs at the
-//! working precision the Ziv driver supplies; the internal `exp`
+//! The composition `−expm1(−2|x|) / (2 + expm1(−2|x|))` runs at the
+//! working precision the Ziv driver supplies; the internal `expm1`
 //! call is itself Ziv-driven, so the composition is correctly
 //! rounded under the outer envelope's interval test.
 //!
@@ -128,57 +130,53 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     )
 }
 
-/// Evaluate `tanh(x)` at the supplied working precision via
-/// `tanh(|x|) = (1 − e^{−2|x|}) / (1 + e^{−2|x|})`, restoring the
-/// sign of the input on the result. The caller's special-case
-/// handling has already peeled off NaN, ±0, and ±∞. Returns the
-/// unrounded value; the Ziv driver handles rounding to the
-/// caller's target precision and mode.
+/// Evaluate `tanh(x)` at the supplied working precision via the
+/// numerically stable form
+///
+/// ```text
+/// tanh(|x|) = −expm1(−2|x|) / (2 + expm1(−2|x|))
+/// ```
+///
+/// restoring the sign of the input on the result. The caller's
+/// special-case handling has already peeled off NaN, ±0, and ±∞.
+/// Returns the unrounded value; the Ziv driver handles rounding to
+/// the caller's target precision and mode.
+///
+/// This is algebraically `(1 − e^{−2|x|}) / (1 + e^{−2|x|})` with the
+/// numerator rewritten through `expm1`. The bare `1 − e^{−2|x|}`
+/// cancels catastrophically for small `|x|`: `e^{−2|x|} ≈ 1`, so the
+/// subtraction loses ~`2·(−log2|x|)` bits, leaving the working-
+/// precision value accurate to far fewer bits than the Ziv error
+/// guard assumes (pf-zhcy: at `|x| = 2^−149` the loss is ~148 bits,
+/// so the converged intermediate held only ~388 bits at
+/// `working = 536`). `expm1(−2|x|) = e^{−2|x|} − 1` is evaluated
+/// without that cancellation, so `numer = −expm1(−2|x|)` and
+/// `denom = 2 + expm1(−2|x|) ∈ (1, 2]` are both accurate to working
+/// precision and neither cancels.
+///
+/// The `expm1` form also subsumes the former tiny-`|x|` short circuit
+/// (slice p1.4, pf-7d7): that case returned `|x|` because the
+/// `1 − e^{−2|x|}` numerator otherwise collapsed to exactly `0` (the
+/// `exp` rounded to `1`) and the Ziv interval test certified the
+/// false `0`. `expm1` preserves the tiny numerator `≈ 2|x|` instead
+/// of rounding it to zero, so the collapse cannot occur and no
+/// short circuit is needed (ADR-0050).
 fn tanh_at_w(abs_x: &BigFloat, sign: Sign, working_prec: u32) -> BigFloat {
     let abs_x_w = abs_x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
 
-    // Tiny input short circuit. Taylor: `tanh(|x|) = |x| − |x|³/3 +
-    // O(|x|⁵)`, so returning `|x|` in place of `tanh(|x|)` carries
-    // absolute error bounded by `|x|³/3` for `|x| < 1`. The Ziv
-    // driver's contract (`ziv_round`) bounds the kernel's error by
-    // `|y| · 2^−(working_prec − ZIV_ERROR_GUARD)` with
-    // `ZIV_ERROR_GUARD = 24`, so the short circuit is valid when
-    // `|x|² / 3 ≤ 2^−(working_prec − 24)`. Worst case at exponent
-    // `e` is `|x|² < 2^(2e+2)`, giving the conservative threshold
-    // `e ≤ −ceil((working_prec − 22) / 2)`. At `working_prec = 88`
-    // (first Ziv pass at target 24) the threshold is `-33`, which
-    // covers the entire f32 subnormal range `e ∈ [−149, −126]`;
-    // at every higher Ziv retry the threshold tightens further but
-    // still covers the same range, so the short circuit fires at
-    // the first pass for every f32 subnormal input.
-    //
-    // Without this short circuit the standard composition collapses
-    // for tiny `|x|`: at working precision `w`, when `2|x| < 2^−w`,
-    // `exp(−2|x|)` rounds to exactly `1`, the numerator becomes
-    // exactly `0`, and the Ziv interval test certifies `0` because
-    // `half_width(0)` is also `0` (slice p1.3 sweep, closes
-    // pf-7d7).
-    let short_circuit_exp: i64 = -((i64::from(working_prec) - 22 + 1) / 2);
-    if let Class::Normal { exponent, .. } = &abs_x_w.class {
-        if *exponent <= short_circuit_exp {
-            return if matches!(sign, Sign::Negative) {
-                abs_x_w.negated()
-            } else {
-                abs_x_w
-            };
-        }
-    }
-
     let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
     let (two_x, _) = abs_x_w.mul(&two, RoundingMode::NearestEven);
     let neg_two_x = two_x.negated();
-    let (exp_neg, _) = neg_two_x.exp(RoundingMode::NearestEven);
-    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-    let (numer, _) = one.sub(&exp_neg, RoundingMode::NearestEven);
-    let (denom, _) = one.add(&exp_neg, RoundingMode::NearestEven);
+    // expm1(−2|x|) = e^{−2|x|} − 1, accurate for small |x| where the
+    // bare `1 − e^{−2|x|}` would cancel.
+    let (em1, _) = neg_two_x.expm1(RoundingMode::NearestEven);
+    // numer = 1 − e^{−2|x|} = −expm1(−2|x|) ≥ 0.
+    let numer = em1.negated();
+    // denom = 1 + e^{−2|x|} = 2 + expm1(−2|x|) ∈ (1, 2].
+    let (denom, _) = two.add(&em1, RoundingMode::NearestEven);
     let (result_abs, _) = numer.div(&denom, RoundingMode::NearestEven);
     if matches!(sign, Sign::Negative) {
         result_abs.negated()
