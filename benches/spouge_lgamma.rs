@@ -40,11 +40,7 @@ const TARGET_PRECISIONS: &[u32] = &[1024, 2048, 4096];
 /// matching target precision parses to an exact representation at
 /// the listed precision when `z` is rational; non-exact inputs (like
 /// `2.5`) exercise the partial-sum convergence with cancellation.
-const INPUTS: &[(&str, &str)] = &[
-    ("z_2.5", "2.5"),
-    ("z_10", "10"),
-    ("z_100", "100"),
-];
+const INPUTS: &[(&str, &str)] = &[("z_2.5", "2.5"), ("z_10", "10"), ("z_100", "100")];
 
 /// Criterion settings. Per-call cost ranges from ~50 µs at p=1024 to
 /// ~50 ms at p=4096 (the latter requires ~840 div+add ops at 4096

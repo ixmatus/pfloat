@@ -156,8 +156,7 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
                 2 => sin_taylor(&r, w).negated(),
                 _ => cos_taylor(&r, w).negated(),
             },
-            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[])
-                .expect("precision >= 1"),
+            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[]).expect("precision >= 1"),
         },
         target_precision,
         mode,

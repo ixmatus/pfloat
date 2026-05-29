@@ -133,8 +133,7 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
                     }
                 }
             }
-            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[])
-                .expect("precision >= 1"),
+            None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[]).expect("precision >= 1"),
         },
         target_precision,
         mode,
