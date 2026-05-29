@@ -271,6 +271,7 @@ struct ModeStats {
     skipped_no_ziv_path: u64,
     skipped_no_midpoint: u64,
     skipped_non_finite: u64,
+    skipped_trace_not_final: u64,
     violations: u64,
 }
 
@@ -281,6 +282,7 @@ impl ModeStats {
             CheckOutcome::SkippedNoZivPath => self.skipped_no_ziv_path += 1,
             CheckOutcome::SkippedNoMidpoint => self.skipped_no_midpoint += 1,
             CheckOutcome::SkippedNonFiniteMidpoint => self.skipped_non_finite += 1,
+            CheckOutcome::SkippedTraceNotFinal => self.skipped_trace_not_final += 1,
             CheckOutcome::Violation(_) => self.violations += 1,
         }
     }
@@ -399,16 +401,22 @@ fn write_result_json(
             + s.skipped_no_ziv_path
             + s.skipped_no_midpoint
             + s.skipped_non_finite
+            + s.skipped_trace_not_final
             + s.violations;
+        // A midpoint is fetched only after the no-ziv-path and
+        // trace-not-final guards pass; subtract both to count actual
+        // backend MIDPOINT calls.
+        let midpoint_calls = attempted - s.skipped_no_ziv_path - s.skipped_trace_not_final;
         if is_arb {
-            arb_calls += attempted - s.skipped_no_ziv_path;
+            arb_calls += midpoint_calls;
         } else {
-            mpfr_calls += attempted - s.skipped_no_ziv_path;
+            mpfr_calls += midpoint_calls;
         }
         totals.passes += s.passes;
         totals.skipped_no_ziv_path += s.skipped_no_ziv_path;
         totals.skipped_no_midpoint += s.skipped_no_midpoint;
         totals.skipped_non_finite += s.skipped_non_finite;
+        totals.skipped_trace_not_final += s.skipped_trace_not_final;
         totals.violations += s.violations;
     }
 
@@ -455,6 +463,11 @@ fn write_result_json(
         "    \"skipped_non_finite\": {},",
         totals.skipped_non_finite
     )?;
+    writeln!(
+        w,
+        "    \"skipped_trace_not_final\": {},",
+        totals.skipped_trace_not_final
+    )?;
     writeln!(w, "    \"violations\": {}", totals.violations)?;
     writeln!(w, "  }},")?;
 
@@ -474,6 +487,11 @@ fn write_result_json(
             s.skipped_no_midpoint
         )?;
         writeln!(w, "      \"skipped_non_finite\": {},", s.skipped_non_finite)?;
+        writeln!(
+            w,
+            "      \"skipped_trace_not_final\": {},",
+            s.skipped_trace_not_final
+        )?;
         writeln!(w, "      \"violations\": {}", s.violations)?;
         writeln!(w, "    }}{comma}")?;
     }
@@ -613,7 +631,10 @@ fn run() -> Result<(), String> {
             mode_name(*mode),
             elapsed.as_secs(),
             stats.passes,
-            stats.skipped_no_ziv_path + stats.skipped_no_midpoint + stats.skipped_non_finite,
+            stats.skipped_no_ziv_path
+                + stats.skipped_no_midpoint
+                + stats.skipped_non_finite
+                + stats.skipped_trace_not_final,
             stats.violations,
         );
         per_mode.push((*mode, stats, violations));

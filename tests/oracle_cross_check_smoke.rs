@@ -56,6 +56,7 @@ struct SmokeStats {
     skipped_no_ziv_path: usize,
     skipped_no_midpoint: usize,
     skipped_non_finite: usize,
+    skipped_trace_not_final: usize,
 }
 
 fn run_smoke_subset(
@@ -73,6 +74,7 @@ fn run_smoke_subset(
                 CheckOutcome::SkippedNoZivPath => stats.skipped_no_ziv_path += 1,
                 CheckOutcome::SkippedNoMidpoint => stats.skipped_no_midpoint += 1,
                 CheckOutcome::SkippedNonFiniteMidpoint => stats.skipped_non_finite += 1,
+                CheckOutcome::SkippedTraceNotFinal => stats.skipped_trace_not_final += 1,
                 CheckOutcome::Violation(v) => panic!("{}", v.format_panic_message()),
             }
         }
@@ -123,6 +125,7 @@ fn cross_check_mpfr_primary_smoke() {
         total.skipped_no_ziv_path += s.skipped_no_ziv_path;
         total.skipped_no_midpoint += s.skipped_no_midpoint;
         total.skipped_non_finite += s.skipped_non_finite;
+        total.skipped_trace_not_final += s.skipped_trace_not_final;
     }
     eprintln!("Total: {total:?}");
     // Demand at least *some* passes; if every input was skipped the

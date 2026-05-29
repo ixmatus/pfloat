@@ -48,6 +48,7 @@
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 
+use pfloat::BigFloat;
 use pfloat::RoundingMode;
 
 use super::convert::bf24_of_bits;
@@ -151,12 +152,33 @@ pub fn verification_precision(f: FnId) -> u32 {
 /// value into a 53-bit container (lossless because f32 carries at
 /// most 24 bits of significand).
 pub fn pfloat_kernel(f: FnId, input: u32, mode: RoundingMode) -> u32 {
+    let result = pfloat_kernel_value(f, input, mode);
+    // Bridge the kernel's `BigFloat` result to f32 bits under the
+    // caller's rounding mode (mode-aware `certified_round_bf_to_f32`,
+    // slice p1.23 / ADR-0038, so directed-mode outputs are not
+    // silently re-rounded to NE at the conversion step). NaN results
+    // map to the f32 default NaN bit pattern so downstream callers can
+    // compare via the NaN-aware equality from
+    // `feedback_oracle_harness_nan_aware`.
+    super::convert::certified_round_bf_to_f32(&result, mode).unwrap_or_else(|| f32::NAN.to_bits())
+}
+
+/// Same dispatch as [`pfloat_kernel`] but returns the kernel's
+/// `BigFloat` result at its `verification_precision`, before the f32
+/// bridge. The pf-tqzz cross-check (ADR-0049) uses this to confirm the
+/// captured Ziv trace belongs to `f` itself and not an inner
+/// sub-kernel: composed kernels (e.g. `log2 = ln / ln2`) leave the
+/// trailing `LAST_TRACE` from their inner `ln` `ziv_round`, so
+/// comparing the trace's rounded candidate against this value detects
+/// the category mismatch and lets the cross-check skip rather than
+/// emit a ~100%-of-inputs spurious violation.
+pub fn pfloat_kernel_value(f: FnId, input: u32, mode: RoundingMode) -> BigFloat {
     let x24 = bf24_of_bits(input);
     let x = x24
         .round_to_precision(verification_precision(f), RoundingMode::NearestEven)
         .expect("verification_precision >= 1; lift from p=24 is lossless")
         .0;
-    let result = match f {
+    match f {
         // Elementary.
         FnId::Sqrt => x.sqrt(mode).0,
         FnId::Exp => x.exp(mode).0,
@@ -209,15 +231,5 @@ pub fn pfloat_kernel(f: FnId, input: u32, mode: RoundingMode) -> u32 {
         FnId::BesselK0 => x.k0(mode).0,
         FnId::BesselK1 => x.k1(mode).0,
         FnId::BesselKn(n) => x.kn(n, mode).0,
-    };
-    // Bridge the kernel's `BigFloat` result to f32 bits under the
-    // caller's rounding mode. Slice p1.23 (ADR-0038) replaced the
-    // NE-only `bf_to_f32_bits` bridge here with the mode-aware
-    // `certified_round_bf_to_f32`, so the harness no longer silently
-    // re-rounds directed-mode kernel outputs to NE at the conversion
-    // step. For NaN results the helper returns `None`; map that to
-    // the f32 default NaN bit pattern so callers downstream can
-    // compare via the NaN-aware equality from
-    // `feedback_oracle_harness_nan_aware`.
-    super::convert::certified_round_bf_to_f32(&result, mode).unwrap_or_else(|| f32::NAN.to_bits())
+    }
 }

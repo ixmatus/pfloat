@@ -32,7 +32,7 @@ use super::arb::ArbOracle;
 use super::convert::bigfloat_to_rug;
 use super::meta::is_arb_primary;
 use super::mpfr::MpfrOracle;
-use super::pfloat_kernels::pfloat_kernel;
+use super::pfloat_kernels::pfloat_kernel_value;
 use super::types::FnId;
 
 use pfloat::ziv_instrumented::take_last_trace;
@@ -167,6 +167,15 @@ pub enum CheckOutcome {
     SkippedNoZivPath,
     SkippedNoMidpoint,
     SkippedNonFiniteMidpoint,
+    /// The captured Ziv trace does not belong to `f` itself. Composed
+    /// kernels (`log2 = ln / ln2`, `log10 = ln / ln10`, …) leave the
+    /// thread-local trace from their inner `ln` `ziv_round`; the
+    /// trace's candidate is the inner value, not `f`'s output, so the
+    /// `error_guard` assertion against `f`'s midpoint is undefined.
+    /// pf-hcz4 surfaced this as a ~100%-of-inputs false violation on
+    /// `log2`/`log10`. The cross-check skips these cells rather than
+    /// mis-measure them.
+    SkippedTraceNotFinal,
     Violation(ViolationRecord),
 }
 
@@ -185,18 +194,34 @@ pub fn cross_check_one(
     // Drain any stale trace from a previous call on this thread.
     let _ = take_last_trace();
 
-    // Route through the public API; the kernel internally calls
-    // `ziv_round` which writes the trace via the thread-local.
-    let _ = pfloat_kernel(f, input, mode);
+    // Route through the public dispatch; the kernel internally calls
+    // `ziv_round` which writes the trace via the thread-local. Keep
+    // the kernel's actual `BigFloat` output to validate the trace
+    // belongs to `f` (see the composed-kernel guard below).
+    let y_final = pfloat_kernel_value(f, input, mode);
 
     // If the kernel short-circuited (Class::Zero / Infinity / NaN
-    // dispatch, pre-Ziv exact dispatch, fixed-guard composition for
-    // log2 / log10), no trace is captured — nothing to assert
-    // about the calibrated bound at this input.
-    let (_, _, working, eval_w) = match take_last_trace() {
+    // dispatch, pre-Ziv exact dispatch), no trace is captured —
+    // nothing to assert about the calibrated bound at this input.
+    let (cand, _, working, eval_w) = match take_last_trace() {
         Some(trace) => trace,
         None => return CheckOutcome::SkippedNoZivPath,
     };
+
+    // Composed-kernel guard (pf-hcz4). For a primary kernel the
+    // captured trace IS the kernel's final `ziv_round`, so its rounded
+    // candidate `cand` equals the kernel's output `y_final` by value.
+    // A composed kernel routes through an inner `ziv_round` (e.g.
+    // `log2` calls `ln_round` then divides by `ln 2`); the trailing
+    // trace is then the inner `ln` intermediate and `cand` is the
+    // rounded `ln`, not `f`'s output. Asserting `|ln − log2(x)|`
+    // against the `error_guard` band reads as a violation on nearly
+    // every input. Detect the mismatch by value and skip: the bound
+    // assertion is only well-defined when the kernel's output is a
+    // direct `ziv_round` of the target function.
+    if cand.partial_cmp(&y_final).0 != Some(core::cmp::Ordering::Equal) {
+        return CheckOutcome::SkippedTraceNotFinal;
+    }
 
     // Lift `eval_w` (a BigFloat at working precision) into a
     // rug::Float at `oracle_prec = working + 64`. Extending the

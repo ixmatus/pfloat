@@ -74,6 +74,7 @@ def aggregate(results_dir: Path, top_n: int):
             "skipped_no_ziv_path": 0,
             "skipped_no_midpoint": 0,
             "skipped_non_finite": 0,
+            "skipped_trace_not_final": 0,
             "violations": 0,
         },
         "per_shard": {},
@@ -91,6 +92,7 @@ def aggregate(results_dir: Path, top_n: int):
         summary["totals"]["skipped_no_ziv_path"] += t["skipped_no_ziv_path"]
         summary["totals"]["skipped_no_midpoint"] += t["skipped_no_midpoint"]
         summary["totals"]["skipped_non_finite"] += t["skipped_non_finite"]
+        summary["totals"]["skipped_trace_not_final"] += t.get("skipped_trace_not_final", 0)
         summary["totals"]["violations"] += t["violations"]
         summary["arb_midpoint_calls"] += payload.get("arb_midpoint_calls", 0)
         summary["mpfr_midpoint_calls"] += payload.get("mpfr_midpoint_calls", 0)
@@ -164,6 +166,7 @@ def render_cross_check_table(payload):
         f'skipped_no_ziv_path = {t["skipped_no_ziv_path"]}',
         f'skipped_no_midpoint = {t["skipped_no_midpoint"]}',
         f'skipped_non_finite = {t["skipped_non_finite"]}',
+        f'skipped_trace_not_final = {t.get("skipped_trace_not_final", 0)}',
         f'violations = {n_violations}',
         f'wall_clock_seconds = {payload.get("wall_clock_seconds", 0.0)}',
         f'instance_arch = "{payload.get("instance_arch", "unknown")}"',
