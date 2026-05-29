@@ -345,12 +345,7 @@ fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
 /// Used by both [`bessel_j_miller`] and `bessel_i_miller`
 /// (`super::bessel_i`); the `K` family climbs upward from `K_0`/`K_1`
 /// and does not use Miller, so no `K`-side caller exists.
-pub(super) fn miller_seed_m(
-    ax: &BigFloat,
-    target_precision: u32,
-    e_x: i64,
-    m_floor: i64,
-) -> i64 {
+pub(super) fn miller_seed_m(ax: &BigFloat, target_precision: u32, e_x: i64, m_floor: i64) -> i64 {
     let p_bits = i64::from(target_precision) + 64;
     let lp = 64u32; // cheap precision for the M-selection test
     let x_lp = ax

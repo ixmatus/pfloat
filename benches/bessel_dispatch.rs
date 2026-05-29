@@ -26,7 +26,7 @@
 //! `p = 4096` is dropped: `T(4096) ≈ 13` puts the straddle at `|x| ≈
 //! 8192` and the asymptotic optimal-truncation index `N ≈ √(2|x|) ≈
 //! 128` terms × 4 kernels makes the cell prohibitive (>1 second per
-//! call at working_prec ~4160).
+//! call at `working_prec` ~4160).
 //!
 //! Run: `cargo bench --bench bessel_dispatch --features bessel`.
 //! `harness = false`; not part of `cargo test`. Save baseline with
@@ -53,7 +53,7 @@ const CELLS: &[(&str, u32, u32)] = &[
 ];
 
 /// Per-call cost at the worst cell (`p=1024, |x|=4096`, asymptotic
-/// with `N ≈ 90` terms at working_prec ~1088) is order ~100 ms.
+/// with `N ≈ 90` terms at `working_prec` ~1088) is order ~100 ms.
 /// Below-threshold Miller-regime cells (`p=1024, |x|=1024`) carry a
 /// seed index `M` that scales with `target_precision`; per-call cost
 /// is similar order. Default `measurement_time = 5 s` would yield
