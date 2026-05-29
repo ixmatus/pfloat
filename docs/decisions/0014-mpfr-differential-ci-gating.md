@@ -49,13 +49,25 @@ upper bounds; a clean 4-vCPU runner has no such contention:
   whose `s < 0` points at `p = 1024` compose Γ + sin + pow + Borwein; under the
   five-mode tier it is the suite's wall-clock floor.
 
-`timeout-minutes: 90` sits an order of magnitude below the old 6-hour ceiling
-while leaving headroom for a cold release build plus the zeta long tail on a
-slower runner. It is a regression tripwire, not a budget: if a future kernel
-genuinely needs more than 90 minutes of release sweep, that is a signal to
-investigate (the obvious first lever being to drop `differential_zeta` to
-NearestEven-only at `p = 1024`, the original user-confirmed posture before the
-Phase 1f widening added the directed modes there), not to raise the cap.
+The first green run on the real GitHub runner (run 26655573667) confirmed the
+profile: the differential job took 4549 s (~76 min), of which
+`differential_zeta::zeta_matches_mpfr` alone was 3184 s (~53 min) — roughly 70%
+of the job in a single non-parallelizable test (the next-largest test was 124 s).
+The lane passed, but at 84% of the cap, and zeta's cost is compute, not build, so
+a warm cache would not have relieved it.
+
+### Follow-up applied: zeta NearestEven-only at p = 1024 (slice ci-green-zeta)
+
+`tests/differential_zeta.rs` now runs all five modes at p ≤ 256 and
+NearestEven-only at p = 1024, restoring zeta's original user-confirmed posture
+(the Phase 1f widening, ADR-0038, had added the directed modes at p = 1024). The
+directed modes at p = 1024 mostly re-exercise the final-round converter already
+covered by the five-mode tier at p ≤ 256, so this is a ~5× cut on the dominant
+cell with no loss of meaningful signal. It brings the differential job to roughly
+40 minutes, comfortably under the 90-minute tripwire.
+
+`timeout-minutes: 90` stays a regression tripwire, not a budget: a future breach
+is a signal to investigate the responsible kernel, not to raise the cap.
 
 ### Consequences
 
