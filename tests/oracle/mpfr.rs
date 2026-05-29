@@ -112,7 +112,41 @@ impl MpfrOracle {
             FnId::Digamma => Float::with_val(oracle_prec, x.digamma_ref()),
             FnId::Zeta => Float::with_val(oracle_prec, x.zeta_ref()),
             FnId::Ei => Float::with_val(oracle_prec, x.eint_ref()),
-            other => panic!("MpfrOracle::midpoint called with non-MPFR-primary FnId: {other:?}"),
+
+            // Airy: only `Ai` has an MPFR primitive (the others route
+            // through Arb), mirroring the `enclose` dispatch above.
+            FnId::Ai => Float::with_val(oracle_prec, x.ai_ref()),
+
+            // Bessel J / Y: every fixed-order variant has an MPFR
+            // primitive; the parametric-order variants take the extra
+            // `n: i32` argument. These share the `enclose` primitives
+            // (`j0_ref` … `yn_ref`); the `midpoint` verb was missing
+            // them, which panicked the J/Y cross-check shards (pf-ypfl,
+            // discovered-from pf-hcz4).
+            FnId::BesselJ0 => Float::with_val(oracle_prec, x.j0_ref()),
+            FnId::BesselJ1 => Float::with_val(oracle_prec, x.j1_ref()),
+            FnId::BesselJn(n) => Float::with_val(oracle_prec, x.jn_ref(n)),
+            FnId::BesselY0 => Float::with_val(oracle_prec, x.y0_ref()),
+            FnId::BesselY1 => Float::with_val(oracle_prec, x.y1_ref()),
+            FnId::BesselYn(n) => Float::with_val(oracle_prec, x.yn_ref(n)),
+
+            // Genuinely Arb-primary: no MPFR primitive. The caller
+            // routes these through `ArbOracle::midpoint`; reaching here
+            // is a routing bug, so panic with a precise message.
+            FnId::Si
+            | FnId::Ci
+            | FnId::Li
+            | FnId::Bi
+            | FnId::AiPrime
+            | FnId::BiPrime
+            | FnId::BesselI0
+            | FnId::BesselI1
+            | FnId::BesselIn(_)
+            | FnId::BesselK0
+            | FnId::BesselK1
+            | FnId::BesselKn(_) => {
+                panic!("MpfrOracle::midpoint called with Arb-primary FnId: {f:?}; route via ArbOracle::midpoint")
+            }
         }
     }
 }
