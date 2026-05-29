@@ -29,6 +29,8 @@
 #[cfg(feature = "differential-arb")]
 pub mod arb;
 pub mod convert;
+#[cfg(all(feature = "differential-arb", feature = "ziv-instrumented"))]
+pub mod cross_check;
 pub mod driver;
 #[cfg(feature = "differential-arb")]
 pub mod maxima;

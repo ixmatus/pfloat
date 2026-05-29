@@ -390,6 +390,15 @@ name = "oracle_sweep"
 path = "examples/oracle_sweep.rs"
 required-features = ["differential-mpfr"]
 
+# pf-tqzz full per-release cross-check sweep (pf-hcz4, ADR-0049).
+# One FnId shard per invocation; defaults to 65536 inputs × 5 modes.
+# Each shard emits a JSON sidecar consumed by
+# scripts/pf-hcz4-aggregate.py.
+[[example]]
+name = "pf_tqzz_sweep"
+path = "examples/pf_tqzz_sweep.rs"
+required-features = ["differential-arb", "ziv-instrumented"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
