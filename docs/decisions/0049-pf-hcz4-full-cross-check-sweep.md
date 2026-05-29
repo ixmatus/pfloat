@@ -1,7 +1,8 @@
 # ADR-0049: pf-hcz4 full pf-tqzz cross-check sweep — first execution and v1.0 baseline
 
-- **Status**: in-progress (results pending sweep run)
-- **Date**: 2026-05-28
+- **Status**: in-progress (harness validated and corrected via local
+  pre-flight; full EC2 sweep deferred to the slice 8c v1.0 tag)
+- **Date**: 2026-05-28 (updated 2026-05-29)
 
 ## Context
 
@@ -120,21 +121,101 @@ measurement; widening is a separate slice with its own ADR.
 
 ## Results
 
-*Filled post-run. Placeholder structure below.*
+### Local pre-flight and harness corrections (2026-05-29)
+
+Before committing the EC2 spend, the harness was exercised locally on
+the 12 kernels whose directed rounding modes the correct-rounding
+oracle left `unswept` (all MPFR-primary, hence fast in-process): `erf,
+exp, J0, J1, Jn:5, lgamma, ln, log10, log2, sqrt, tanh, zeta`. This
+five-minute run surfaced three defects the EC2 fan-out would otherwise
+have hit at scale (panicking shards billing idle to the fallback, and
+~750 MB of spurious-violation JSON that would have broken the
+aggregator), and one of them was a real kernel-calibration finding.
+All three are fixed:
+
+- **pf-ticp (commit 7ba86f4) — composed-kernel trace mismatch.** The
+  thread-local "last Ziv trace" is the inner sub-kernel's intermediate
+  for composed kernels (`log2 = ln/ln2`, `log10 = ln/ln10`), so the
+  cross-check was comparing `ln(x)` against the `log2(x)` midpoint —
+  ~100%-of-inputs spurious violations. Fixed by comparing the trace's
+  rounded candidate against the kernel's actual output (new
+  `pfloat_kernel_value`) and skipping on mismatch
+  (`CheckOutcome::SkippedTraceNotFinal`). Function-agnostic; also
+  catches the few internally-composed `Ai` cells.
+
+- **pf-ypfl (commit 5115120) — missing MPFR midpoint verb.** `Ai` and
+  the Bessel J/Y families are MPFR-primary and swept, but
+  `MpfrOracle::midpoint` was implemented only through `Ei` and panicked
+  on them (only the `enclose` verb had them). Added the `ai_ref` /
+  `j0_ref` … `yn_ref` arms and made the match exhaustive so a future
+  verb gap is a compile error, not a runtime panic.
+
+- **pf-zhcy (commit f91718a, ADR-0050) — tanh calibration gap.** A real
+  finding, not a harness artifact: `tanh` rounds correctly in every
+  mode, but `error_guard = 24` did not establish Ziv-interval-test
+  soundness for tiny `x`, because the `(1 − e^{−2x})/(1 + e^{−2x})`
+  composition cancels ~148 bits and the grid-point short circuit forced
+  the directed-mode driver into that cancelling path. The cross-check
+  assertion is exactly the interval-test soundness condition, so it was
+  working as designed. Fixed by the stable `expm1` form
+  (`−expm1(−2x)/(2 + expm1(−2x))`), which also removed the short
+  circuit. This is the one substantive result the pre-flight produced.
+
+After the fixes the 12-kernel local run is clean: composed kernels skip
+honestly, J/Y/Ai sweep without panics, and tanh's cross-check passes (0
+violations, was 12285) with correct rounding re-verified against MPFR
+(0 mismatches over 96473 certifiable checks across all 5 modes).
+
+### Full EC2 sweep (pending — slice 8c)
+
+Deferred to the v1.0 tag ceremony, run against the frozen release SHA
+rather than a moving branch tip; see "Sequencing" below. The launch
+prerequisites identified in the same pre-flight review still apply
+before any fan-out: the branch SHA must be reachable from the clone
+remote, the cloud-init needs a `trap shutdown` covering pre-smoke setup
+failures, the `--smoke` shard should be Arb-primary (the slowest path,
+currently `exp` which is fast MPFR), and the AMI architecture must be
+derived from the instance type. Placeholder for the run record:
 
 - **Run ID**: `<RUN_ID>`
-- **Tip SHA**: `<GIT_SHA>` (main at slice start: `9453215`)
-- **Shards launched**: 63 (full surface) + 1 smoke pre-flight
-- **Total assertions**: TBD (`63 × 65 536+lm-seeds × 5` ≈ 15.4M+)
-- **Total violations**: TBD
-- **Per-kernel violation counts**: TBD
-- **Top violations by `ratio_log2`**: TBD
-- **Wall-clock**: max-shard TBD, sum TBD
-- **AWS cost**: TBD (target <$10)
-- **Spot reclaims**: TBD
+- **Tip SHA**: `<GIT_SHA>` (release SHA at 8c)
+- **Shards launched**: 63 + 1 smoke pre-flight
+- **Total assertions / violations / per-kernel counts**: TBD
+- **Wall-clock, AWS cost, spot reclaims**: TBD (cost target <$10)
 - **Durable artifact**: `tests/oracle/status/<fn>.toml` `[cross_check]`
   tables (63 files); per-shard `result.json` archived to
   `s3://${S3_BUCKET}/${RUN_ID}/`
+
+### Sequencing
+
+The full sweep is a *per-release* gate, so running it against this
+branch tip would validate a SHA that moves before v1.0 (the API/docs/CI
+blockers and 8c land after it), forcing a re-run. It belongs at the 8c
+tag against the frozen SHA, where the gate is load-bearing and the
+README's "actively guarded" claim is honestly anchored to what ships.
+Of the 12 directed-mode-unswept kernels, the genuine coverage gap is
+small and entirely MPFR-primary (fast, local); the heavy Arb-primary
+shards that dominate the EC2 cost are already correctly-rounded in all
+five modes, so the cross-check there is confirmation rather than new
+signal. Flipping the `unswept` directed-mode rows to
+`correctly-rounded` is a separate matter that needs a correctly-rounded
+`bf→f32` directed conversion, not this budget sweep.
+
+### If zero violations
+
+All 38 per-kernel `*_ERROR_GUARD` constants confirmed empirically across
+the swept input surface. The v1.0 "actively guarded" claim per ADR-0039
+strengthens from algebraic-only to algebraic-plus-empirical.
+
+### If non-zero violations
+
+Per fault class:
+
+- Largest-`ratio_log2` cell named in the follow-up bead.
+- Bead description carries top-5 violations for the kernel +
+  smallest power-of-two `error_guard` that would have passed.
+- Pattern crosswalks (e.g. "every cell at `working_prec ≥ 400`")
+  go to `feedback_*.md`.
 
 ### If zero violations
 
