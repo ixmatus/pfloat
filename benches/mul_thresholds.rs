@@ -91,8 +91,8 @@ const LIMB_SIZES_TAIL: &[usize] = &[
 /// top sizes run in the 100s of milliseconds (extrapolating the
 /// ADR-0027 512-limb @ 108 µs by O(n^1.585) gives ~240 ms at 65536
 /// limbs); default `measurement_time = 5 s` would yield far fewer
-/// than 10 samples at the top of the sweep. Bump measurement_time
-/// and drop sample_size to keep the run finite while preserving
+/// than 10 samples at the top of the sweep. Bump `measurement_time`
+/// and drop `sample_size` to keep the run finite while preserving
 /// statistical confidence on the decisive sizes.
 const TAIL_MEASUREMENT_TIME: Duration = Duration::from_secs(15);
 const TAIL_WARMUP_TIME: Duration = Duration::from_secs(2);

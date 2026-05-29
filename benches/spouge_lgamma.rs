@@ -69,7 +69,7 @@ fn bench_lgamma(c: &mut Criterion) {
             // timing loop.
             let (z, _) = BigFloat::parse_str(decimal, target, RoundingMode::NearestEven)
                 .expect("decimal literal parses");
-            let id = BenchmarkId::from_parameter(format!("p{}_{}", target, label));
+            let id = BenchmarkId::from_parameter(format!("p{target}_{label}"));
             group.bench_with_input(id, &(target, z), |bench, (t, z)| {
                 bench.iter(|| {
                     black_box(z)
