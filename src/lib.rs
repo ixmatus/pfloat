@@ -16,6 +16,7 @@
 //! # Quickstart
 //!
 //! ```
+//! # #[cfg(feature = "big")] {
 //! use pfloat::{BigFloat, RoundingMode};
 //!
 //! // BigFloat: runtime precision, heap-allocated mantissa.
@@ -24,6 +25,7 @@
 //! // any IEEE 754-2019 sticky exception flags raised by the operation.
 //! let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
 //! let (_sqrt2, _status) = two.sqrt(RoundingMode::NearestEven);
+//! # }
 //! ```
 //!
 //! Five IEEE 754-2019 rounding modes are available
