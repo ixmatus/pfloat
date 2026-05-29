@@ -33,7 +33,7 @@ mod differential;
 
 use differential::{
     bigfloat_from_i64, bigfloat_to_rug, mpfr_oracle_for_mode, rug_from_i64,
-    BIT_EXACT_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
+    BIT_EXACT_ROUNDING_MODES, NEAREST_EVEN_ROUNDING_MODES, TRANSCENDENTAL_PRECISIONS,
 };
 use pfloat::RoundingMode;
 
@@ -66,7 +66,21 @@ const DYADIC: &[(i64, i64)] = &[
 #[test]
 fn zeta_matches_mpfr() {
     for &p in TRANSCENDENTAL_PRECISIONS {
-        for &mode in BIT_EXACT_ROUNDING_MODES {
+        // The `s < 0` points at p = 1024 compose Γ + sin + pow + Borwein and
+        // are the differential suite's wall-clock floor: ~53 min of a ~76 min
+        // release CI job, all in this one non-parallelizable test (ADR-0014
+        // amendment, slice ci-green-zeta). The directed modes at p = 1024 were
+        // the Phase 1f widening (ADR-0038) over zeta's original, user-confirmed
+        // NearestEven-only-at-p=1024 posture; they mostly re-exercise the
+        // final-round converter already covered by the five-mode tier at
+        // p <= 256. Keep all five modes where ties are common (p <= 256);
+        // NearestEven-only at p = 1024.
+        let modes: &[RoundingMode] = if p >= 1024 {
+            NEAREST_EVEN_ROUNDING_MODES
+        } else {
+            BIT_EXACT_ROUNDING_MODES
+        };
+        for &mode in modes {
             for &(num, den) in DYADIC {
                 let x_bf = if den == 1 {
                     bigfloat_from_i64(num, p)
