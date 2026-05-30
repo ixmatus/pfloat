@@ -142,6 +142,20 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
+    // Tiny x: log1p(x) = x − x²/2 + … lies within a sub-ULP of x, so
+    // round x with that negative infinitesimal directly, bypassing the
+    // capped cancellation boost that otherwise collapses 1 + x to 1 and
+    // the difference to 0 for very tiny x (review 2026-05-29).
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            x.is_sign_positive(),
+            target_precision,
+            mode,
+        );
+    }
+
     // Cancellation boost: `1 + x` cancels ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.

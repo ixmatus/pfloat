@@ -121,6 +121,21 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => unreachable!(),
     };
 
+    // Tiny x: expm1(x) = x + x²/2 + … lies within a sub-ULP of x, so
+    // round x with that positive infinitesimal directly. The Ziv path
+    // below caps its cancellation boost at +1024 bits, so for very tiny
+    // x the exp(x)−1 composition collapses to exactly 0 and the interval
+    // test certifies the false 0 (half_width(0)=0); review 2026-05-29.
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            x.is_sign_negative(),
+            target_precision,
+            mode,
+        );
+    }
+
     // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.
