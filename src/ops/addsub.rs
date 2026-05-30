@@ -438,35 +438,17 @@ fn huge_gap_short_circuit(
     target_precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
-    // The smaller operand contributes a non-zero sub-ULP residue.
-    // For same-sign add, sticky is set as if large's bits below the
-    // rounding boundary had a 1. For opposite-sign sub, the smaller
-    // pulls large slightly down; the rounding direction may flip
-    // for directed modes, but the magnitude difference is below 1
-    // ULP at target precision, so a bit-exact treatment is the same
-    // as truncation-with-sticky.
-    let _ = (sign_s, same_sign);
-
-    // Build an intermediate at large.precision and route through
-    // the rounding pipeline with `pre_sticky = true`.
-    let (e_l, m_l, p_l) = match &large.class {
-        Class::Normal {
-            exponent, mantissa, ..
-        } => (*exponent, mantissa.as_slice(), large.precision),
-        _ => unreachable!("large is finite non-zero"),
-    };
-
-    let (value, status) = round_finite_to_precision(
-        sign_l,
-        e_l,
-        m_l,
-        p_l,
-        true, // sticky from the smaller operand's contribution
-        target_precision,
-        mode,
-    );
-    auto_raise(status);
-    (value, status)
+    // The smaller operand lies entirely more than target_precision + 64
+    // bits below `large`'s leading bit, so it contributes only a sub-ULP
+    // residue: magnitude-increasing for a same-sign add, magnitude-
+    // decreasing for an opposite-sign subtraction. Round `large` with
+    // that infinitesimal so every rounding mode lands correctly. The
+    // prior code routed `large` through the pipeline with a sticky bit,
+    // which ignored the residue *direction* and mis-rounded the directed
+    // modes by 1 ULP (e.g. TowardZero(1 - 2^-200) returned 1 instead of
+    // the predecessor). Review 2026-05-29.
+    let _ = sign_s;
+    crate::rounding::round_with_infinitesimal(large, sign_l, !same_sign, target_precision, mode)
 }
 
 // Multi-limb arithmetic helpers live in `crate::ops::limbs`.
