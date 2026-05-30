@@ -52,6 +52,46 @@ use crate::sign::Sign;
 #[cfg(feature = "fixed")]
 use crate::fixed::FixedFloat;
 
+/// The decimal-exponent magnitude past which formatting saturates
+/// instead of rendering exact digits (ADR-0051).
+///
+/// Rendering `m · 2^E` exactly needs a `5^|shift|` bridge whose size is
+/// linear in `E` (`10^d = 2^d · 5^d`, and the 5-part does not cancel),
+/// so a finite value with an astronomically large binary exponent has no
+/// bounded-cost decimal rendering — and the bounded scientific shortcut
+/// (`E · log10(2)` for the exponent, `exp10(frac)` for the digits) is
+/// unavailable, because `log10`/`exp10` are `exp-log`-gated while this
+/// module builds under `big` alone. The cap is value-matched to parse's
+/// `MAX_DECIMAL_EXPONENT` (`src/parse.rs`) so the exactly-renderable
+/// range is exactly the range parse round-trips; past it a value
+/// saturates, mirroring parse's own `±inf` / `±0` saturation.
+const MAX_FORMAT_DECIMAL_EXPONENT: i64 = 1_000_000;
+
+/// How a finite value past [`MAX_FORMAT_DECIMAL_EXPONENT`] renders: too
+/// large to print reads back as `inf`, too small as `0`, matching parse.
+#[derive(Clone, Copy)]
+enum Saturation {
+    Infinite,
+    Zero,
+}
+
+/// Render a sign-carrying saturation token (`inf` / `-inf` / `0` / `-0`)
+/// for a finite value whose magnitude is past the format cap. The token
+/// is a resource bound, not an arithmetic claim that the value is
+/// infinite or zero; it is the value parse would itself produce for any
+/// decimal that large or small (ADR-0051).
+fn saturated_string(sign: Sign, kind: Saturation) -> String {
+    let mut s = String::new();
+    if matches!(sign, Sign::Negative) {
+        s.push('-');
+    }
+    s.push_str(match kind {
+        Saturation::Infinite => "inf",
+        Saturation::Zero => "0",
+    });
+    s
+}
+
 impl BigFloat {
     /// Returns a decimal string with `digits` significant digits,
     /// rounded under `mode`.
@@ -151,7 +191,31 @@ fn format_normal(
     mode: RoundingMode,
 ) -> String {
     let m_int = extract_as_integer(mantissa, precision);
-    let scale = exponent - i64::from(precision) + 1;
+    // Saturating exponent arithmetic: `exponent` can sit at i64::MIN/MAX
+    // for a value built by repeated squaring (mul saturates the exponent;
+    // pfloat has no emax), so the bare `exponent - precision + 1` could
+    // overflow. Within the cap below the result is far from the bounds,
+    // so saturation never changes a renderable value's scale.
+    let scale = exponent
+        .saturating_sub(i64::from(precision))
+        .saturating_add(1);
+
+    // Magnitude cap (ADR-0051): past MAX_FORMAT_DECIMAL_EXPONENT a finite
+    // value has no bounded-cost decimal rendering, so it saturates like
+    // parse. For a normalized mantissa `top_set_bit == precision - 1`, so
+    // `log2_value == exponent`; the rational log10 estimate is exact to
+    // far better than one part in the cap at this magnitude.
+    let log2_value = top_set_bit(&m_int)
+        .map_or(0, |t| t as i64)
+        .saturating_add(scale);
+    let decimal_exp_estimate = approximate_log10_floor(log2_value);
+    if decimal_exp_estimate > MAX_FORMAT_DECIMAL_EXPONENT {
+        return saturated_string(sign, Saturation::Infinite);
+    }
+    if decimal_exp_estimate < -MAX_FORMAT_DECIMAL_EXPONENT {
+        return saturated_string(sign, Saturation::Zero);
+    }
+
     let (digits, decimal_exp) = extract_digits(&m_int, scale, digit_count, mode, sign);
     compose(&digits, decimal_exp, sign)
 }
@@ -234,6 +298,14 @@ fn approximate_log10_floor(n: i64) -> i64 {
 
 /// Compute `round(value × 10^shift)` where `value = m × 2^scale`,
 /// under the chosen rounding mode and sign.
+///
+/// The caller gates this behind [`MAX_FORMAT_DECIMAL_EXPONENT`]
+/// (`format_normal`), which bounds `|shift|` and `|scale + shift|` well
+/// within `u32` for any normal-precision operand, so the power-of-two
+/// bit counts below never approach `u32::MAX`. The `saturating_add`s and
+/// the saturating `try_into`s are a defense-in-depth backstop for the
+/// astronomically-high-precision corner (a multi-hundred-MB mantissa),
+/// where the result is bounded-but-truncated rather than a panic.
 fn compute_scaled(
     m_int: &[u64],
     scale: i64,
@@ -253,7 +325,7 @@ fn compute_scaled(
     }
     if num_p2 > 0 {
         let bits = top_set_bit(&num).map_or(0u32, |t| (t + 1) as u32);
-        let total = bits + num_p2;
+        let total = bits.saturating_add(num_p2);
         let mut shifted = vec![0u64; limbs_for(total)];
         or_left_shifted_into(&mut shifted, &num, bits, num_p2);
         num = shifted;
@@ -262,7 +334,7 @@ fn compute_scaled(
     let mut den: Vec<u64> = if den_p5 > 0 { pow5(den_p5) } else { vec![1] };
     if den_p2 > 0 {
         let bits = top_set_bit(&den).map_or(0u32, |t| (t + 1) as u32);
-        let total = bits + den_p2;
+        let total = bits.saturating_add(den_p2);
         let mut shifted = vec![0u64; limbs_for(total)];
         or_left_shifted_into(&mut shifted, &den, bits, den_p2);
         den = shifted;
@@ -560,6 +632,61 @@ mod tests {
         // Either "1.5000" trimmed → "1.5", or some scientific form.
         let back = parse(&s);
         assert_eq!(back.partial_cmp(&v).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn max_format_decimal_exponent_matches_parse_cap() {
+        // Value-matched to parse's `MAX_DECIMAL_EXPONENT` (private to
+        // `parse.rs`) so the renderable range equals the round-trippable
+        // range. The literal is asserted here so a change to one side is
+        // noticed against the other (ADR-0051).
+        assert_eq!(MAX_FORMAT_DECIMAL_EXPONENT, 1_000_000);
+    }
+
+    #[test]
+    fn format_cap_saturates_finite_huge_to_inf_and_zero() {
+        // 2^(2^40): finite (exponent ≈ 1.1e12 ≪ i64::MAX), decimal
+        // exponent ≈ 3.3e11 — far past the 1e6 cap. Must saturate to a
+        // bounded token, never panic or OOM (regression for finding 11).
+        let ne = RoundingMode::NearestEven;
+        let mut x = BigFloat::try_from_i64_exact(2, 53).unwrap();
+        for _ in 0..40 {
+            x = x.mul(&x, ne).0;
+        }
+        assert!(!x.is_infinite(), "2^(2^40) is finite, not Inf");
+        assert_eq!(x.to_decimal_string(17, ne), "inf");
+        assert_eq!(x.to_string(), "inf");
+        assert_eq!(x.negated().to_string(), "-inf");
+
+        // 2^(-2^40): finite nonzero, decimal exponent ≈ -3.3e11.
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        let tiny = one.div(&x, ne).0;
+        assert!(!tiny.is_zero(), "2^(-2^40) is finite nonzero");
+        assert_eq!(tiny.to_string(), "0");
+        assert_eq!(tiny.negated().to_string(), "-0");
+    }
+
+    #[test]
+    fn format_cap_boundary_under_renders_over_saturates() {
+        // Cheap boundary straddle via squaring: 2^(2^k) has decimal
+        // exponent ≈ 0.30103·2^k. k = 21 → ≈ 6.3e5 (inside the cap), one
+        // more squaring (k = 22) → ≈ 1.26e6 (past it).
+        let ne = RoundingMode::NearestEven;
+        let mut under = BigFloat::try_from_i64_exact(2, 53).unwrap();
+        for _ in 0..21 {
+            under = under.mul(&under, ne).0;
+        }
+        let s = under.to_string();
+        assert!(s.contains('e'), "in-cap large value renders scientific: {s}");
+        let back = BigFloat::parse_str(&s, 53, ne).unwrap().0;
+        assert_eq!(
+            back.partial_cmp(&under).0,
+            Some(Ordering::Equal),
+            "in-cap render round-trips"
+        );
+
+        let over = under.mul(&under, ne).0; // 2^(2^22)
+        assert_eq!(over.to_string(), "inf", "just past the cap saturates");
     }
 
     #[cfg(feature = "fixed")]
