@@ -303,6 +303,29 @@ fn panic_fmt_large_exponent_does_not_overflow() {
     );
 }
 
+// addsub.rs:297 / sqrt.rs:148: `e - p + 1` underflows i64 for an operand
+// whose exponent saturated to ~i64::MIN (the reciprocal of a saturated-
+// exponent value). mul/div were i128-hardened (pf-rnc); add/sub/sqrt
+// were not. Must not panic on any finite operands.
+#[test]
+fn panic_addsub_sqrt_saturated_exponent_is_bounded() {
+    let two = BigFloat::try_from_i64_exact(2, 53).unwrap();
+    let mut big = two;
+    for _ in 0..200 {
+        let (sq, st) = big.mul(&big, NE); // exponent saturates to i64::MAX
+        big = sq;
+        if st.overflow() {
+            break;
+        }
+    }
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let (tiny, _) = one.div(&big, NE); // exponent ~ i64::MIN + 1
+    let (s, _) = tiny.add(&tiny, NE);
+    assert!(!s.is_nan(), "add of a near-i64::MIN-exponent operand must not panic");
+    let (q, _) = tiny.sqrt(NE);
+    assert!(!q.is_nan(), "sqrt of a near-i64::MIN-exponent operand must not panic");
+}
+
 // trig_reduce.rs:73: `e_x + slack` overflows i64 for a value whose
 // exponent saturated to i64::MAX (reachable by repeated squaring). The
 // module doc promises qNaN + INVALID for out-of-range |x|, not a panic.

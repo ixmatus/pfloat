@@ -145,7 +145,11 @@ fn sqrt_finite_positive(
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
     let m_a_int = extract_as_integer(m_a, p_a);
-    let scale_a = e_a - i64::from(p_a) + 1;
+    // i128 so an exponent near i64::MIN (reachable by dividing into a
+    // saturated-exponent value under the no-emax design) does not
+    // overflow the scale; the final result exponent ~ e_a/2 is well
+    // within i64. Review 2026-05-29.
+    let scale_a = i128::from(e_a) - i128::from(p_a) + 1;
 
     // Pick a shift L so:
     //   1. p_a + L >= 2 × (target_precision + guard) so the integer
@@ -154,7 +158,7 @@ fn sqrt_finite_positive(
     //      cleanly: sqrt(v_a) = isqrt(m_a × 2^L) × 2^((scale_a-L)/2)).
     let guard: u32 = 16;
     let mut l = (2u32.saturating_mul(target_precision.saturating_add(guard))).saturating_sub(p_a);
-    let parity = ((scale_a - i64::from(l)) & 1) != 0;
+    let parity = ((scale_a - i128::from(l)) & 1) != 0;
     if parity {
         l += 1;
     }
@@ -181,12 +185,14 @@ fn sqrt_finite_positive(
     //   sqrt(v_a) = sqrt(N) × 2^((scale_a - L) / 2)
     //   In pfloat's exponent (position of MSB):
     //     result_exp = top_bit_s + (scale_a - L) / 2
-    let scale_diff = scale_a - i64::from(l);
+    let scale_diff = scale_a - i128::from(l);
     debug_assert!(
         scale_diff & 1 == 0,
         "scale_diff must be even by construction"
     );
-    let result_exp = (top_bit_s as i64) + scale_diff / 2;
+    let result_exp_i = i128::from(top_bit_s as i64) + scale_diff / 2;
+    let result_exp = i64::try_from(result_exp_i)
+        .unwrap_or(if result_exp_i < 0 { i64::MIN } else { i64::MAX });
 
     let (value, status) = round_finite_to_precision(
         Sign::Positive,

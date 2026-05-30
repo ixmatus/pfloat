@@ -294,24 +294,27 @@ fn add_finite_finite(
     // into the buffer. The operand with the larger scale shifts
     // left by the difference; the one with the smaller scale shifts
     // by zero.
-    let scale_l = e_l - i64::from(p_l) + 1;
-    let scale_s = e_s - i64::from(p_s) + 1;
+    // i128 throughout the scale arithmetic so an exponent near i64::MIN
+    // (reachable by dividing into a saturated-exponent value under the
+    // no-emax design) cannot overflow; the huge-gap test below catches
+    // any extreme gap, after which the shifts provably fit u64. Review
+    // 2026-05-29.
+    let scale_l = i128::from(e_l) - i128::from(p_l) + 1;
+    let scale_s = i128::from(e_s) - i128::from(p_s) + 1;
     let common_scale = scale_l.min(scale_s);
     // Shifts are always non-negative.
-    let shift_l = (scale_l - common_scale) as u64;
-    let shift_s = (scale_s - common_scale) as u64;
-
+    let shift_l_i = scale_l - common_scale;
+    let shift_s_i = scale_s - common_scale;
     // Top bit positions of each operand in the common-scale frame.
-    let top_l = shift_l + u64::from(p_l) - 1;
-    let top_s = shift_s + u64::from(p_s) - 1;
+    let top_l_i = shift_l_i + i128::from(p_l) - 1;
+    let top_s_i = shift_s_i + i128::from(p_s) - 1;
 
     // Huge-scale-difference short-circuit: when the smaller-scale
     // operand sits more than `huge_gap_threshold` bits below the
     // larger's window, its contribution is below the rounding
     // boundary at the target precision. Round the larger with sticky.
-    let huge_gap_threshold = u64::from(target_precision) + 64;
-    let scale_diff = top_l.abs_diff(top_s);
-    if scale_diff > huge_gap_threshold {
+    let huge_gap_threshold = i128::from(target_precision) + 64;
+    if top_l_i.abs_diff(top_s_i) > huge_gap_threshold.unsigned_abs() {
         return huge_gap_short_circuit(
             large,
             sign_l,
@@ -321,6 +324,13 @@ fn add_finite_finite(
             mode,
         );
     }
+
+    // Bounded path: the gap is below the threshold, so the shifts and
+    // bit positions fit u64.
+    let shift_l = shift_l_i as u64;
+    let shift_s = shift_s_i as u64;
+    let top_l = top_l_i as u64;
+    let top_s = top_s_i as u64;
 
     // Working precision: enough to hold the highest bit (with
     // possible 1-bit carry on same-sign add) plus a few guard bits.
@@ -385,9 +395,11 @@ fn add_finite_finite(
     // to be the min only when `scale_s == min(scale_l, scale_s)`;
     // slice 1f's FMA exposes the case where `scale_l` is the
     // minimum and that shortcut produces the wrong exponent.
-    let result_exponent = i64::try_from(leading_bit)
-        .expect("leading bit fits in i64 at any practical precision")
-        + common_scale;
+    let result_exponent_i = i128::from(
+        i64::try_from(leading_bit).expect("leading bit fits in i64 at any practical precision"),
+    ) + common_scale;
+    let result_exponent = i64::try_from(result_exponent_i)
+        .unwrap_or(if result_exponent_i < 0 { i64::MIN } else { i64::MAX });
 
     // Build a normalized intermediate at intermediate_precision = leading_bit + 1
     // bits, top-bit-set.
