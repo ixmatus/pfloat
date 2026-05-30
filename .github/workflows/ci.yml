@@ -109,7 +109,7 @@ jobs:
       - working-directory: fuzz
         run: cargo fuzz run parse -- -max_total_time=60
 
-  # ---------- MPFR differential (Linux-only) ----------
+  # ---------- MPFR full-union integration (Linux-only) ----------
   # ADR-0014 records the gating: 10⁴ inputs / (op × precision × mode)
   # in CI, 10⁶ locally under `PFLOAT_DEEP=1`. The lane is Linux-only
   # because `gmp-mpfr-sys` does not build on stock Windows toolchains;
@@ -123,8 +123,19 @@ jobs:
   # minutes-scale the slice-6h note recorded, with no loss of input,
   # mode, or precision coverage. `timeout-minutes` makes a future
   # regression fail fast instead of burning the full 6-hour ceiling.
+  #
+  # The run carries no `--test` filter (ADR-0053). The earlier
+  # `--test 'differential_*'` scoped to the differential lanes alone and
+  # left the MPFR-backed oracle smoke tests running in no per-push job
+  # at all: those tests also need `differential-mpfr` to compile, so the
+  # feature matrix never builds them, and the glob did not match them.
+  # With no filter, cargo runs every target whose `required-features`
+  # are met (the differential lanes, the oracle smokes, and the
+  # property/unit suite under the MPFR feature union) and silently skips
+  # the rest, so the Arb- and ziv-instrumented-gated oracle targets stay
+  # on their EC2 cross-check tier (ADR-0049) without erroring here.
   differential:
-    name: MPFR differential (linux)
+    name: MPFR full-union integration (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -135,7 +146,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install MPFR + GMP
         run: sudo apt-get update && sudo apt-get install -y libmpfr-dev libgmp-dev
-      - run: cargo test --release --features=differential-mpfr --test 'differential_*' --verbose
+      - run: cargo test --release --features=differential-mpfr --verbose
 
   # ---------- Conformance evidence anti-rot gate ----------
   # README's `## Conformance evidence` section reports per-bucket
@@ -150,3 +161,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/conformance-counts.sh --check
+      # Guard the full-feature-union list against silent drift: every
+      # kernel feature in Cargo.toml must appear in the test-matrix and
+      # clippy union, or a new kernel's tests would stop being gated
+      # per-push the way the high-tier kernels once were. ADR-0053.
+      - run: ./scripts/feature-union-check.sh
