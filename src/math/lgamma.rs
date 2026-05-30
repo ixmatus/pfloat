@@ -188,21 +188,29 @@ fn try_lgamma_small_pos_int_exact(x: &BigFloat, target_precision: u32) -> Option
 /// mode.
 fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     if matches!(x.sign(), Sign::Negative) {
-        let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-        // y = 1 − x, positive since x < 0.
-        let (y, _) = one.sub(x, RoundingMode::NearestEven);
-        let pi = pi_at(working_prec);
-        let (pi_x, _) = pi.mul(x, RoundingMode::NearestEven);
-        let (sin_val, _) = pi_x.sin(RoundingMode::NearestEven);
-        let abs_sin = sin_val.abs();
-        let (ln_sin, _) = abs_sin.ln(RoundingMode::NearestEven);
-        let (ln_pi, _) = pi.ln(RoundingMode::NearestEven);
-        let (lgamma_y, _) = y
-            .lgamma_round(working_prec, RoundingMode::NearestEven)
-            .expect("precision >= 1");
-        let (mid, _) = ln_pi.sub(&ln_sin, RoundingMode::NearestEven);
-        let (result, _) = mid.sub(&lgamma_y, RoundingMode::NearestEven);
-        return result;
+        // ln|Γ| has roots on the negative axis where the reflection
+        // ln(π) − ln|sin(πx)| − lgamma(1−x) is a near-total cancellation
+        // of O(1) terms; boost the working precision by the realised
+        // cancellation so the Ziv half-width stays sound (review
+        // 2026-05-29, root cause 2).
+        return super::ziv::cancellation_boosted(working_prec, |w| {
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            // y = 1 − x, positive since x < 0.
+            let (y, _) = one.sub(x, RoundingMode::NearestEven);
+            let pi = pi_at(w);
+            let (pi_x, _) = pi.mul(x, RoundingMode::NearestEven);
+            let (sin_val, _) = pi_x.sin(RoundingMode::NearestEven);
+            let abs_sin = sin_val.abs();
+            let (ln_sin, _) = abs_sin.ln(RoundingMode::NearestEven);
+            let (ln_pi, _) = pi.ln(RoundingMode::NearestEven);
+            let (lgamma_y, _) = y
+                .lgamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (mid, _) = ln_pi.sub(&ln_sin, RoundingMode::NearestEven);
+            let (result, _) = mid.sub(&lgamma_y, RoundingMode::NearestEven);
+            let op_scale = super::ziv::value_exponent(&mid).max(super::ziv::value_exponent(&lgamma_y));
+            (result, op_scale)
+        });
     }
 
     // Positive branch.

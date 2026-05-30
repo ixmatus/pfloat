@@ -70,7 +70,10 @@ fn assert_close(label: &str, got: &BigFloat, reference: &str) {
 /// `target`. The high-precision path is correct for these inputs, so a
 /// disagreement is a misround at `target`.
 fn assert_refinement_stable(label: &str, x: &BigFloat, f: impl Fn(&BigFloat, u32) -> BigFloat) {
-    const HIGH: u32 = 700;
+    // Comfortably above the test inputs' cancellation depth (~262 bits
+    // for the li case, the deepest) so f@HIGH is correct well past 53
+    // bits, while staying in the kernels' fast regime.
+    const HIGH: u32 = 320;
     let direct = f(x, 53);
     let refined = f(x, HIGH).round_to_precision(53, NE).unwrap().0;
     assert_eq!(

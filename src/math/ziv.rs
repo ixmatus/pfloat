@@ -204,6 +204,66 @@ pub(crate) fn ziv_round_capturing(
     trace
 }
 
+/// Binary exponent of a finite value, or `i64::MIN` for zero / special
+/// values (so it sorts below any real operand scale).
+pub(crate) fn value_exponent(v: &BigFloat) -> i64 {
+    match &v.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => i64::MIN,
+    }
+}
+
+/// Re-evaluate a cancellation-prone composition at a working precision
+/// raised by the realised cancellation depth.
+///
+/// `eval(w)` returns `(value, operand_scale)`, where `operand_scale` is
+/// the binary exponent of the largest magnitude that cancelled to form
+/// `value`. When the value falls far below that scale — a near-zero
+/// result produced by catastrophic cancellation, such as `lgamma` and
+/// `digamma` near their negative-axis roots or `li` near its zero — the
+/// value computed at `working_prec` is dominated by accumulated rounding
+/// error, so the Ziv interval test's *relative* half-width
+/// (`|y|·2^-(working-guard)`) understates the true *absolute* error and
+/// would certify a wrong result. We raise the precision by the lost-bit
+/// count and re-evaluate, iterating because a probe taken below the
+/// cancellation depth under-reports it (the value collapses toward
+/// zero). The returned value carries `working_prec` accurate bits
+/// relative to its own magnitude, which is exactly the premise the Ziv
+/// half-width assumes. Review 2026-05-29 (root cause 2).
+///
+/// The cancellation depth is bounded by the input's proximity to the
+/// zero, itself bounded by the input precision; the iteration cap is a
+/// backstop and the Ziv driver remains the outer correctness gate.
+pub(crate) fn cancellation_boosted(
+    working_prec: u32,
+    eval: impl Fn(u32) -> (BigFloat, i64),
+) -> BigFloat {
+    let mut w = working_prec;
+    let mut last = None;
+    for _ in 0..12 {
+        let (value, operand_scale) = eval(w);
+        let result_exp = match &value.class {
+            Class::Normal { exponent, .. } => *exponent,
+            _ => {
+                // Collapsed to zero/special at this precision: the
+                // cancellation exceeds w. Double and retry.
+                last = Some(value);
+                w = w.saturating_mul(2);
+                continue;
+            }
+        };
+        let cancel = operand_scale.saturating_sub(result_exp).max(0);
+        let cancel = u32::try_from(cancel).unwrap_or(u32::MAX);
+        let needed = working_prec.saturating_add(cancel).saturating_add(8);
+        if w >= needed {
+            return value;
+        }
+        last = Some(value);
+        w = needed;
+    }
+    last.unwrap_or_else(|| eval(w).0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

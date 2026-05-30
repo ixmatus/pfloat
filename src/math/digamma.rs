@@ -152,19 +152,29 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
 /// `ψ(x+1) = ψ(x) + 1/x`.
 fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     if matches!(x.sign(), Sign::Negative) {
-        // Reflection: ψ(x) = ψ(1 − x) − π·cot(πx).
-        let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
-        let (y, _) = one.sub(x, RoundingMode::NearestEven);
-        let pi = pi_at(working_prec);
-        let (pi_x, _) = pi.mul(x, RoundingMode::NearestEven);
-        let (sin_pi_x, _) = pi_x.sin(RoundingMode::NearestEven);
-        let (cos_pi_x, _) = pi_x.cos(RoundingMode::NearestEven);
-        let (cot_pi_x, _) = cos_pi_x.div(&sin_pi_x, RoundingMode::NearestEven);
-        let (pi_cot, _) = pi.mul(&cot_pi_x, RoundingMode::NearestEven);
-        let (psi_y, _) = y
-            .digamma_round(working_prec, RoundingMode::NearestEven)
-            .expect("precision >= 1");
-        return psi_y.sub(&pi_cot, RoundingMode::NearestEven).0;
+        // ψ has roots on the negative axis where the reflection
+        // ψ(1 − x) − π·cot(πx) is a near-total cancellation of O(1)
+        // terms; boost the working precision by the realised
+        // cancellation so the Ziv half-width stays sound (review
+        // 2026-05-29, root cause 2).
+        return super::ziv::cancellation_boosted(working_prec, |w| {
+            // Reflection: ψ(x) = ψ(1 − x) − π·cot(πx).
+            let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
+            let (y, _) = one.sub(x, RoundingMode::NearestEven);
+            let pi = pi_at(w);
+            let (pi_x, _) = pi.mul(x, RoundingMode::NearestEven);
+            let (sin_pi_x, _) = pi_x.sin(RoundingMode::NearestEven);
+            let (cos_pi_x, _) = pi_x.cos(RoundingMode::NearestEven);
+            let (cot_pi_x, _) = cos_pi_x.div(&sin_pi_x, RoundingMode::NearestEven);
+            let (pi_cot, _) = pi.mul(&cot_pi_x, RoundingMode::NearestEven);
+            let (psi_y, _) = y
+                .digamma_round(w, RoundingMode::NearestEven)
+                .expect("precision >= 1");
+            let (result, _) = psi_y.sub(&pi_cot, RoundingMode::NearestEven);
+            let op_scale =
+                super::ziv::value_exponent(&psi_y).max(super::ziv::value_exponent(&pi_cot));
+            (result, op_scale)
+        });
     }
 
     // Positive branch: shift up if needed, then apply Stirling.
