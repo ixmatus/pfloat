@@ -184,6 +184,21 @@ fn rc2_digamma_near_negative_zero_is_correctly_rounded() {
     assert_refinement_stable("digamma", &x, |x, p| x.digamma_round(p, NE).unwrap().0);
 }
 
+// Ci(x) = γ + ln|x| + Σ … cancels near its real zero (~0.61650549),
+// the same relative-half-width defect as li (single composition rather
+// than li's Ei(ln x) double composition).
+#[test]
+fn rc2_ci_near_its_zero_is_correctly_rounded() {
+    let x = BigFloat::parse_str(
+        "0.6165054856207162337971104041001727475394958981816653305721207211247532",
+        700,
+        NE,
+    )
+    .unwrap()
+    .0;
+    assert_refinement_stable("ci", &x, |x, p| x.ci_round(p, NE).unwrap().0);
+}
+
 // expm1/log1p cancellation boost is capped (inner_w = min(w+cancel,
 // w+1024), src/math/expm1.rs:152). For x below ~2^-(target+1088) the
 // 1-subtraction collapses to exactly 0 and half_width(0)=0 certifies
