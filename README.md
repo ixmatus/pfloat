@@ -27,9 +27,14 @@ Two precision profiles share the same arithmetic. `BigFloat` carries
 its precision as a runtime field and stores its mantissa on the heap
 behind an `alloc` dependency. `FixedFloat<const PREC: u32>`
 parameterises the same arithmetic by a compile-time precision
-constant, stack-allocates its mantissa via a const generic, and
-works without `alloc` (the `no_std` story, with `thumbv6m-none-eabi`
-and `thumbv8m.main-none-eabi` cross-compile CI lanes).
+constant and stack-allocates its mantissa via a const generic, so the
+value is `Copy` and holds no heap pointer and the optimizer sees the
+precision as a constant. Its operations currently delegate to
+`BigFloat` and so allocate while computing; the transcendental
+surface needs `alloc` intrinsically, because correct rounding grows
+the working precision at runtime past any compile-time width. pfloat
+is `no_std`-first and `alloc`-only, and CI cross-compiles it to
+`thumbv6m-none-eabi`.
 
 The IEEE 754-2019 §5 contract is the surface every operation
 presents. Each kernel takes an explicit `RoundingMode`
@@ -111,8 +116,8 @@ let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
 let (sqrt2, _status) = two.sqrt(RoundingMode::NearestEven);
 
 // FixedFloat: precision fixed at compile time via a const generic.
-// Stack-allocated; works without `alloc`. `FixedFloat<113>` is the
-// binary128 mantissa width.
+// Stack-allocated storage (the value is `Copy`); operations delegate
+// to BigFloat today. `FixedFloat<113>` is the binary128 mantissa width.
 type F128 = FixedFloat<113>;
 let two_f128 = F128::try_from_i64_exact(2).unwrap();
 let (sqrt2_f128, _) = two_f128.sqrt(RoundingMode::NearestEven);
@@ -133,30 +138,30 @@ v1.0 covers the MPFR-equivalent surface:
 - IEEE 754-2019 arithmetic with all five rounding modes (RNE, RNA, RZ, RP, RM) and sticky exception flags.
 - Correctly-rounded elementary transcendentals: `exp`, `log` family, trig and inverses, hyperbolic and inverses, `pow`.
 - Special functions: `gamma`, `lgamma`, `digamma`, `beta`, `erf`, `erfc`, Bessel `J/Y/I/K`, `zeta`, `Ei`, `Si`, `Ci`, Airy `Ai/Bi/Ai′/Bi′`, AGM.
-- Two precision profiles in one crate: `BigFloat` (runtime precision, needs `alloc`) and `FixedFloat<const PREC: u32>` (compile-time precision, stack-allocated, runs without `alloc`).
-- `no_std`-first, embedded-friendly. CI cross-compiles to `thumbv6m-none-eabi`.
+- Two precision profiles in one crate: `BigFloat` (runtime precision) and `FixedFloat<const PREC: u32>` (compile-time precision, stack-allocated storage, `Copy`). Both need `alloc` to compute today.
+- `no_std`-first and `alloc`-only, embedded-friendly with a global allocator. CI cross-compiles to `thumbv6m-none-eabi`.
 
 ## Installation
 
-pfloat is pre-1.0 and unpublished; depend on it as a git dependency
-until the v1.0 tag and crates.io release land:
+pfloat is tagged at v1.0 but not yet published to crates.io; depend
+on it as a git dependency:
 
 ```toml
 [dependencies]
-pfloat = { git = "https://github.com/ixmatus/pfloat" }
+pfloat = { git = "https://github.com/ixmatus/pfloat", tag = "v1.0.0" }
 ```
 
 The crate requires a nightly Rust toolchain for
 `feature(generic_const_exprs)` (the bit-level const-generic mantissa
-storage that lets `FixedFloat<const PREC: u32>` avoid `alloc` per
-ADR-0011). The pfloat repository pins its toolchain channel in
+storage behind `FixedFloat<const PREC: u32>` per ADR-0011). The
+pfloat repository pins its toolchain channel in
 `rust-toolchain.toml`; downstream consumers need a matching nightly
 in their own workspace.
 
-For embedded targets, build with `--no-default-features
---features=fixed` (or `--features=alloc,big` if the runtime
-precision profile is wanted). CI exercises the
-`thumbv6m-none-eabi` and `thumbv8m.main-none-eabi` cross targets.
+For embedded targets, build `--no-default-features --features=fixed`
+(or `--features=alloc,big` for the runtime-precision profile); both
+need a global allocator on the target. CI cross-compiles to
+`thumbv6m-none-eabi`.
 
 ## Feature flags
 
