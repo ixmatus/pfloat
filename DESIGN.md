@@ -316,7 +316,7 @@ Trig functions: Cody-Waite for arguments where `|x| < 2^k` for some
 small `k`; Payne-Hanek for arbitrary magnitude. Payne-Hanek requires
 a high-precision representation of `2/π` covering enough bits to
 absorb the worst-case argument; ferrodec ships such a table for
-Decimal128 and pfloat will do the same for binary at user-selected
+Decimal128 and pfloat does the same for binary at user-selected
 precision.
 
 `exp` family: reduce `x = k · ln(2) + r`, evaluate the kernel on
@@ -339,9 +339,12 @@ caveat.
 ### Coverage
 
 Phase 3 (elementary): `exp`, `expm1`, `exp2`, `exp10`,
-`ln`, `log1p`, `log2`, `log10`, `sin`, `cos`, `tan`, `cot`, `sec`,
-`csc`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`,
-`asinh`, `acosh`, `atanh`, `pow`.
+`ln`, `log1p`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
+`acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`,
+`acosh`, `atanh`, `pow`. The reciprocal trig kernels `cot`,
+`sec`, `csc` (with `cbrt`, `hypot`, `rootn`) are deferred to the
+libm spinoff as direct primary kernels, not derived aliases
+(ADR-0032), so they are not part of the v1.0 surface.
 
 ## Special functions
 
@@ -545,14 +548,20 @@ sections that read against the renumbered phase plan.
 ## Caveats and open questions
 
 - Ziv's strategy at unbounded precision is unproven to terminate
-  in pathological cases. MPFR has the same caveat. The driver
+  in pathological cases; MPFR carries the same caveat. The driver
   fixes the iteration cap at 5 and applies the interval test
   uniformly across the v1.0 surface (slice 7c ADR-0022 for pow;
-  Phase 1f ADR-0038 for the remaining transcendentals). On the
-  measure-zero exact-tie inputs that exhaust the cap the result
-  may be 1 ULP off in directed modes; this is the same
-  unbounded-precision termination caveat MPFR carries. The Phase
-  1f audit at
+  Phase 1f ADR-0038 for the remaining transcendentals). The v1.0
+  commitment (ADR-0038) is that every surface kernel is correctly
+  rounded under all five rounding modes: where a mode proved
+  intractable the resolution was to reformulate the kernel or drop
+  it from the surface, never to weaken the claim to faithful
+  rounding. Where the exhaustive binary32 grid certifies only
+  NearestEven (its bf-to-f32 bridge carries that mode alone), the
+  directed modes are certified by the five-mode differential lanes
+  against MPFR and guarded across the grid by the per-release
+  cross-check sweep; the published per-function status is
+  `docs/rounding-status.md`. The Phase 1f audit at
   `docs/decisions/plans/phase-1f-five-mode-completeness.md` carries
   the per-kernel derivation for every migration. The pre-Phase-1g
   empirical-slack framing for `ZIV_ERROR_GUARD = 24`
@@ -561,9 +570,9 @@ sections that read against the renumbered phase plan.
   in `src/math/ziv_calibration.rs` (Phase 1g `pf-yupm`), with the
   bound actively guarded at every f32 input by the per-release
   oracle-sweep cross-check (`pf-tqzz`,
-  `tests/oracle_cross_check_smoke.rs`). The driver interval test's
-  soundness theorem is formally stated and Kani-scaffolded at
-  `src/verify/ziv_soundness.rs` (`pf-hdh8`); the
+  `tests/oracle_cross_check_smoke.rs`, ADR-0049). The driver
+  interval test's soundness theorem is formally stated and
+  Kani-scaffolded at `src/verify/ziv_soundness.rs` (`pf-hdh8`); the
   `BoundedBigFloat<80>` fixed-array encoding for the universal-
   quantification discharge is recorded in ADR-0039 as post-v1.0
   follow-up. Phase 1g closure prose at

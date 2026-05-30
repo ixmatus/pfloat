@@ -186,6 +186,23 @@ and `alloc`-free consumers can pick only what they need.
 
 `rug` and `gmp-mpfr-sys` force a C toolchain on every Rust project that needs more than the 53-bit hardware `f64` mantissa with correct rounding. `astro-float` is the closest pure-Rust alternative and covers basic arithmetic plus elementary transcendentals well; the special-function surface (gamma, erf, Bessel, zeta, etc.) and shipped formal-verification artifacts are gaps that pfloat fills directly. The companion goal is to displace the GMP/MPFR build dependency for scientific, financial, and symbolic-computation crates that want WebAssembly or embedded targets.
 
+## pfloat vs rug
+
+`rug` (the Rust binding to GMP, MPFR, and MPC) is the mature, fast, battle-tested option, and when a C toolchain is available and raw throughput matters most it stays the right choice. pfloat does not try to win on speed or on decades of production hardening; MPFR has both, and pfloat is candid that it does not.
+
+Choose pfloat when one of these is load-bearing:
+
+- **No C toolchain.** pfloat is pure Rust with zero runtime dependencies, so it builds anywhere `cargo` does, including WebAssembly and cross-compiled embedded targets where `gmp-mpfr-sys` cannot.
+- **Permissive license.** pfloat is `MIT OR Apache-2.0`. `rug` is licensed LGPL, as are GMP and MPFR, which constrains static linking and redistribution for some consumers.
+- **Real `no_std`.** pfloat is `no_std`-first and `alloc`-only, and CI cross-compiles it to `thumbv6m-none-eabi` for the embedded floor. `rug` requires `std` and a C library.
+- **Verification artifacts in the box.** pfloat ships its Kani harnesses, differential lanes, fuzz targets, and the per-function rounding-status table alongside the code, so the correctness evidence travels with the crate rather than living in an upstream C project.
+
+Choose `rug` when a C toolchain is acceptable and you want the fastest, most production-proven arbitrary-precision arithmetic available, or when you need MPC-style complex arithmetic that pfloat does not yet provide.
+
+## Rounding status
+
+pfloat publishes a per-function rounding-status table at [`docs/rounding-status.md`](docs/rounding-status.md): for every function the verification oracle tracks, it records the correct-rounding verdict in each of the five IEEE 754-2019 rounding modes. Every function is correctly rounded under NearestEven across the exhaustive binary32 grid. For each directed mode the table records whether that same exhaustive grid certified it, or whether the guarantee rests on the five-mode differential lanes against MPFR and the per-release cross-check sweep (the grid's bf-to-f32 bridge carries NearestEven only). The table is generated from the oracle's status records and checked in CI, so it cannot drift from what the verification actually established.
+
 ## Verification posture
 
 - IEEE 754-2019 conformance vectors and Lefèvre–Muller worst-case-rounding tables run as integration tests.

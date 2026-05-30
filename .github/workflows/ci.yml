@@ -166,3 +166,6 @@ jobs:
       # clippy union, or a new kernel's tests would stop being gated
       # per-push the way the high-tier kernels once were. ADR-0053.
       - run: ./scripts/feature-union-check.sh
+      # Keep the published rounding-status table (docs/rounding-status.md)
+      # in lockstep with the oracle status records it is generated from.
+      - run: ./scripts/rounding-status-table.sh --check
