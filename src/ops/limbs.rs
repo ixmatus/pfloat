@@ -292,18 +292,49 @@ pub(crate) fn isqrt_limbs(n: &[u64]) -> (Vec<u64>, Vec<u64>) {
     (s, r)
 }
 
-/// Bit-by-bit long division: returns `(quotient, remainder)` such
-/// that `dividend = quotient × divisor + remainder` and
-/// `0 <= remainder < divisor`.
+/// Divisor size (in significant limbs) at or above which
+/// [`divmod_limbs`] switches from Knuth Algorithm D to the recursive
+/// (Burnikel-Ziegler) divider. Below it Knuth's `O(qlen·dlen)` has the
+/// smaller constant; at or above it the recursive divider's
+/// `O(M(n)·log n)` wins (ADR-0052). The decimal base conversion in
+/// `fmt` and high-precision `div` / `parse` are the callers whose
+/// divisors reach this size.
+const RECURSIVE_DIV_DISPATCH: usize = 64;
+
+/// Divisor-limb count at or below which the recursive divider falls
+/// back to Knuth Algorithm D for its base case. The recursive divider
+/// normalizes the divisor to a power-of-two limb count, so this is
+/// effectively the smallest power-of-two block it recurses down to.
+const RECURSIVE_DIV_BASE: usize = 32;
+
+/// Integer `(quotient, remainder)` of `dividend / divisor`.
 ///
-/// `divisor` must be non-zero. `quotient` is returned with the same
-/// limb count as `dividend`; `remainder` with the same limb count
-/// as `divisor`.
+/// `quotient` is returned with `dividend.len()` limbs and `remainder`
+/// with `divisor.len()` limbs (each value zero-extended into that
+/// width); `0 ≤ remainder < divisor`. `divisor` must be non-zero.
 ///
-/// Complexity: O(`dividend_bits` × `divisor.len()`). This is the
-/// "schoolbook" path per the slice 1e plan. Phase 7 may replace
-/// with Knuth Algorithm D (O(n²/64) limb ops) or Newton iteration
-/// (O(M(n))).
+/// Dispatches on divisor size: a large divisor (`≥
+/// RECURSIVE_DIV_DISPATCH` significant limbs, with a strictly larger
+/// dividend) takes the sub-quadratic recursive path
+/// ([`divmod_recursive`]); everything else takes the Knuth Algorithm D
+/// core ([`divmod_knuth`]). Both honour the identical contract, and the
+/// recursive path is differentially checked against the bit-at-a-time
+/// oracle (`divmod_limbs_bitwise`) in the tests.
+pub(crate) fn divmod_limbs(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    debug_assert!(top_set_bit(divisor).is_some(), "divisor must be non-zero");
+    let n = effective_len(divisor);
+    let dn = effective_len(dividend);
+    if n >= RECURSIVE_DIV_DISPATCH && dn >= n {
+        return divmod_recursive(
+            &dividend[..dn],
+            &divisor[..n],
+            dividend.len().max(1),
+            divisor.len().max(1),
+        );
+    }
+    divmod_knuth(dividend, divisor)
+}
+
 /// Integer `(quotient, remainder)` of `dividend / divisor`, both
 /// little-endian limb slices. `quotient` is returned with
 /// `dividend.len()` limbs and `remainder` with `divisor.len()` limbs
@@ -323,8 +354,10 @@ pub(crate) fn isqrt_limbs(n: &[u64]) -> (Vec<u64>, Vec<u64>) {
 /// work to the same magnitude the exact `pow5` itself costs. The
 /// bit-at-a-time routine survives as a test-only oracle
 /// (`divmod_limbs_bitwise`) that this routine is differentially
-/// checked against.
-pub(crate) fn divmod_limbs(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
+/// checked against. This is the Knuth core; [`divmod_limbs`] dispatches
+/// here for small divisors and to [`divmod_recursive`] for large ones,
+/// and the recursive divider uses this as its base case.
+fn divmod_knuth(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
     debug_assert!(top_set_bit(divisor).is_some(), "divisor must be non-zero");
 
     let q_len = dividend.len().max(1);
@@ -428,6 +461,214 @@ pub(crate) fn divmod_limbs(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<
     let copy = r_norm.len().min(r_len);
     remainder[..copy].copy_from_slice(&r_norm[..copy]);
     (quotient, remainder)
+}
+
+/// Recursive (Burnikel-Ziegler) integer division, `O(M(n)·log n)`.
+///
+/// `dividend` and `divisor` are significant-length slices (no high zero
+/// limbs) with `dividend.len() ≥ divisor.len() ≥ 1`. The result is
+/// zero-extended to `q_len` / `r_len` limbs to honour [`divmod_limbs`]'s
+/// contract.
+///
+/// The divisor is normalized to a power-of-two limb count `m` with its
+/// top bit set (a combined whole-limb + sub-limb left shift `s`); the
+/// same shift applied to the dividend leaves the quotient unchanged and
+/// scales the remainder by `2^s`, which the final right shift undoes.
+/// The dividend is then processed in `m`-limb blocks from the top, each
+/// `[remainder | block]` divided by the normalized divisor via
+/// [`div_2n_1n`]. Because `m` is a power of two, every recursion halves
+/// to an even size down to [`RECURSIVE_DIV_BASE`].
+fn divmod_recursive(
+    dividend: &[u64],
+    divisor: &[u64],
+    q_len: usize,
+    r_len: usize,
+) -> (Vec<u64>, Vec<u64>) {
+    let n = divisor.len();
+    let m = n.next_power_of_two();
+
+    // Normalize: shift the divisor up to exactly `m` limbs, top bit set.
+    let clz = divisor[n - 1].leading_zeros() as usize;
+    let s = (m - n) * 64 + clz;
+    let b_full = shift_left_bits(divisor, s);
+    let mut b = vec![0u64; m];
+    let copy = b_full.len().min(m);
+    b[..copy].copy_from_slice(&b_full[..copy]);
+    debug_assert_eq!(effective_len(&b), m, "normalized divisor must fill m limbs");
+
+    // Apply the same shift to the dividend and pad to a multiple of `m`.
+    let a = shift_left_bits(dividend, s);
+    let t = a.len().div_ceil(m).max(1);
+    let mut a_pad = vec![0u64; t * m];
+    a_pad[..a.len()].copy_from_slice(&a);
+
+    let mut quotient = vec![0u64; t * m];
+    let mut r = vec![0u64; m]; // running remainder, always < b
+    for i in (0..t).rev() {
+        let zi = &a_pad[i * m..(i + 1) * m];
+        let mut dd = Vec::with_capacity(2 * m);
+        dd.extend_from_slice(zi); // low m limbs
+        dd.extend_from_slice(&r); // high m limbs (r·β^m)
+        let (qi, ri) = div_2n_1n(&dd, &b);
+        let qc = qi.len().min(m);
+        quotient[i * m..i * m + qc].copy_from_slice(&qi[..qc]);
+        r = ri;
+    }
+
+    // Denormalize the remainder; the quotient is shift-invariant.
+    let rem = shift_right_bits(&r, s);
+
+    let mut q_out = vec![0u64; q_len];
+    let qc = quotient.len().min(q_len);
+    debug_assert!(
+        quotient[qc..].iter().all(|&l| l == 0),
+        "quotient exceeds dividend width"
+    );
+    q_out[..qc].copy_from_slice(&quotient[..qc]);
+    let mut r_out = vec![0u64; r_len];
+    let rc = rem.len().min(r_len);
+    r_out[..rc].copy_from_slice(&rem[..rc]);
+    (q_out, r_out)
+}
+
+/// Divide a `2n`-limb dividend by an `n`-limb normalized divisor (top
+/// bit set), with the precondition `a < β^n · b` so the quotient fits
+/// `n` limbs. Returns `(Q, R)` with `Q` exactly `n` limbs and `R`
+/// exactly `n` limbs, `a = Q·b + R`, `0 ≤ R < b`.
+fn div_2n_1n(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    let n = b.len();
+    debug_assert_eq!(a.len(), 2 * n);
+    if n <= RECURSIVE_DIV_BASE {
+        let (mut q, r) = divmod_knuth(a, b);
+        q.truncate(n); // value < β^n
+        return (q, r);
+    }
+    let half = n / 2;
+    // a = [A4 | A3 | A2 | A1] in `half`-limb quarters, A1 most significant.
+    let top3 = &a[half..2 * n]; // [A3 | A2 | A1], 3·half limbs
+    let (q1, r1) = div_3n_2n(top3, b);
+    let mut dd2 = Vec::with_capacity(3 * half);
+    dd2.extend_from_slice(&a[0..half]); // A4 (low half)
+    dd2.extend_from_slice(&r1); // r1 (n limbs)
+    let (q0, r) = div_3n_2n(&dd2, b);
+    let mut q = vec![0u64; n];
+    let c0 = q0.len().min(half);
+    q[..c0].copy_from_slice(&q0[..c0]);
+    let c1 = q1.len().min(half);
+    q[half..half + c1].copy_from_slice(&q1[..c1]);
+    (q, r)
+}
+
+/// Divide a `3·half`-limb dividend by an `n = 2·half`-limb normalized
+/// divisor, with the precondition `a < β^half · b` so the quotient fits
+/// `half` limbs. Returns `(Q, R)` with `Q` exactly `half` limbs and `R`
+/// exactly `n` limbs, `a = Q·b + R`, `0 ≤ R < b`. The Burnikel-Ziegler
+/// "three halves by two" step.
+fn div_3n_2n(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    use core::cmp::Ordering;
+    let n = b.len();
+    let half = n / 2;
+    debug_assert_eq!(a.len(), 3 * half);
+    let a3 = &a[0..half];
+    let a12 = &a[half..3 * half]; // n limbs
+    let a1 = &a[2 * half..3 * half]; // top half
+    let b1 = &b[half..n]; // high half of b (inherits b's top-bit-set)
+    let b2 = &b[0..half]; // low half of b
+
+    let mut q: Vec<u64>;
+    let r1: Vec<u64>;
+    if cmp_limbs(a1, b1) == Ordering::Less {
+        // Quotient estimate fits: divide the top n limbs by b1.
+        let (qq, rr) = div_2n_1n(a12, b1);
+        q = qq;
+        r1 = rr;
+    } else {
+        // Estimate would overflow; clamp to β^half − 1 and form the
+        // partial remainder r1 = A12 − (β^half − 1)·b1 = A12 + b1 − b1·β^half.
+        q = vec![u64::MAX; half];
+        let mut tmp = vec![0u64; n + 1];
+        tmp[..a12.len()].copy_from_slice(a12);
+        let carry = limbs_add_assign(&mut tmp, b1);
+        debug_assert!(!carry, "A12 + b1 overflow");
+        let b1_shifted = shift_up_limbs(b1, half); // b1·β^half, n limbs
+        limbs_sub_assign(&mut tmp, &b1_shifted); // valid: A1 ≥ b1 ⟹ A12 ≥ b1·β^half
+        r1 = tmp;
+    }
+
+    // D = Q·b2; candidate C = r1·β^half + A3; then R = C − D with ≤ 2
+    // corrections (decrement Q, add b back) when the estimate ran high.
+    let d = multiply_limbs(&q, b2);
+    let mut c = vec![0u64; 3 * half + 2];
+    c[half..half + r1.len()].copy_from_slice(&r1);
+    let carry = limbs_add_assign(&mut c, a3);
+    debug_assert!(!carry, "C low-half add overflow");
+
+    let mut corrections = 0;
+    while cmp_limbs(&c, &d) == Ordering::Less {
+        sub_one(&mut q);
+        let carry = limbs_add_assign(&mut c, b);
+        debug_assert!(!carry, "correction add overflow");
+        corrections += 1;
+        debug_assert!(corrections <= 2, "more than two BZ corrections");
+    }
+    limbs_sub_assign(&mut c, &d);
+    c.truncate(n);
+    debug_assert!(cmp_limbs(&c, b) == Ordering::Less, "remainder >= divisor");
+
+    q.resize(half, 0); // value < β^half
+    (q, c)
+}
+
+/// `x · β^k`: prepend `k` zero limbs (a whole-limb left shift).
+fn shift_up_limbs(x: &[u64], k: usize) -> Vec<u64> {
+    let mut out = vec![0u64; k + x.len()];
+    out[k..].copy_from_slice(x);
+    out
+}
+
+/// In-place `x -= 1`; `x` must be non-zero.
+fn sub_one(x: &mut [u64]) {
+    for limb in x.iter_mut() {
+        let (v, borrow) = limb.overflowing_sub(1);
+        *limb = v;
+        if !borrow {
+            return;
+        }
+    }
+    debug_assert!(false, "sub_one underflow");
+}
+
+/// Logical left shift by `s` bits (any `s`), combining a whole-limb
+/// shift with a sub-limb [`shl_limbs`].
+fn shift_left_bits(x: &[u64], s: usize) -> Vec<u64> {
+    let limb_shift = s / 64;
+    let bit_shift = (s % 64) as u32;
+    let body = if bit_shift == 0 {
+        let mut v = x.to_vec();
+        v.push(0);
+        v
+    } else {
+        shl_limbs(x, bit_shift)
+    };
+    let mut out = vec![0u64; limb_shift];
+    out.extend_from_slice(&body);
+    out
+}
+
+/// Logical right shift by `s` bits (any `s`), combining a whole-limb
+/// drop with a sub-limb [`shr_limbs`].
+fn shift_right_bits(x: &[u64], s: usize) -> Vec<u64> {
+    let limb_shift = s / 64;
+    let bit_shift = (s % 64) as u32;
+    if limb_shift >= x.len() {
+        return vec![0u64; 1];
+    }
+    let hi = &x[limb_shift..];
+    if bit_shift == 0 {
+        hi.to_vec()
+    } else {
+        shr_limbs(hi, bit_shift)
+    }
 }
 
 /// Significant little-endian limb count (high zero limbs stripped),
@@ -715,6 +956,104 @@ mod tests {
                 core::cmp::Ordering::Equal,
                 "q·v + r != dividend"
             );
+        }
+    }
+
+    #[test]
+    fn divmod_recursive_matches_bitwise_reference() {
+        // Force the recursive (Burnikel-Ziegler) path: divisors at and
+        // above the dispatch threshold, spanning the power-of-two
+        // normalization boundary and several recursion levels. The
+        // bit-at-a-time routine is the independent ground truth.
+        let mut state: u64 = 0x0123_4567_89AB_CDEF;
+        for _ in 0..50 {
+            let vlen = 64 + (xorshift(&mut state) % 65) as usize; // 64..=128
+            let mut divisor: Vec<u64> = (0..vlen).map(|_| xorshift(&mut state)).collect();
+            *divisor.last_mut().unwrap() |= 1u64 << 63;
+            let extra = (xorshift(&mut state) % (vlen as u64 + 1)) as usize;
+            let dlen = vlen + extra;
+            let mut dividend: Vec<u64> = (0..dlen).map(|_| xorshift(&mut state)).collect();
+            *dividend.last_mut().unwrap() |= 1; // dn == dlen ≥ vlen → recursive path
+            let (q1, r1) = divmod_limbs(&dividend, &divisor);
+            let (q2, r2) = divmod_limbs_bitwise(&dividend, &divisor);
+            assert_eq!(q1, q2, "quotient mismatch (vlen={vlen}, dlen={dlen})");
+            assert_eq!(r1, r2, "remainder mismatch (vlen={vlen}, dlen={dlen})");
+        }
+    }
+
+    #[test]
+    fn divmod_recursive_reconstructs() {
+        // Cheap structural sweep at recursive sizes: construct
+        // dividend = q·divisor + r with r < divisor by construction
+        // (at most n−1 limbs, and divisor has its top bit set so
+        // divisor ≥ β^(n−1)), then check exact recovery.
+        use core::cmp::Ordering;
+        let mut state: u64 = 0x5DEE_CE66_2A9E_1B07;
+        for _ in 0..200 {
+            let n = 64 + (xorshift(&mut state) % 201) as usize; // 64..=264
+            let mut divisor: Vec<u64> = (0..n).map(|_| xorshift(&mut state)).collect();
+            *divisor.last_mut().unwrap() |= 1u64 << 63;
+            let rlen = (xorshift(&mut state) % n as u64) as usize; // 0..=n−1
+            let r: Vec<u64> = (0..rlen).map(|_| xorshift(&mut state)).collect();
+            let qlen = 1 + (xorshift(&mut state) % n as u64) as usize; // 1..=n
+            let mut q: Vec<u64> = (0..qlen).map(|_| xorshift(&mut state)).collect();
+            *q.last_mut().unwrap() |= 1; // nonzero quotient → dn ≥ n → recursive path
+            let mut dividend = multiply_limbs(&q, &divisor);
+            let _ = limbs_add_assign(&mut dividend, &r);
+            let (qq, rr) = divmod_limbs(&dividend, &divisor);
+            assert_eq!(
+                cmp_limbs(&rr, &divisor),
+                Ordering::Less,
+                "remainder >= divisor (n={n})"
+            );
+            assert_eq!(cmp_limbs(&rr, &r), Ordering::Equal, "remainder mismatch (n={n})");
+            assert_eq!(cmp_limbs(&qq, &q), Ordering::Equal, "quotient mismatch (n={n})");
+            let mut recon = multiply_limbs(&qq, &divisor);
+            let _ = limbs_add_assign(&mut recon, &rr);
+            assert_eq!(
+                cmp_limbs(&recon, &dividend),
+                Ordering::Equal,
+                "q·v + r != dividend (n={n})"
+            );
+        }
+    }
+
+    #[test]
+    fn divmod_recursive_adversarial() {
+        // Structured divisors that stress the Burnikel-Ziegler
+        // correction branches at recursive sizes (the all-ones divisor
+        // in particular drives quotient estimates high), checked against
+        // the bitwise oracle.
+        let n = 80usize;
+        let cases: Vec<Vec<u64>> = vec![
+            vec![u64::MAX; n], // all ones (max divisor)
+            {
+                let mut v = vec![0u64; n];
+                v[n - 1] = 1 << 63;
+                v
+            }, // single top bit: 2^(64n−1)
+            {
+                let mut v = vec![0xAAAA_AAAA_AAAA_AAAAu64; n];
+                v[n - 1] |= 1 << 63;
+                v
+            }, // alternating bits
+            {
+                let mut v = vec![1u64; n];
+                v[n - 1] |= 1 << 63;
+                v
+            }, // sparse low bits
+        ];
+        let mut state: u64 = 0xF00D_BABE_1234_5678;
+        for divisor in &cases {
+            for _ in 0..6 {
+                let dlen = n + (xorshift(&mut state) % (n as u64 + 1)) as usize;
+                let mut dividend: Vec<u64> = (0..dlen).map(|_| xorshift(&mut state)).collect();
+                *dividend.last_mut().unwrap() |= 1;
+                let (q1, r1) = divmod_limbs(&dividend, divisor);
+                let (q2, r2) = divmod_limbs_bitwise(&dividend, divisor);
+                assert_eq!(q1, q2, "quotient mismatch (structured divisor)");
+                assert_eq!(r1, r2, "remainder mismatch (structured divisor)");
+            }
         }
     }
 
