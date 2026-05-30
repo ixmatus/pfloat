@@ -70,7 +70,11 @@ pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
     // For the lowest of these to fall inside the table we need
     // `e_x + working_prec + 64 < 4096`.
     let slack = i64::from(working_prec) + 64;
-    if e_x + slack >= 4096 {
+    // Saturating: an exponent near i64::MAX (reachable by repeated
+    // squaring, which saturates the exponent under the no-emax design)
+    // must route to the out-of-range `None` path, not overflow i64 and
+    // wrap below 4096. Review 2026-05-29.
+    if e_x.saturating_add(slack) >= 4096 {
         return None;
     }
 
@@ -99,7 +103,20 @@ pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
     // `mul_round` with a chosen working width is cleaner. Floor at
     // 2048 so even tight-input reductions get enough headroom, and
     // cap at 4096 to match the hardcoded table width.
-    let mul_prec = (working_prec + 64)
+    // The product x·(2/π) has magnitude ~2^e_x; to retain
+    // `working_prec + 64` accurate bits BELOW the binary point (the
+    // reduced argument is that fractional remainder) the product must
+    // carry `e_x + working_prec + 64` significant bits. The range check
+    // above guarantees this is < 4096, so the 4096-bit table covers it.
+    // The earlier formula omitted e_x and silently truncated the
+    // reduction to the 2048-bit floor for large |x|, collapsing
+    // sin/cos/tan to 0/±1 with no flag (review 2026-05-29, root cause 1).
+    let needed = e_x
+        .max(0)
+        .saturating_add(i64::from(working_prec))
+        .saturating_add(64);
+    let mul_prec = u32::try_from(needed)
+        .unwrap_or(4096)
         .max(x.precision)
         .max(2048)
         .clamp(2048, 4096);
