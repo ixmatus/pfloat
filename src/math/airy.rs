@@ -568,7 +568,21 @@ fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> Bi
     // `φ = ζ − π/4` rely on the trig kernel's correctly-rounded
     // output (pf-1axr / ADR-0042 fix ensures it works at the
     // working precisions this kernel reaches).
-    let working = target_precision.saturating_add(32);
+    // The phase ζ = (2/3)·t^(3/2) has magnitude ~2^(3·e_t/2); the
+    // oscillatory result depends on ζ mod 2π, so ζ must carry
+    // `target_precision` accurate FRACTIONAL bits, which means the
+    // working precision must exceed ζ's integer width. The prior
+    // target+32 ignored |x|, so ζ lost its fractional bits and the
+    // phase reaching sin/cos was garbage for large |x| (review
+    // 2026-05-29, root cause 1).
+    let e_t = match &t.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let zeta_int_bits = u32::try_from(e_t.max(0).saturating_mul(3) / 2 + 2).unwrap_or(u32::MAX);
+    let working = target_precision
+        .saturating_add(32)
+        .saturating_add(zeta_int_bits);
     let tw = t
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
