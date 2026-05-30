@@ -398,8 +398,11 @@ fn add_finite_finite(
     let result_exponent_i = i128::from(
         i64::try_from(leading_bit).expect("leading bit fits in i64 at any practical precision"),
     ) + common_scale;
-    let result_exponent = i64::try_from(result_exponent_i)
-        .unwrap_or(if result_exponent_i < 0 { i64::MIN } else { i64::MAX });
+    let result_exponent = i64::try_from(result_exponent_i).unwrap_or(if result_exponent_i < 0 {
+        i64::MIN
+    } else {
+        i64::MAX
+    });
 
     // Build a normalized intermediate at intermediate_precision = leading_bit + 1
     // bits, top-bit-set.

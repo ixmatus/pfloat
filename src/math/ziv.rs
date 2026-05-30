@@ -206,6 +206,10 @@ pub(crate) fn ziv_round_capturing(
 
 /// Binary exponent of a finite value, or `i64::MIN` for zero / special
 /// values (so it sorts below any real operand scale).
+// Unused under feature combos that enable a transcendental but no
+// special-function consumer (e.g. `big,agm`), matching the calibration
+// constants' tolerated-dead-code posture.
+#[allow(dead_code)]
 pub(crate) fn value_exponent(v: &BigFloat) -> i64 {
     match &v.class {
         Class::Normal { exponent, .. } => *exponent,
@@ -234,6 +238,7 @@ pub(crate) fn value_exponent(v: &BigFloat) -> i64 {
 /// The cancellation depth is bounded by the input's proximity to the
 /// zero, itself bounded by the input precision; the iteration cap is a
 /// backstop and the Ziv driver remains the outer correctness gate.
+#[allow(dead_code)] // unused under transcendental-without-specials combos
 pub(crate) fn cancellation_boosted(
     working_prec: u32,
     eval: impl Fn(u32) -> (BigFloat, i64),

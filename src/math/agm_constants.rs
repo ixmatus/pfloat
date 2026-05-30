@@ -276,14 +276,11 @@ fn atanh_one_over(n: i64, working_prec: u32) -> BigFloat {
     // `k ≈ working_prec / (2 · log2(n)) + small_slack`. Cap by an
     // upper bound to keep this loop bounded for pathological inputs.
     let log2_n_times_8 = (63 - n.leading_zeros()) * 8; // floor(log2(n)) * 8
-    // saturating_mul: the `* 8` would otherwise overflow u32 at working
-    // precisions past ~5.4e8 bits (the sibling iteration-count helpers
-    // already saturate). Review 2026-05-29.
-    let max_iter = (working_prec
-        .saturating_add(64)
-        .saturating_mul(8)
-        / log2_n_times_8.max(1))
-    .max(64);
+                                                       // saturating_mul: the `* 8` would otherwise overflow u32 at working
+                                                       // precisions past ~5.4e8 bits (the sibling iteration-count helpers
+                                                       // already saturate). Review 2026-05-29.
+    let max_iter =
+        (working_prec.saturating_add(64).saturating_mul(8) / log2_n_times_8.max(1)).max(64);
     for k in 1u32..=max_iter {
         let (next_term, _) = term.mul(&x_squared, RoundingMode::NearestEven);
         term = next_term;

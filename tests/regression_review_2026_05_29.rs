@@ -26,7 +26,12 @@
 //! Run: `cargo test --test regression_review_2026_05_29 \
 //!        --features std,fmt,big,integrals,airy,bessel`
 
-#![cfg(all(feature = "big", feature = "integrals", feature = "airy", feature = "bessel"))]
+#![cfg(all(
+    feature = "big",
+    feature = "integrals",
+    feature = "airy",
+    feature = "bessel"
+))]
 
 use pfloat::{BigFloat, RoundingMode, Sign};
 
@@ -99,11 +104,22 @@ fn rc1_trig_large_argument_is_correctly_reduced() {
     let (s, sst) = x.sin(NE);
     let (c, cst) = x.cos(NE);
     // Current (buggy) behaviour: sin = 0, cos = 1, status OK.
-    assert_close("sin(2^3000)", &s, "-0.9023960377032291054512045038415469221809");
-    assert_close("cos(2^3000)", &c, "-0.4309076364344362774210502315402372443805");
+    assert_close(
+        "sin(2^3000)",
+        &s,
+        "-0.9023960377032291054512045038415469221809",
+    );
+    assert_close(
+        "cos(2^3000)",
+        &c,
+        "-0.4309076364344362774210502315402372443805",
+    );
     // Whatever the reduction does, the result of a transcendental on a
     // representable input is inexact, never an exact 0/1 with OK.
-    assert!(sst.inexact() && cst.inexact(), "sin/cos of 2^3000 cannot be exact");
+    assert!(
+        sst.inexact() && cst.inexact(),
+        "sin/cos of 2^3000 cannot be exact"
+    );
 }
 
 // airy_asymptotic_neg (src/math/airy.rs:571): working = target + 32, so
@@ -114,7 +130,11 @@ fn rc1_airy_large_negative_argument_has_correct_sign() {
     let x = pow2(200, 300).negated();
     let (ai, st) = x.ai_round(53, NE).unwrap();
     // Current (buggy) behaviour: +4.24e-16 (wrong sign), status OK-ish.
-    assert_close("Ai(-2^200)", &ai, "-3.004443173224147928442938076132835769249e-16");
+    assert_close(
+        "Ai(-2^200)",
+        &ai,
+        "-3.004443173224147928442938076132835769249e-16",
+    );
     assert!(st.inexact(), "Ai of a representable input is inexact");
 }
 
@@ -125,11 +145,19 @@ fn rc1_airy_large_negative_argument_has_correct_sign() {
 #[test]
 fn rc1_bessel_large_argument_has_correct_sign() {
     let (j4, _) = pow2(400, 53).j0_round(53, NE).unwrap();
-    assert_close("J0(2^400)", &j4, "-3.033405919027553113526656815748938467038e-61");
+    assert_close(
+        "J0(2^400)",
+        &j4,
+        "-3.033405919027553113526656815748938467038e-61",
+    );
     // 2^800 is beyond the target+512 cap entirely: cannot be recovered
     // without removing the cap.
     let (j8, _) = pow2(800, 53).j0_round(53, NE).unwrap();
-    assert_close("J0(2^800)", &j8, "-7.131908349607747958111886972283760654196e-122");
+    assert_close(
+        "J0(2^800)",
+        &j8,
+        "-7.131908349607747958111886972283760654196e-122",
+    );
 }
 
 // =====================================================================
@@ -210,8 +238,14 @@ fn rc2_expm1_tiny_x_does_not_collapse_to_zero() {
         .div(&pow2(2000, 53), NE)
         .0; // 2^-2000, exact
     let (em, _) = x.expm1(NE);
-    assert!(!em.is_zero(), "expm1(2^-2000) collapsed to 0 (true ~8.71e-603)");
-    assert!(em.is_sign_positive(), "expm1 of a positive value is positive");
+    assert!(
+        !em.is_zero(),
+        "expm1(2^-2000) collapsed to 0 (true ~8.71e-603)"
+    );
+    assert!(
+        em.is_sign_positive(),
+        "expm1 of a positive value is positive"
+    );
 }
 
 // The collapse re-breaks tanh, which ADR-0050 believed it had fixed via
@@ -223,7 +257,10 @@ fn rc2_tanh_tiny_x_keeps_sign_and_magnitude() {
         .div(&pow2(2000, 53), NE)
         .0;
     let (t, _) = x.tanh(NE);
-    assert!(!t.is_zero(), "tanh(2^-2000) collapsed to 0 (true ~8.71e-603)");
+    assert!(
+        !t.is_zero(),
+        "tanh(2^-2000) collapsed to 0 (true ~8.71e-603)"
+    );
     assert!(t.is_sign_positive(), "tanh(+x) must be positive, got {t}");
 }
 
@@ -239,7 +276,7 @@ fn rc2_tanh_tiny_x_keeps_sign_and_magnitude() {
 fn arith_huge_gap_directed_rounding_is_correct() {
     let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
     let tiny = one.div(&pow2(200, 53), NE).0; // 2^-200
-    // 1 - 2^-200 is strictly in (1 - 2^-53, 1); TowardZero floors it.
+                                              // 1 - 2^-200 is strictly in (1 - 2^-53, 1); TowardZero floors it.
     let (r, _) = one.sub(&tiny, RoundingMode::TowardZero);
     assert_eq!(
         r.partial_cmp(&one).0,
@@ -256,7 +293,10 @@ fn conformance_inf_div_zero_raises_no_flag() {
     let inf = BigFloat::try_new_infinity(Sign::Positive, 53).unwrap();
     let zero = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
     let (q, st) = inf.div(&zero, NE);
-    assert!(q.is_infinite() && q.is_sign_positive(), "Inf/0 value is +Inf");
+    assert!(
+        q.is_infinite() && q.is_sign_positive(),
+        "Inf/0 value is +Inf"
+    );
     assert!(!st.div_by_zero(), "Inf/0 must not raise DIV_BY_ZERO (§7.3)");
     assert!(st.is_ok(), "Inf/0 raises no exception flag");
 }
@@ -271,7 +311,10 @@ fn conformance_max_snan_raises_threadlocal_invalid() {
     let snan = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).unwrap();
     pfloat::flags::clear();
     let (_m, st) = one.max(&snan);
-    assert!(st.invalid(), "max(x, sNaN) returns INVALID in the explicit status");
+    assert!(
+        st.invalid(),
+        "max(x, sNaN) returns INVALID in the explicit status"
+    );
     assert!(
         pfloat::flags::test().invalid(),
         "max(x, sNaN) must also raise the thread-local INVALID (min does)"
@@ -321,9 +364,15 @@ fn panic_addsub_sqrt_saturated_exponent_is_bounded() {
     let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
     let (tiny, _) = one.div(&big, NE); // exponent ~ i64::MIN + 1
     let (s, _) = tiny.add(&tiny, NE);
-    assert!(!s.is_nan(), "add of a near-i64::MIN-exponent operand must not panic");
+    assert!(
+        !s.is_nan(),
+        "add of a near-i64::MIN-exponent operand must not panic"
+    );
     let (q, _) = tiny.sqrt(NE);
-    assert!(!q.is_nan(), "sqrt of a near-i64::MIN-exponent operand must not panic");
+    assert!(
+        !q.is_nan(),
+        "sqrt of a near-i64::MIN-exponent operand must not panic"
+    );
 }
 
 // trig_reduce.rs:73: `e_x + slack` overflows i64 for a value whose

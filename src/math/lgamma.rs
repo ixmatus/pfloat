@@ -208,7 +208,8 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
                 .expect("precision >= 1");
             let (mid, _) = ln_pi.sub(&ln_sin, RoundingMode::NearestEven);
             let (result, _) = mid.sub(&lgamma_y, RoundingMode::NearestEven);
-            let op_scale = super::ziv::value_exponent(&mid).max(super::ziv::value_exponent(&lgamma_y));
+            let op_scale =
+                super::ziv::value_exponent(&mid).max(super::ziv::value_exponent(&lgamma_y));
             (result, op_scale)
         });
     }

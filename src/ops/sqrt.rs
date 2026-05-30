@@ -191,8 +191,8 @@ fn sqrt_finite_positive(
         "scale_diff must be even by construction"
     );
     let result_exp_i = i128::from(top_bit_s as i64) + scale_diff / 2;
-    let result_exp = i64::try_from(result_exp_i)
-        .unwrap_or(if result_exp_i < 0 { i64::MIN } else { i64::MAX });
+    let result_exp =
+        i64::try_from(result_exp_i).unwrap_or(if result_exp_i < 0 { i64::MIN } else { i64::MAX });
 
     let (value, status) = round_finite_to_precision(
         Sign::Positive,
