@@ -332,19 +332,48 @@ fn conformance_max_snan_raises_threadlocal_invalid() {
 // values. cargo test runs debug, so each currently panics (= fails).
 // =====================================================================
 
-// DEFERRED, tracked, not asserted here. The two fmt findings from the
-// review are a single follow-up:
-//   - fmt.rs:256 `bits + num_p2` overflows u32 (panic) and the pow5
-//     scaling OOMs for a value with a huge binary exponent, e.g.
-//     `2^(2^40)` (40 squarings);
-//   - int_to_decimal is O(digit_count^2) with no precision cap.
-// Both stem from the naive full-materialization Display. There is no
-// cheap patch: converting m·2^E to decimal intrinsically needs an O(E)
-// 5^E bridge, so the fix is a bounded sub-quadratic leading-digit
-// conversion (Dragon4 / Steele-White, already DESIGN.md future work) and
-// an ADR on what Display of an astronomically-large value returns. A
-// failing test here would only turn CI red; the finding lives in the
-// review notes and the tracker until that feature lands.
+// fmt finding 11 (pf-vbm2, ADR-0051): `format_normal` rendered the full
+// exact decimal of `m·2^scale`, so for a finite value with a huge binary
+// exponent (e.g. `2^(2^40)`, exponent ≈ 1.1e12 — far below `i64::MAX`, so
+// a genuine finite value, not a saturated one) the scaling integers blow
+// up: `compute_scaled`'s `bits + num_p2` (fmt.rs) overflowed `u32`
+// (debug panic) and `pow5(den_p5)` allocated ~96 GB (release OOM). The
+// fix caps the formatter at the parse round-trip boundary
+// (`MAX_FORMAT_DECIMAL_EXPONENT = 1e6`, matching parse's
+// `MAX_DECIMAL_EXPONENT`) and saturates past it, mirroring parse: a value
+// too large to render reads back as `inf`, too small as `0`. The leading
+// digits of such a value are not obtainable at bounded cost without the
+// O(exponent) `5^|shift|` bridge, and `log10`/`exp10` are `exp-log`-gated
+// while `fmt` builds under `big` alone, so a bounded scientific fallback
+// is unavailable here; saturation is the bounded, parse-consistent
+// contract (ADR-0051). Must never panic or OOM.
+#[test]
+fn panic_fmt_large_exponent_does_not_overflow() {
+    // 2^(2^40) by 40 squarings: exponent ≈ 2^40 ≈ 1.1e12, decimal
+    // exponent ≈ 3.3e11, far past the 1e6 format cap.
+    let mut x = BigFloat::try_from_i64_exact(2, 53).unwrap();
+    for _ in 0..40 {
+        x = x.mul(&x, NE).0;
+    }
+    assert!(!x.is_infinite(), "2^(2^40) is a finite value, not Inf");
+    assert_eq!(
+        x.to_decimal_string(17, NE),
+        "inf",
+        "a finite value past the format cap saturates to inf"
+    );
+    // Display path must also be bounded (no panic, no OOM).
+    let _ = format!("{x}");
+
+    // Symmetric tiny case: 2^(-2^40) ≈ 10^(-3.3e11), below -1e6.
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let (tiny, _) = one.div(&x, NE);
+    assert!(!tiny.is_zero(), "2^(-2^40) is a finite nonzero value");
+    assert_eq!(
+        tiny.to_decimal_string(17, NE),
+        "0",
+        "a finite value below the format cap saturates to 0"
+    );
+}
 
 // addsub.rs:297 / sqrt.rs:148: `e - p + 1` underflows i64 for an operand
 // whose exponent saturated to ~i64::MIN (the reciprocal of a saturated-
