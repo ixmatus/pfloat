@@ -113,6 +113,16 @@ fn div_kernel(
             auto_raise(Status::INVALID);
             (nan, Status::INVALID)
         }
+        // ±Inf / anything finite (including 0): signed Inf, no flag.
+        // IEEE 754-2019 §7.3 signals divideByZero only for a FINITE
+        // dividend, so this must precede the (_, Zero) arm: Inf/0 is an
+        // exact infinite result, not a §7.3 exception. (Inf/Inf and
+        // Inf/NaN are already handled above.) Review 2026-05-29.
+        (Class::Infinity { .. }, _) => {
+            let inf = BigFloat::try_new_infinity(result_sign, target_precision)
+                .expect("BigFloat invariant: precision >= 1");
+            (inf, Status::OK)
+        }
         // finite_nonzero / 0: ±Inf + DIV_BY_ZERO. Numerator non-NaN,
         // non-Inf, non-zero implies it is Normal.
         (_, Class::Zero { .. }) => {
@@ -126,12 +136,6 @@ fn div_kernel(
             let z = BigFloat::try_new_zero(result_sign, target_precision)
                 .expect("BigFloat invariant: precision >= 1");
             (z, Status::OK)
-        }
-        // Inf / finite: signed Inf with XOR-combined sign.
-        (Class::Infinity { .. }, _) => {
-            let inf = BigFloat::try_new_infinity(result_sign, target_precision)
-                .expect("BigFloat invariant: precision >= 1");
-            (inf, Status::OK)
         }
         // finite / Inf: signed zero with XOR-combined sign.
         (_, Class::Infinity { .. }) => {

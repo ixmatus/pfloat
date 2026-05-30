@@ -386,6 +386,79 @@ fn place_top_aligned(target: &mut [u64], source: &[u64], shift_bits: i64) {
     }
 }
 
+/// Correctly round `base` perturbed by an infinitesimal residue to
+/// `target_precision` under `mode`.
+///
+/// The residue is a single bit placed strictly below both `base`'s and
+/// the target's least-significant bit, so it carries only direction and
+/// stickiness for the rounding and never reaches the guard position.
+/// The signed result is `result_sign · (|base| ± ε)`; the result sign
+/// is supplied explicitly because callers (the add/sub huge-gap path)
+/// track the effective sign separately from the operand's stored sign.
+/// `subtracts_magnitude` selects whether the magnitude shrinks (an
+/// opposite-sign add whose smaller operand lies far past the rounding
+/// boundary, or `log1p` of a tiny positive argument) or grows (a
+/// same-sign add, or `expm1` of a tiny positive argument). The result
+/// is always inexact.
+///
+/// Implemented as an exact wide add of the residue bit followed by a
+/// single mode-aware round, so it inherits the rounding pipeline's
+/// correctness for every mode, including the borrow renormalisation
+/// when `base` is a power of two. `base` must be a finite non-zero
+/// `Normal`. Review 2026-05-29 (add/sub huge-gap directed rounding;
+/// expm1/log1p tiny-x collapse).
+#[cfg(feature = "big")]
+pub(crate) fn round_with_infinitesimal(
+    base: &BigFloat,
+    result_sign: Sign,
+    subtracts_magnitude: bool,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
+    let e = match &base.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("round_with_infinitesimal requires a finite non-zero base"),
+    };
+
+    // Operate on `result_sign · |base|` so the directed-mode rounding
+    // sees the correct sign even when it differs from `base`'s stored
+    // sign (the huge-gap subtraction case).
+    let mut signed_base = base.clone();
+    if let Class::Normal { sign, .. } = &mut signed_base.class {
+        *sign = result_sign;
+    }
+
+    // The residue bit sits three places below max(precision, target):
+    // strictly under the target rounding boundary, with room for a
+    // sticky bit beneath the guard after any borrow renormalisation.
+    let wide = base.precision.max(target_precision).saturating_add(3);
+    let delta_sign = if subtracts_magnitude {
+        result_sign.flip()
+    } else {
+        result_sign
+    };
+    let mut delta_mant = vec![0u64; limbs_for(1)];
+    let top = delta_mant.len() - 1;
+    delta_mant[top] = 1u64 << 63;
+    let delta = BigFloat {
+        class: Class::Normal {
+            sign: delta_sign,
+            exponent: e.saturating_sub(i64::from(wide)).saturating_add(1),
+            mantissa: delta_mant,
+        },
+        precision: 1,
+    };
+
+    // The sum spans at most `wide` significant bits, so the add is
+    // exact; the single subsequent round applies the caller's mode and
+    // auto-raises the resulting INEXACT.
+    let (sum, _) = signed_base
+        .add_round(&delta, wide, RoundingMode::NearestEven)
+        .expect("wide >= 1");
+    sum.round_to_precision(target_precision, mode)
+        .expect("target_precision >= 1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

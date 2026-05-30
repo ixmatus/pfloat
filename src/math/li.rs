@@ -143,12 +143,20 @@ fn li_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
     // the rounding mode at target precision.
     let (result, status) = ziv_round(
         |w| {
-            let x_w = x
-                .round_to_precision(w, RoundingMode::NearestEven)
-                .expect("precision >= 1")
-                .0;
-            let (t, _) = x_w.ln(RoundingMode::NearestEven);
-            t.ei(RoundingMode::NearestEven).0
+            // li(x) = Ei(ln x); near the zero (the Ramanujan-Soldner
+            // constant) Ei's series cancels to a near-zero value, so
+            // boost the precision by the realised cancellation so the
+            // Ziv half-width stays sound (review 2026-05-29, root cause
+            // 2). Ei's operands are O(1) at its only positive zero, so
+            // the operand scale is a small constant.
+            super::ziv::cancellation_boosted(w, |ww| {
+                let x_w = x
+                    .round_to_precision(ww, RoundingMode::NearestEven)
+                    .expect("precision >= 1")
+                    .0;
+                let (t, _) = x_w.ln(RoundingMode::NearestEven);
+                (t.ei(RoundingMode::NearestEven).0, 4)
+            })
         },
         target_precision,
         mode,

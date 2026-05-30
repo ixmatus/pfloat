@@ -583,9 +583,20 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
 /// `ΣQ`); `j=2` → `−sinω·a_2` (`k=1` of `ΣP`); `j=3` → `−cosω·a_3`
 /// (`k=1` of `ΣQ`). Returns the unrounded working-precision value.
 fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+    // ω = x − n·(π/2) − π/4 has magnitude ~2^e_x; cos/sin(ω) depend on
+    // ω mod 2π, so the working precision must exceed x's integer width
+    // to keep `target_precision` accurate FRACTIONAL bits. The prior
+    // target+64 hard-capped at target+512 ignored |x|, so the phase was
+    // garbage (often wrong sign) for large x and the Ziv loop could
+    // never grow past the cap (review 2026-05-29, root cause 1).
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let x_int_bits = u32::try_from(e_x.max(0)).unwrap_or(u32::MAX);
     let working = target_precision
         .saturating_add(64)
-        .min(target_precision.saturating_add(512));
+        .saturating_add(x_int_bits);
     let xw = x
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")

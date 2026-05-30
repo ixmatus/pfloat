@@ -148,7 +148,13 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
             if use_asymptotic {
                 ci_asymptotic(x, w)
             } else {
-                ci_series(x, w)
+                // Ci has a real zero (~0.61650549) where γ + ln|x| + Σ
+                // is a near-total cancellation of O(1) terms; boost by
+                // the realised cancellation so the Ziv half-width stays
+                // sound (review 2026-05-29, root cause 2). The operands
+                // are O(1) near that zero, so the operand scale is a
+                // small constant.
+                super::ziv::cancellation_boosted(w, |ww| (ci_series(x, ww), 4))
             }
         },
         target_precision,

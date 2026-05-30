@@ -254,20 +254,19 @@
 //! 6h: differential lane local sweep + bit-exactness fixes. The
 //! first local MPFR sweep surfaced three structural limitations
 //! the original test infrastructure did not anticipate; all are
-//! documented in ADR-0014's status update. The differential lane
-//! is now NearestEven-only (bit-exact conversion via Display +
-//! `rug::Float::parse` is rounding-mode-aware and loses up to
-//! 1 ULP under non-NE modes; full 5-mode coverage needs a
-//! bit-exact converter). Transcendental tests are precision-
-//! capped at 256 bits via `TRANSCENDENTAL_PRECISIONS`
-//! (pfloat's hardcoded 1024-bit constants run out of bits above
-//! ~960 bits target precision). The `pow` differential uses 2
-//! ULP tolerance (slice 3c's `exp(y·ln(x))` composition is not
-//! correctly-rounded; bit-exact pow needs Ziv-strategy retry or
-//! an integer-exponent fast path). 22 differential test files
-//! pass under `--features=differential-mpfr` on macOS; 768
-//! total cargo tests pass under
-//! `--features=differential-mpfr,fixed,ops`.
+//! documented in ADR-0014's status update. At the time the
+//! differential lane was made NearestEven-only (bit-exact conversion
+//! via Display + `rug::Float::parse` is rounding-mode-aware and loses
+//! up to 1 ULP under non-NE modes; full 5-mode coverage needs a
+//! bit-exact converter), transcendental tests were precision-capped at
+//! 256 bits via `TRANSCENDENTAL_PRECISIONS`, and the `pow` differential
+//! used a 2 ULP tolerance. Later slices superseded the latter two:
+//! slice 7b's AGM-based on-the-fly `π` and `ln(2)` lifted the 1024-bit
+//! constant ceiling (so `TRANSCENDENTAL_PRECISIONS` now reaches 1024),
+//! and slice 7c made `pow` correctly-rounded via the Ziv driver (the
+//! differential now asserts bit-exact agreement, consistent with the
+//! "Scope target" note above). 22 differential test files passed under
+//! `--features=differential-mpfr` on macOS at the time.
 //!
 //! 6g: Phase 5 close. `fuzz/oss-fuzz/` ships the
 //! upstream-submission scaffold (`Dockerfile`, `build.sh`,
