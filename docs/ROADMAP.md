@@ -120,7 +120,15 @@ The polish that earns 1.x adoption. Sequenced after the v1.0 tag
 - `serde` impls behind a feature.
 - `num-traits` impls behind a feature.
 - Shortest round trip formatter (Dragon4 or a Ryū generalization).
-  ADR-0029 deferred this from v1.0; this phase picks it up.
+  ADR-0029 deferred the shortest-output aesthetics from v1.0; this
+  phase picks up the minimal-digit output. The same rewrite's
+  panic-free, bounded, sub-quadratic conversion is split out ahead of
+  it as a pre-v1.0 robustness slice (pf-vbm2; see "Currently in
+  flight"), because the 2026-05-29 review found the current
+  full-materialization formatter panics or allocates without bound on
+  a finite value with a huge binary exponent and runs O(digits²) with
+  no cap. That half is a robustness defect, not an output-aesthetics
+  choice, so it does not wait for this phase.
 - A constants at precision API (so users can request π or ln 2 at
   any precision without learning the AGM module directly).
 - README catches up to the code. An honest "pfloat vs `rug`,
@@ -415,6 +423,23 @@ uniformly encode the constraint. The next active unit is
 **pf-xyaq**: widen CI to gate the full feature-union integration
 run, the gap that let the property-test bug class sit unsurfaced;
 it blocks slice 8c so v1.0 ships with the wider gate in place.
+
+The 2026-05-29 correctness and coherence review then ran and landed
+(signed merge c5827ea): a multi agent sweep, reproduced independently
+against mpmath, that closed 16 of 18 findings across two systemic root
+causes (the working precision in the trig, Airy, and Bessel
+large argument asymptotics failing to scale with the argument, and the
+Ziv relative half width undershooting the cancellation near the
+lgamma, digamma, li, and Ci zeros), alongside conformance and `i128`
+exponent hardening fixes. Two findings remain, both in the decimal
+formatter, filed together as **pf-vbm2**. Per the split recorded in
+Phase 3's shortest-formatter bullet, its robustness half (a panic
+free, bounded conversion) becomes a slice before the v1.0 tag and now
+blocks slice 8c next to pf-xyaq: a v1.0 that panics or exhausts memory
+on a finite value is not a v1.0. Its shortest-output half stays
+deferred to Phase 3 under ADR-0029. The queue before 8c, in ship
+order, is pf-xyaq (CI gate widening), then pf-vbm2 (formatter
+robustness), then 8c.
 
 ## Related
 
