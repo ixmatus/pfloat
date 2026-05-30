@@ -76,9 +76,8 @@ consumers escape `alloc`, IEEE 754 exception semantics surfaced as observable st
 worst case rounding tables run as integration tests, in differential tests against a trusted reference oracle on a separate CI lane, and in fuzz coverage of parser entry points. CI runs the usual lints and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks carry a written justification at the call site.
 
 **Scope.** pfloat is a personal project. The intended consumer is the broader Rust scientific and embedded ecosystem (anyone who needs more than `f64` with correctly rounded results and no C
-toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is pre-1.0 and unpublished; the design, the architecture
-decision records, the CI scaffolding, and the algorithmic kernels are in place. The public API stabilizes and the crates.io publish lands at slice 8c. The repository remains public for users
-who want to read or follow the work.
+toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is at v1.0; the design, the architecture decision records,
+the CI scaffolding, and the algorithmic kernels are in place. The repository remains public for users who want to read or follow the work.
 
 **What this does not promise.** AI collaboration does not transfer responsibility. The author is accountable for what ships under his name. The disciplines above narrow the failure surface; they
 do not eliminate it. In particular, this process is most exposed to subtle bugs that a careful human reading of the code would catch but tests, types, and formal verification would not. For
@@ -88,7 +87,7 @@ warranty; see the LICENSE file for the legal terms governing use.
 
 ## Status
 
-Pre-1.0. The repository carries the design (`DESIGN.md`), the
+v1.0. The repository carries the design (`DESIGN.md`), the
 architecture decision records (`docs/decisions/`), the CI
 scaffolding, and the algorithmic kernels (arithmetic, the elementary
 transcendental and special-function surface listed below, both
@@ -96,8 +95,8 @@ precision profiles). The Phase 1 correctness sweep is complete per
 ADR-0033 (the exhaustive binary32-input audit closed by slices p1.1
 through p1.11 and the follow-ups pf-jn1y, pf-cvs, pf-06sw; see
 Verification posture below for what the audit does). The public API is
-unstable and will break without notice until 1.0; slice 8c is the
-v1.0 tag ceremony.
+stable under semver as of v1.0 (ADR-0054); the per-function rounding
+status is published at `docs/rounding-status.md`.
 
 ## Quickstart
 
@@ -194,7 +193,7 @@ Choose pfloat when one of these is load-bearing:
 
 - **No C toolchain.** pfloat is pure Rust with zero runtime dependencies, so it builds anywhere `cargo` does, including WebAssembly and cross-compiled embedded targets where `gmp-mpfr-sys` cannot.
 - **Permissive license.** pfloat is `MIT OR Apache-2.0`. `rug` is licensed LGPL, as are GMP and MPFR, which constrains static linking and redistribution for some consumers.
-- **Real `no_std`.** pfloat is `no_std`-first and `alloc`-only, and CI cross-compiles it to `thumbv6m-none-eabi` for the embedded floor. `rug` requires `std` and a C library.
+- **Real `no_std`.** pfloat builds for bare-metal ARM (`thumbv6m-none-eabi`) in CI with no `std` and no C dependency, a target `gmp-mpfr-sys` cannot reach. `rug` requires `std` and a C library.
 - **Verification artifacts in the box.** pfloat ships its Kani harnesses, differential lanes, fuzz targets, and the per-function rounding-status table alongside the code, so the correctness evidence travels with the crate rather than living in an upstream C project.
 
 Choose `rug` when a C toolchain is acceptable and you want the fastest, most production-proven arbitrary-precision arithmetic available, or when you need MPC-style complex arithmetic that pfloat does not yet provide.
