@@ -117,6 +117,11 @@ impl BigFloat {
             let prec = self.precision.max(other.precision);
             let nan = BigFloat::try_new_quiet_nan(Sign::Positive, prec, &[])
                 .expect("BigFloat invariant: precision >= 1");
+            // Mirror `min`: a signaling-NaN operand must also raise the
+            // std thread-local INVALID, not only the returned Status
+            // (the status.rs "both patterns identical" invariant).
+            // Review 2026-05-29.
+            crate::status::auto_raise(Status::INVALID);
             return (nan, Status::INVALID);
         }
         if self.is_quiet_nan() && other.is_quiet_nan() {
