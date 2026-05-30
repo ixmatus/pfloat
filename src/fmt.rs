@@ -387,25 +387,129 @@ fn increment_owned(mut v: Vec<u64>) -> Vec<u64> {
     v
 }
 
-/// Repeated divmod by 10 to extract decimal digits, most
-/// significant first.
+/// Number of decimal digits per base-case group. `10^19` is the largest
+/// power of ten below `2^64`, so a group fits a single limb.
+const DECIMAL_GROUP: u32 = 19;
+
+/// `10^DECIMAL_GROUP`, evaluated in a const context so a `DECIMAL_GROUP`
+/// that overflowed `u64` would be a compile error rather than a runtime
+/// panic.
+const DECIMAL_GROUP_POW: u64 = 10u64.pow(DECIMAL_GROUP);
+
+/// Convert a non-negative big integer to decimal digits, most
+/// significant first (`[0]` for zero, otherwise no leading zeros).
+///
+/// Divide-and-conquer base conversion (Brent & Zimmermann, *Modern
+/// Computer Arithmetic* §1.7): split `value = hi·10^k + lo` with one
+/// division by a precomputed power of ten near `sqrt(value)`, recurse on
+/// each half, and left-zero-pad each low half to its block width. With
+/// the sub-quadratic [`divmod_limbs`] and [`multiply_limbs`] this is
+/// `O(M(D)·log D)` in the digit count `D`, replacing the previous
+/// `O(D^2)` per-digit loop (review finding 12, ADR-0051). The power
+/// table costs `O(M(D))` to build and `O(D)` to store. It is also the
+/// seam the deferred shortest-output (Dragon4) formatter reuses
+/// (ADR-0029): that work swaps the digit-*selection* strategy and keeps
+/// this big-integer-to-decimal primitive.
 fn int_to_decimal(value: &[u64]) -> Vec<u8> {
-    if value.iter().all(|&l| l == 0) {
+    let mut v: Vec<u64> = value.to_vec();
+    trim_high_zeros(&mut v);
+    if v.len() == 1 && v[0] == 0 {
         return vec![0];
     }
-    let mut digits: Vec<u8> = Vec::new();
-    let mut v: Vec<u64> = value.to_vec();
-    while !v.iter().all(|&l| l == 0) {
-        let (q, r) = divmod_limbs(&v, &[10u64]);
-        digits.push(r.first().copied().unwrap_or(0) as u8);
-        v = q;
-        // Trim trailing zeros to keep divmod cost down.
-        while v.len() > 1 && *v.last().unwrap() == 0 {
-            v.pop();
+    // powers[i] = 10^(DECIMAL_GROUP · 2^i); build while ≤ v so the top
+    // entry is the largest such power not exceeding v (hence v < its
+    // square, the precondition the recursion relies on).
+    let mut powers: Vec<Vec<u64>> = Vec::new();
+    let mut p: Vec<u64> = vec![DECIMAL_GROUP_POW];
+    while cmp_limbs(&p, &v) != Ordering::Greater {
+        powers.push(p.clone());
+        let mut sq = multiply_limbs(&p, &p);
+        trim_high_zeros(&mut sq);
+        p = sq;
+    }
+    let mut out = Vec::new();
+    emit_decimal(&v, powers.len(), &powers, None, &mut out);
+    out
+}
+
+/// Recursive half of [`int_to_decimal`]. Appends the digits of `value`
+/// to `out`; `pad_to` is `Some(width)` for an interior / low block that
+/// must be left-zero-padded to a fixed width, `None` for the
+/// most-significant block (minimal, no leading zeros). `level` is the
+/// number of `powers` entries available to split this block: a block at
+/// `level` spans exactly `DECIMAL_GROUP · 2^level` digits, so its two
+/// halves each span `DECIMAL_GROUP · 2^(level-1)`.
+fn emit_decimal(
+    value: &[u64],
+    level: usize,
+    powers: &[Vec<u64>],
+    pad_to: Option<usize>,
+    out: &mut Vec<u8>,
+) {
+    if level == 0 {
+        emit_base_group(value, pad_to, out);
+        return;
+    }
+    let p = &powers[level - 1];
+    let w_lo = (DECIMAL_GROUP as usize) << (level - 1); // digits in the low half
+    let (mut hi, mut lo) = divmod_limbs(value, p);
+    trim_high_zeros(&mut hi);
+    trim_high_zeros(&mut lo);
+    let hi_is_zero = hi.len() == 1 && hi[0] == 0;
+    if pad_to.is_none() && hi_is_zero {
+        // Minimal (most-significant) spine and this power is larger than
+        // the value: it contributes no leading digits. Descend on the
+        // value itself (== lo) at the next lower power — suppressing the
+        // leading zero a padded split would emit.
+        emit_decimal(&lo, level - 1, powers, None, out);
+        return;
+    }
+    let hi_pad = pad_to.map(|w| w - w_lo);
+    emit_decimal(&hi, level - 1, powers, hi_pad, out);
+    emit_decimal(&lo, level - 1, powers, Some(w_lo), out);
+}
+
+/// Base case: `value < 10^DECIMAL_GROUP` fits one limb. Append its digits
+/// either minimally (`pad_to == None`) or left-zero-padded to an exact
+/// width (`Some(w)`).
+fn emit_base_group(value: &[u64], pad_to: Option<usize>, out: &mut Vec<u8>) {
+    let v = value.first().copied().unwrap_or(0);
+    debug_assert!(
+        value.iter().skip(1).all(|&l| l == 0),
+        "base group exceeds one limb"
+    );
+    match pad_to {
+        None => {
+            if v == 0 {
+                out.push(0);
+                return;
+            }
+            let start = out.len();
+            let mut x = v;
+            while x > 0 {
+                out.push((x % 10) as u8);
+                x /= 10;
+            }
+            out[start..].reverse();
+        }
+        Some(w) => {
+            let mut buf = [0u8; DECIMAL_GROUP as usize + 1];
+            let mut k = 0usize;
+            let mut x = v;
+            while x > 0 {
+                buf[k] = (x % 10) as u8;
+                x /= 10;
+                k += 1;
+            }
+            debug_assert!(k <= w, "base group wider than its block width");
+            for _ in 0..(w - k) {
+                out.push(0);
+            }
+            for j in (0..k).rev() {
+                out.push(buf[j]);
+            }
         }
     }
-    digits.reverse();
-    digits
 }
 
 /// Compute `5^exp` as a multi-precision integer. Shared with the
@@ -761,5 +865,85 @@ mod tests {
         assert_eq!(int_to_decimal(&[5]), vec![5]);
         assert_eq!(int_to_decimal(&[123]), vec![1, 2, 3]);
         assert_eq!(int_to_decimal(&[1_000_000]), vec![1, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// The previous per-digit conversion, kept as the differential oracle
+    /// for the divide-and-conquer routine. Obviously correct (repeated
+    /// `divmod` by 10), at the cost of being quadratic.
+    fn int_to_decimal_reference(value: &[u64]) -> Vec<u8> {
+        if value.iter().all(|&l| l == 0) {
+            return vec![0];
+        }
+        let mut digits: Vec<u8> = Vec::new();
+        let mut v: Vec<u64> = value.to_vec();
+        while !v.iter().all(|&l| l == 0) {
+            let (q, r) = divmod_limbs(&v, &[10u64]);
+            digits.push(r.first().copied().unwrap_or(0) as u8);
+            v = q;
+            while v.len() > 1 && *v.last().unwrap() == 0 {
+                v.pop();
+            }
+        }
+        digits.reverse();
+        digits
+    }
+
+    fn xorshift(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    #[test]
+    fn int_to_decimal_matches_reference() {
+        // Random sizes that exercise the D&C splits past the single-limb
+        // base group and the interior-zero padding, bit-for-bit against
+        // the per-digit reference.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..400 {
+            let len = 1 + (xorshift(&mut state) % 40) as usize;
+            let v: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
+            assert_eq!(int_to_decimal(&v), int_to_decimal_reference(&v), "value {v:?}");
+        }
+        // Larger values: deep recursion whose power-of-ten divisors exceed
+        // the recursive-divmod dispatch size (ties this to the BZ divider).
+        for _ in 0..15 {
+            let len = 150 + (xorshift(&mut state) % 110) as usize;
+            let v: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
+            assert_eq!(int_to_decimal(&v), int_to_decimal_reference(&v));
+        }
+        // Exact powers of ten stress the "leading 1, then a run of zeros"
+        // padding boundary classic base-conversion bugs hide in.
+        for d in [1usize, 18, 19, 20, 37, 38, 39, 76, 100, 257] {
+            let mut x: Vec<u64> = vec![1];
+            for _ in 0..d {
+                x = multiply_limbs(&x, &[10]);
+                trim_high_zeros(&mut x);
+            }
+            let digits = int_to_decimal(&x);
+            assert_eq!(digits, int_to_decimal_reference(&x), "10^{d}");
+            let mut expected = vec![0u8; d + 1];
+            expected[0] = 1;
+            assert_eq!(digits, expected, "10^{d} should be 1 then {d} zeros");
+        }
+    }
+
+    #[test]
+    fn int_to_decimal_high_precision_completes() {
+        // A value the old O(n^2) loop would churn on: ~2^33000 has ≈ 9900
+        // decimal digits. The D&C path produces them quickly; assert the
+        // exact digit count and a round-trip rather than wall-clock.
+        let mut x: Vec<u64> = vec![1];
+        let two = vec![2u64];
+        for _ in 0..33000 {
+            x = multiply_limbs(&x, &two);
+            trim_high_zeros(&mut x);
+        }
+        let digits = int_to_decimal(&x);
+        assert_eq!(digits, int_to_decimal_reference(&x));
+        // 2^33000 has floor(33000·log10 2)+1 = 9934 digits.
+        assert_eq!(digits.len(), 9934);
+        assert_ne!(digits[0], 0, "no leading zero");
     }
 }
