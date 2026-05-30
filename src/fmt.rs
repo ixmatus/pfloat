@@ -787,7 +787,10 @@ mod tests {
             under = under.mul(&under, ne).0;
         }
         let s = under.to_string();
-        assert!(s.contains('e'), "in-cap large value renders scientific: {s}");
+        assert!(
+            s.contains('e'),
+            "in-cap large value renders scientific: {s}"
+        );
         let back = BigFloat::parse_str(&s, 53, ne).unwrap().0;
         assert_eq!(
             back.partial_cmp(&under).0,
@@ -910,7 +913,11 @@ mod tests {
         for _ in 0..400 {
             let len = 1 + (xorshift(&mut state) % 40) as usize;
             let v: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
-            assert_eq!(int_to_decimal(&v), int_to_decimal_reference(&v), "value {v:?}");
+            assert_eq!(
+                int_to_decimal(&v),
+                int_to_decimal_reference(&v),
+                "value {v:?}"
+            );
         }
         // Larger values: deep recursion whose power-of-ten divisors exceed
         // the recursive-divmod dispatch size (ties this to the BZ divider).

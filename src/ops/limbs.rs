@@ -1006,8 +1006,16 @@ mod tests {
                 Ordering::Less,
                 "remainder >= divisor (n={n})"
             );
-            assert_eq!(cmp_limbs(&rr, &r), Ordering::Equal, "remainder mismatch (n={n})");
-            assert_eq!(cmp_limbs(&qq, &q), Ordering::Equal, "quotient mismatch (n={n})");
+            assert_eq!(
+                cmp_limbs(&rr, &r),
+                Ordering::Equal,
+                "remainder mismatch (n={n})"
+            );
+            assert_eq!(
+                cmp_limbs(&qq, &q),
+                Ordering::Equal,
+                "quotient mismatch (n={n})"
+            );
             let mut recon = multiply_limbs(&qq, &divisor);
             let _ = limbs_add_assign(&mut recon, &rr);
             assert_eq!(
