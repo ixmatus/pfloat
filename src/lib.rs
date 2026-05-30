@@ -126,10 +126,13 @@
 //! [`BigFloat::round_trip_digit_count`](BigFloat::round_trip_digit_count)
 //! digits — enough that `parse_str` at the same precision recovers
 //! the exact value. Output uses fixed-point notation for moderate
-//! magnitudes and scientific notation otherwise. Shortest
-//! round-trip (Dragon4 / Steele-White) can be a future
-//! optimization; the current output is correct, just not always
-//! minimal.
+//! magnitudes and scientific notation otherwise. A finite value
+//! whose magnitude exceeds the parse round-trip range saturates to
+//! `inf` or `0` rather than rendering unbounded digits, and the
+//! digit extraction is sub-quadratic (ADR-0051, ADR-0052). Shortest
+//! round-trip output (Dragon4 / Steele-White) stays a deferred
+//! follow-up under ADR-0029; the current output is correct and
+//! round-trips, just not always minimal.
 //!
 //! # Phase 3 (in progress)
 //!

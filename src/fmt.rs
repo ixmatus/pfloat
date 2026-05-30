@@ -21,17 +21,23 @@
 //!    N - 1 - decimal_exp`.
 //! 3. Divmod `numerator / denominator`; round per the user's
 //!    rounding mode.
-//! 4. Convert `scaled` to decimal digits via repeated `divmod 10`.
+//! 4. Convert `scaled` to decimal digits via a divide-and-conquer
+//!    base conversion (`int_to_decimal`), sub-quadratic in the
+//!    digit count.
 //! 5. Verify that `scaled` has exactly `N` digits; if off by one
 //!    (rare: the log10 estimate's residual), adjust `decimal_exp`
 //!    and retry.
 //! 6. Compose either a fixed-point or scientific format depending
 //!    on `decimal_exp`'s magnitude.
 //!
-//! Slice 2b ships fixed-digit-count formatting. Shortest
-//! round-trip (Dragon4 / Steele-White) can be a follow-up if and
-//! when callers want it; the current Display output rounds-trips
-//! at the operand's own precision, which is what most callers want.
+//! A value whose `|decimal exponent|` exceeds
+//! [`MAX_FORMAT_DECIMAL_EXPONENT`] (value-matched to parse's
+//! `MAX_DECIMAL_EXPONENT`) has no bounded exact rendering, so it
+//! saturates the way parse does: too large to print reads back as
+//! `inf`, too small as `0` (ADR-0051). Within the cap the output
+//! round-trips at the operand's own precision; it is not the
+//! shortest such string. Shortest round-trip output (Dragon4 /
+//! Steele-White) stays deferred to a follow-up under ADR-0029.
 
 use alloc::string::String;
 use alloc::vec;
