@@ -147,13 +147,24 @@ set -euo pipefail
 # tee to keep aws ec2 get-console-output useful (ferrodec gotcha).
 exec > >(tee -a /var/log/sweep.log) 2>&1
 
+# cloud-init has no HOME; rustup's env script dereferences it under
+# set -u (ADR-0049 smoke shakeout).
+export HOME=/root
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q git build-essential pkg-config curl \\
+# m4: gmp-mpfr-sys builds GMP/MPFR from vendored source, which needs it
+# (GitHub CI runners ship it; the bare Noble AMI does not). ADR-0049.
+apt-get install -y -q git build-essential m4 pkg-config curl \\
     python3 python3-venv python3-pip libgmp-dev libmpfr-dev
 
-# awscli via pip (ferrodec gotcha: apt awscli flaky on noble).
-pip3 install --quiet awscli
+# awscli via pip (ferrodec gotcha: apt awscli flaky on noble). Noble
+# enforces PEP 668 on the system env, so --break-system-packages.
+pip3 install --quiet --break-system-packages awscli
+
+# From here aws exists: trap any non-zero exit (build/setup failure) so
+# the shard reports a sentinel and self-terminates instead of stalling
+# (ADR-0049). The happy path exits 0 and the trap is a no-op.
+trap 'rc=\$?; [ \$rc -eq 0 ] && exit 0; aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${slug}/sweep.log" 2>/dev/null || true; aws s3 cp /dev/null "s3://${S3_BUCKET}/${RUN_ID}/${slug}/_FAILED_PREFLIGHT" 2>/dev/null || true; shutdown -h now' EXIT
 
 # Rust toolchain via rustup. rustup respects the repo's
 # rust-toolchain.toml after the clone.
@@ -164,6 +175,15 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \\
 git clone "${GITHUB_REPO}" /opt/pfloat
 cd /opt/pfloat
 git checkout "${GIT_SHA}"
+
+# Install the pinned nightly explicitly with retries. The lazy
+# on-demand install (cargo reading rust-toolchain.toml) flakes under
+# many concurrent downloads and leaves cargo missing (ADR-0049 run1).
+TC=\$(grep -oE 'nightly-[0-9-]+' rust-toolchain.toml | head -1)
+for i in 1 2 3 4 5; do
+    rustup toolchain install "\$TC" --profile minimal && break
+    echo "[pf-hcz4] rustup install attempt \$i failed; retry in 20s"; sleep 20
+done
 
 # Arb venv bootstrap (idempotent).
 PFLOAT_ARB_ORACLE_VENV=/opt/pfloat-arb-oracle/venv \\

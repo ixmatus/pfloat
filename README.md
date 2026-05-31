@@ -27,9 +27,14 @@ Two precision profiles share the same arithmetic. `BigFloat` carries
 its precision as a runtime field and stores its mantissa on the heap
 behind an `alloc` dependency. `FixedFloat<const PREC: u32>`
 parameterises the same arithmetic by a compile-time precision
-constant, stack-allocates its mantissa via a const generic, and
-works without `alloc` (the `no_std` story, with `thumbv6m-none-eabi`
-and `thumbv8m.main-none-eabi` cross-compile CI lanes).
+constant and stack-allocates its mantissa via a const generic, so the
+value is `Copy` and holds no heap pointer and the optimizer sees the
+precision as a constant. Its operations currently delegate to
+`BigFloat` and so allocate while computing; the transcendental
+surface needs `alloc` intrinsically, because correct rounding grows
+the working precision at runtime past any compile-time width. pfloat
+is `no_std`-first and `alloc`-only, and CI cross-compiles it to
+`thumbv6m-none-eabi`.
 
 The IEEE 754-2019 §5 contract is the surface every operation
 presents. Each kernel takes an explicit `RoundingMode`
@@ -76,9 +81,8 @@ consumers escape `alloc`, IEEE 754 exception semantics surfaced as observable st
 worst case rounding tables run as integration tests, in differential tests against a trusted reference oracle on a separate CI lane, and in fuzz coverage of parser entry points. CI runs the usual lints and the full test and verification suite; specific harness counts and conformance counts change as the project evolves. Significant decisions are recorded as ADRs in the repo. `unsafe` blocks carry a written justification at the call site.
 
 **Scope.** pfloat is a personal project. The intended consumer is the broader Rust scientific and embedded ecosystem (anyone who needs more than `f64` with correctly rounded results and no C
-toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is pre-1.0 and unpublished; the design, the architecture
-decision records, the CI scaffolding, and the algorithmic kernels are in place. The public API stabilizes and the crates.io publish lands at slice 8c. The repository remains public for users
-who want to read or follow the work.
+toolchain dependency); durability and quality are goals, but this is not a funded library with a maintenance team behind it. The crate is at v1.0; the design, the architecture decision records,
+the CI scaffolding, and the algorithmic kernels are in place. The repository remains public for users who want to read or follow the work.
 
 **What this does not promise.** AI collaboration does not transfer responsibility. The author is accountable for what ships under his name. The disciplines above narrow the failure surface; they
 do not eliminate it. In particular, this process is most exposed to subtle bugs that a careful human reading of the code would catch but tests, types, and formal verification would not. For
@@ -88,7 +92,7 @@ warranty; see the LICENSE file for the legal terms governing use.
 
 ## Status
 
-Pre-1.0. The repository carries the design (`DESIGN.md`), the
+v1.0. The repository carries the design (`DESIGN.md`), the
 architecture decision records (`docs/decisions/`), the CI
 scaffolding, and the algorithmic kernels (arithmetic, the elementary
 transcendental and special-function surface listed below, both
@@ -96,8 +100,8 @@ precision profiles). The Phase 1 correctness sweep is complete per
 ADR-0033 (the exhaustive binary32-input audit closed by slices p1.1
 through p1.11 and the follow-ups pf-jn1y, pf-cvs, pf-06sw; see
 Verification posture below for what the audit does). The public API is
-unstable and will break without notice until 1.0; slice 8c is the
-v1.0 tag ceremony.
+stable under semver as of v1.0 (ADR-0054); the per-function rounding
+status is published at `docs/rounding-status.md`.
 
 ## Quickstart
 
@@ -112,8 +116,8 @@ let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
 let (sqrt2, _status) = two.sqrt(RoundingMode::NearestEven);
 
 // FixedFloat: precision fixed at compile time via a const generic.
-// Stack-allocated; works without `alloc`. `FixedFloat<113>` is the
-// binary128 mantissa width.
+// Stack-allocated storage (the value is `Copy`); operations delegate
+// to BigFloat today. `FixedFloat<113>` is the binary128 mantissa width.
 type F128 = FixedFloat<113>;
 let two_f128 = F128::try_from_i64_exact(2).unwrap();
 let (sqrt2_f128, _) = two_f128.sqrt(RoundingMode::NearestEven);
@@ -134,30 +138,30 @@ v1.0 covers the MPFR-equivalent surface:
 - IEEE 754-2019 arithmetic with all five rounding modes (RNE, RNA, RZ, RP, RM) and sticky exception flags.
 - Correctly-rounded elementary transcendentals: `exp`, `log` family, trig and inverses, hyperbolic and inverses, `pow`.
 - Special functions: `gamma`, `lgamma`, `digamma`, `beta`, `erf`, `erfc`, Bessel `J/Y/I/K`, `zeta`, `Ei`, `Si`, `Ci`, Airy `Ai/Bi/Ai′/Bi′`, AGM.
-- Two precision profiles in one crate: `BigFloat` (runtime precision, needs `alloc`) and `FixedFloat<const PREC: u32>` (compile-time precision, stack-allocated, runs without `alloc`).
-- `no_std`-first, embedded-friendly. CI cross-compiles to `thumbv6m-none-eabi`.
+- Two precision profiles in one crate: `BigFloat` (runtime precision) and `FixedFloat<const PREC: u32>` (compile-time precision, stack-allocated storage, `Copy`). Both need `alloc` to compute today.
+- `no_std`-first and `alloc`-only, embedded-friendly with a global allocator. CI cross-compiles to `thumbv6m-none-eabi`.
 
 ## Installation
 
-pfloat is pre-1.0 and unpublished; depend on it as a git dependency
-until the v1.0 tag and crates.io release land:
+pfloat is tagged at v1.0 but not yet published to crates.io; depend
+on it as a git dependency:
 
 ```toml
 [dependencies]
-pfloat = { git = "https://github.com/ixmatus/pfloat" }
+pfloat = { git = "https://github.com/ixmatus/pfloat", tag = "v1.0.0" }
 ```
 
 The crate requires a nightly Rust toolchain for
 `feature(generic_const_exprs)` (the bit-level const-generic mantissa
-storage that lets `FixedFloat<const PREC: u32>` avoid `alloc` per
-ADR-0011). The pfloat repository pins its toolchain channel in
+storage behind `FixedFloat<const PREC: u32>` per ADR-0011). The
+pfloat repository pins its toolchain channel in
 `rust-toolchain.toml`; downstream consumers need a matching nightly
 in their own workspace.
 
-For embedded targets, build with `--no-default-features
---features=fixed` (or `--features=alloc,big` if the runtime
-precision profile is wanted). CI exercises the
-`thumbv6m-none-eabi` and `thumbv8m.main-none-eabi` cross targets.
+For embedded targets, build `--no-default-features --features=fixed`
+(or `--features=alloc,big` for the runtime-precision profile); both
+need a global allocator on the target. CI cross-compiles to
+`thumbv6m-none-eabi`.
 
 ## Feature flags
 
@@ -185,6 +189,23 @@ and `alloc`-free consumers can pick only what they need.
 ## Why
 
 `rug` and `gmp-mpfr-sys` force a C toolchain on every Rust project that needs more than the 53-bit hardware `f64` mantissa with correct rounding. `astro-float` is the closest pure-Rust alternative and covers basic arithmetic plus elementary transcendentals well; the special-function surface (gamma, erf, Bessel, zeta, etc.) and shipped formal-verification artifacts are gaps that pfloat fills directly. The companion goal is to displace the GMP/MPFR build dependency for scientific, financial, and symbolic-computation crates that want WebAssembly or embedded targets.
+
+## pfloat vs rug
+
+`rug` (the Rust binding to GMP, MPFR, and MPC) is the mature, fast, battle-tested option, and when a C toolchain is available and raw throughput matters most it stays the right choice. pfloat does not try to win on speed or on decades of production hardening; MPFR has both, and pfloat is candid that it does not.
+
+Choose pfloat when one of these is load-bearing:
+
+- **No C toolchain.** pfloat is pure Rust with zero runtime dependencies, so it builds anywhere `cargo` does, including WebAssembly and cross-compiled embedded targets where `gmp-mpfr-sys` cannot.
+- **Permissive license.** pfloat is `MIT OR Apache-2.0`. `rug` is licensed LGPL, as are GMP and MPFR, which constrains static linking and redistribution for some consumers.
+- **Real `no_std`.** pfloat builds for bare-metal ARM (`thumbv6m-none-eabi`) in CI with no `std` and no C dependency, a target `gmp-mpfr-sys` cannot reach. `rug` requires `std` and a C library.
+- **Verification artifacts in the box.** pfloat ships its Kani harnesses, differential lanes, fuzz targets, and the per-function rounding-status table alongside the code, so the correctness evidence travels with the crate rather than living in an upstream C project.
+
+Choose `rug` when a C toolchain is acceptable and you want the fastest, most production-proven arbitrary-precision arithmetic available, or when you need MPC-style complex arithmetic that pfloat does not yet provide.
+
+## Rounding status
+
+pfloat publishes a per-function rounding-status table at [`docs/rounding-status.md`](docs/rounding-status.md): for every function the verification oracle tracks, it records the correct-rounding verdict in each of the five IEEE 754-2019 rounding modes. Every function is correctly rounded under NearestEven across the exhaustive binary32 grid. For each directed mode the table records whether that same exhaustive grid certified it, or whether the guarantee rests on the five-mode differential lanes against MPFR and the per-release cross-check sweep (the grid's bf-to-f32 bridge carries NearestEven only). The table is generated from the oracle's status records and checked in CI, so it cannot drift from what the verification actually established.
 
 ## Verification posture
 

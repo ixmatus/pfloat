@@ -166,25 +166,54 @@ honestly, J/Y/Ai sweep without panics, and tanh's cross-check passes (0
 violations, was 12285) with correct rounding re-verified against MPFR
 (0 mismatches over 96473 certifiable checks across all 5 modes).
 
-### Full EC2 sweep (pending — slice 8c)
+### Full EC2 sweep (ran 2026-05-30, slice 8c)
 
-Deferred to the v1.0 tag ceremony, run against the frozen release SHA
-rather than a moving branch tip; see "Sequencing" below. The launch
-prerequisites identified in the same pre-flight review still apply
-before any fan-out: the branch SHA must be reachable from the clone
-remote, the cloud-init needs a `trap shutdown` covering pre-smoke setup
-failures, the `--smoke` shard should be Arb-primary (the slowest path,
-currently `exp` which is fast MPFR), and the AMI architecture must be
-derived from the instance type. Placeholder for the run record:
+Run against the frozen `v1.0-critical-path` tip. The `[cross_check]`
+baselines the aggregator appended record that SHA; the post-append
+commit and the v1.0 tag carry byte-identical kernels, so the empirical
+result holds for the tagged surface.
 
-- **Run ID**: `<RUN_ID>`
-- **Tip SHA**: `<GIT_SHA>` (release SHA at 8c)
-- **Shards launched**: 63 + 1 smoke pre-flight
-- **Total assertions / violations / per-kernel counts**: TBD
-- **Wall-clock, AWS cost, spot reclaims**: TBD (cost target <$10)
-- **Durable artifact**: `tests/oracle/status/<fn>.toml` `[cross_check]`
-  tables (63 files); per-shard `result.json` archived to
-  `s3://${S3_BUCKET}/${RUN_ID}/`
+- **Run ID**: `pf-hcz4-full-run2` (Arb-primary `Si` smoke pre-flight as
+  `pf-hcz4-smoke-fix3` first).
+- **Swept SHA**: `7392477bf94bad078499dfe508a278447675f590`.
+- **Shards**: 63 of 63 completed; 0 `_FAILED_PREFLIGHT`.
+- **Assertions**: 18,681,340 passes, 1,966,890 legitimate skips
+  (composed-kernel `no_ziv_path`, non-finite, no-midpoint), **0
+  violations**. Oracle calls: 6,553,500 Arb, 12,127,840 MPFR.
+- **Wall-clock**: about 2.5h, set entirely by `zeta` (8664s of sweep,
+  its three directed modes ~45min each); the other 62 shards finished
+  in minutes.
+- **AWS cost**: about $1 on-demand for the clean run (most instance-time
+  is the per-shard build, not the sweep). On-demand `c7i.large` x86 was
+  used rather than the originally-planned Graviton spot, to avoid
+  mid-sweep reclaim. The run1 toolchain false start (below) and the
+  smoke iterations brought the session total to roughly $3, well under
+  the $10 ceiling. No reclaims.
+- **Durable artifact**: 63 `tests/oracle/status/<fn>.toml`
+  `[cross_check]` tables (this commit); per-shard `result.json` archived
+  to `s3://${S3_BUCKET}/pf-hcz4-full-run2/`.
+
+The pre-flight review's predicted hazards all materialised and were
+fixed in the launch scripts during a smoke shakeout: the cloud-init
+needed a self-terminating failure trap, the `--smoke` shard had to be
+Arb-primary, and several bare-AMI gaps surfaced that GitHub's CI runners
+hide. The fixes: `pip install --break-system-packages` (Noble enforces
+PEP 668 on the system Python), `m4` in apt (gmp-mpfr-sys builds GMP from
+vendored source), `export HOME=/root` (rustup's env script dereferences
+`$HOME` under `set -u`), and an explicit `rustup toolchain install
+--profile minimal` with retries. That last one was the run1 false start:
+the lazy on-demand toolchain install that `cargo build` triggers flakes
+under 63 concurrent downloads and leaves `cargo` missing, failing a
+handful of shards fast; the explicit install fixed it and run2 was
+clean.
+
+### Outcome (zero violations)
+
+All 38 per-kernel `*_ERROR_GUARD` constants are confirmed empirically
+across the swept f32 surface. The v1.0 "actively guarded" claim per
+ADR-0039 strengthens from algebraic-only to algebraic-plus-empirical.
+No follow-up bead is filed; the triage protocol below applies only to
+the non-zero-violation case, which did not occur.
 
 ### Sequencing
 

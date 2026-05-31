@@ -1,8 +1,7 @@
 //! pfloat: pure Rust correctly-rounded arbitrary-precision floats.
 //!
-//! This crate is pre-1.0. The public surface is unstable and will
-//! break without notice until the v1.0 tag (slice 8c). The
-//! arithmetic kernels, the elementary transcendental and special
+//! The public surface is stable under semver as of v1.0 (ADR-0054).
+//! The arithmetic kernels, the elementary transcendental and special
 //! function surface, and both precision profiles ([`BigFloat`] and
 //! `FixedFloat<const PREC: u32>`) are implemented; the Phase 1
 //! correctness sweep against the exhaustive binary32-input oracle

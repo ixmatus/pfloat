@@ -420,9 +420,18 @@ pfloat retains its zero-runtime-deps posture. **pf-06sw**
 `property_bi`, which had carried the same latent bug under a
 looser tolerance. All five cross-precision property tests now
 uniformly encode the constraint. The next active unit is
-**pf-xyaq**: widen CI to gate the full feature-union integration
-run, the gap that let the property-test bug class sit unsurfaced;
-it blocks slice 8c so v1.0 ships with the wider gate in place.
+**pf-xyaq**: widen the per-push CI gate. Its original framing (the
+gap that let the property-test bug class sit unsurfaced) was a
+misdiagnosis, corrected by ADR-0053: the property tests have run
+per-push since each kernel landed, carried by the test matrix's
+full-library-union entry, and pf-jn1y and pf-1axr slipped in through
+a proptest flake and a too-narrow input sweep, not a feature-coverage
+gap. The genuine residual gap the slice closes is the MPFR-backed
+oracle smoke tests, which ran in no per-push job (the differential
+lane's `differential_*` glob excluded them), plus a runnable guard
+that the hardcoded feature-union list cannot silently drift behind the
+crate's feature surface. It blocks slice 8c so v1.0 ships with the
+wider gate in place.
 
 The 2026-05-29 correctness and coherence review then ran and landed
 (signed merge c5827ea): a multi agent sweep, reproduced independently
