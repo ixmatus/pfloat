@@ -17,3 +17,19 @@ NA = "correctly-rounded"
 TZ = "correctly-rounded"
 TP = "correctly-rounded"
 TN = "correctly-rounded"
+
+[cross_check]
+# pf-hcz4 cross-check baseline. ADR-0049.
+git_sha = "7392477bf94bad078499dfe508a278447675f590"
+error_guard_const = 24
+sample = 65536
+lm_seeds_used = 0
+passes = 327675
+skipped_no_ziv_path = 5
+skipped_no_midpoint = 0
+skipped_non_finite = 0
+skipped_trace_not_final = 0
+violations = 0
+wall_clock_seconds = 250.707
+instance_arch = "x86_64"
+instance_type = "c7i.large"
