@@ -178,9 +178,14 @@ the warning against the opposite approach.
 
 ## Currently in flight
 
-pfloat Phase 1 (the correctness sweep) is complete; slice 8c (the
-v1.0 tag and `cargo publish`) is the next active unit, blocked by
-pf-xyaq (the CI matrix widening described below). In-repo
+pfloat v1.0.0 shipped on 2026-05-31: one signed merge (`9346aea`) and
+one signed tag (`v1.0.0`). The whole v1.0 critical path landed in that
+merge, pf-xyaq (CI gate widening, ADR-0053), pf-gx3g (public API
+freeze, ADR-0054), pf-ud3g (docs and the published rounding-status
+table), and slice 8c (the release state plus the pf-hcz4 cross-check
+sweep). The crates.io publish (`pf-4fi`) is deferred by choice; the
+signed tag is the milestone. The narrative below records how the
+pre-1.0 work converged on it. In-repo
 Phase 8 slice 8b shipped the foundational artifacts (the
 conformance-evidence script and CI gate, the disclosure-correction
 diff for the eventual v1.0 tag, the CORE-MATH-sourced L-M
@@ -447,8 +452,24 @@ free, bounded conversion) becomes a slice before the v1.0 tag and now
 blocks slice 8c next to pf-xyaq: a v1.0 that panics or exhausts memory
 on a finite value is not a v1.0. Its shortest-output half stays
 deferred to Phase 3 under ADR-0029. The queue before 8c, in ship
-order, is pf-xyaq (CI gate widening), then pf-vbm2 (formatter
+order, was pf-xyaq (CI gate widening), then pf-vbm2 (formatter
 robustness), then 8c.
+
+**v1.0.0 shipped (2026-05-31).** pf-vbm2's robustness half had already
+landed (merge e41057b). pf-xyaq corrected the misdiagnosis above
+(ADR-0053): the property tests have always run per-push, so the real
+gap it closed was the MPFR oracle smoke tests running in no per-push
+job, plus a feature-union drift guard. pf-gx3g froze the public API
+(ADR-0054). pf-ud3g published the rounding-status table and the
+"pfloat vs rug" comparison, and corrected a FixedFloat-without-alloc
+overclaim (the transcendental surface needs the Ziv driver's dynamic
+working precision, so it cannot be alloc-free). Slice 8c cut version
+1.0.0, flipped the Status and disclosure prose, and ran the pf-hcz4
+cross-check sweep on EC2: 63 shards, 18,681,340 assertions, 0
+violations across the full binary32 grid and all five rounding modes
+(ADR-0049 Results), confirming every per-kernel `error_guard` bound
+empirically. One signed merge, one signed tag. The remaining v1.0-chain
+bead is pf-4fi (crates.io publish), held by choice.
 
 ## Related
 
