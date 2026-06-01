@@ -380,6 +380,14 @@ name = "oracle_smoke_gate"
 path = "tests/oracle_smoke_gate.rs"
 required-features = ["differential-mpfr"]
 
+# Cross-check the pure-Rust f32/f64 conversion (src/convert.rs)
+# against the rug/MPFR reference over a broad off-grid sweep, all
+# rounding modes (pf-lm1a, Phase 2 conversion API).
+[[test]]
+name = "convert_oracle"
+path = "tests/convert_oracle.rs"
+required-features = ["differential-mpfr"]
+
 # pf-tqzz cross-check smoke (slice p1g.3, ADR-0039). Per-release
 # (not per-push) cadence per the bead's runtime budget: a smoke
 # subset (~10 inputs per kernel x 5 modes x 7 kernels) fits the

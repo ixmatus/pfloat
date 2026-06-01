@@ -405,6 +405,8 @@ mod class;
 mod classify;
 #[cfg(feature = "big")]
 mod cmp;
+#[cfg(feature = "big")]
+mod convert;
 #[cfg(all(feature = "big", feature = "fixed"))]
 mod fixed;
 #[cfg(feature = "big")]
