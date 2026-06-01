@@ -21,6 +21,10 @@ pub(crate) mod fma;
 pub(crate) mod limbs;
 #[cfg(feature = "big")]
 pub(crate) mod mul;
+// `rootn` uses the Ziv driver (gated `exp-log`), so it cannot live under
+// bare `big`; `cbrt` (exact-integer, no Ziv) does. ADR-0056.
+#[cfg(feature = "exp-log")]
+pub(crate) mod rootn;
 #[cfg(feature = "big")]
 pub(crate) mod sqrt;
 
