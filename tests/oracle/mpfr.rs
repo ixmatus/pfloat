@@ -71,6 +71,7 @@ impl MpfrOracle {
         match f {
             // Elementary.
             FnId::Sqrt => Float::with_val(oracle_prec, x.sqrt_ref()),
+            FnId::Cbrt => Float::with_val(oracle_prec, x.cbrt_ref()),
             FnId::Exp => Float::with_val(oracle_prec, x.exp_ref()),
             FnId::Exp2 => Float::with_val(oracle_prec, x.exp2_ref()),
             FnId::Exp10 => Float::with_val(oracle_prec, x.exp10_ref()),
@@ -144,7 +145,10 @@ impl MpfrOracle {
             | FnId::BesselIn(_)
             | FnId::BesselK0
             | FnId::BesselK1
-            | FnId::BesselKn(_) => {
+            | FnId::BesselKn(_)
+            | FnId::Cot
+            | FnId::Sec
+            | FnId::Csc => {
                 panic!("MpfrOracle::midpoint called with Arb-primary FnId: {f:?}; route via ArbOracle::midpoint")
             }
         }
@@ -172,6 +176,7 @@ impl OracleBackend for MpfrOracle {
         match f {
             // Elementary.
             FnId::Sqrt => bracket!(x, working_prec, sqrt_ref),
+            FnId::Cbrt => bracket!(x, working_prec, cbrt_ref),
             FnId::Exp => bracket!(x, working_prec, exp_ref),
             FnId::Exp2 => bracket!(x, working_prec, exp2_ref),
             FnId::Exp10 => bracket!(x, working_prec, exp10_ref),
@@ -229,8 +234,11 @@ impl OracleBackend for MpfrOracle {
             | FnId::BesselIn(_)
             | FnId::BesselK0
             | FnId::BesselK1
-            | FnId::BesselKn(_) => {
-                unimplemented!("FnId::{f:?} requires the Arb backend (next slice)")
+            | FnId::BesselKn(_)
+            | FnId::Cot
+            | FnId::Sec
+            | FnId::Csc => {
+                unimplemented!("FnId::{f:?} requires the Arb backend")
             }
         }
     }

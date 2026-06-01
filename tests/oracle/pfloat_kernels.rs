@@ -181,6 +181,7 @@ pub fn pfloat_kernel_value(f: FnId, input: u32, mode: RoundingMode) -> BigFloat 
     match f {
         // Elementary.
         FnId::Sqrt => x.sqrt(mode).0,
+        FnId::Cbrt => x.cbrt(mode).0,
         FnId::Exp => x.exp(mode).0,
         FnId::Exp2 => x.exp2(mode).0,
         FnId::Exp10 => x.exp10(mode).0,
@@ -192,6 +193,9 @@ pub fn pfloat_kernel_value(f: FnId, input: u32, mode: RoundingMode) -> BigFloat 
         FnId::Sin => x.sin(mode).0,
         FnId::Cos => x.cos(mode).0,
         FnId::Tan => x.tan(mode).0,
+        FnId::Cot => x.cot(mode).0,
+        FnId::Sec => x.sec(mode).0,
+        FnId::Csc => x.csc(mode).0,
         FnId::Asin => x.asin(mode).0,
         FnId::Acos => x.acos(mode).0,
         FnId::Atan => x.atan(mode).0,

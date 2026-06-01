@@ -212,6 +212,21 @@ path = "tests/differential_sqrt.rs"
 required-features = ["differential-mpfr"]
 
 [[test]]
+name = "differential_cbrt"
+path = "tests/differential_cbrt.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_hypot"
+path = "tests/differential_hypot.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_rootn"
+path = "tests/differential_rootn.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
 name = "differential_fma"
 path = "tests/differential_fma.rs"
 required-features = ["differential-mpfr"]

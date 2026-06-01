@@ -2,7 +2,7 @@
 
 Per-function correct-rounding status across the five IEEE 754-2019
 rounding modes (NE NearestEven, NA NearestAway, TZ TowardZero, TP
-TowardPositive, TN TowardNegative), for the 63 functions the
+TowardPositive, TN TowardNegative), for the 67 functions the
 verification oracle tracks. Generated from the status records under
 `tests/oracle/status/` by `scripts/rounding-status-table.sh` and
 checked in CI; the records are the single source of truth.
@@ -38,9 +38,12 @@ a primitive for the function, Arb otherwise.
 | atanh | MPFR | CR | CR | CR | CR | CR |
 | Bi | Arb | CR | CR | CR | CR | CR |
 | Bi_prime | Arb | CR | CR | CR | CR | CR |
+| cbrt | MPFR | CR | CR | CR | CR | CR |
 | Ci | Arb | CR | CR | CR | CR | CR |
 | cos | MPFR | CR | CR | CR | CR | CR |
 | cosh | MPFR | CR | CR | CR | CR | CR |
+| cot | Arb | CR | CR | CR | CR | CR |
+| csc | Arb | CR | CR | CR | CR | CR |
 | digamma | MPFR | CR | CR | CR | CR | CR |
 | Ei | MPFR | CR | CR | CR | CR | CR |
 | erf | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
@@ -77,6 +80,7 @@ a primitive for the function, Arb otherwise.
 | log10 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
 | log1p | MPFR | CR | CR | CR | CR | CR |
 | log2 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| sec | Arb | CR | CR | CR | CR | CR |
 | Si | Arb | CR | CR | CR | CR | CR |
 | sin | MPFR | CR | CR | CR | CR | CR |
 | sinh | MPFR | CR | CR | CR | CR | CR |

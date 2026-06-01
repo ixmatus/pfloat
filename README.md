@@ -224,7 +224,7 @@ under an aggregate floor.
 
 - **Kani proof harnesses:** 358 `#[kani::proof]`
   attributes across 62 files in `src/verify/`.
-- **Differential lanes:** 35 `tests/differential_*.rs`
+- **Differential lanes:** 38 `tests/differential_*.rs`
   files. CI sweep 10⁴ inputs per (op × precision × rounding
   mode); `PFLOAT_DEEP=1` escalates to 10⁶ (ADR-0014).
 - **Fuzz targets:** 7 targets under `fuzz/fuzz_targets/`.
