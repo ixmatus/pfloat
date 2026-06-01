@@ -387,6 +387,13 @@ where
         (Self::from_big_at_same_precision(b), s)
     }
 
+    /// IEEE 754-2019 `rootn(self, 3)`: the real cube root.
+    #[must_use]
+    pub fn cbrt(&self, mode: RoundingMode) -> (Self, Status) {
+        let (b, s) = self.to_big().cbrt(mode);
+        (Self::from_big_at_same_precision(b), s)
+    }
+
     /// IEEE 754-2019 `fusedMultiplyAdd(self, b, c)`.
     #[must_use]
     pub fn fma(&self, b: &Self, c: &Self, mode: RoundingMode) -> (Self, Status) {
@@ -645,6 +652,14 @@ mod tests {
         let (s, _) = nine.sqrt(RoundingMode::NearestEven);
         let three = FixedFloat::<53>::try_from_i64_exact(3).unwrap();
         assert_eq!(s.partial_cmp(&three).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn cbrt_basic() {
+        let neg_eight = FixedFloat::<53>::try_from_i64_exact(-8).unwrap();
+        let (c, _) = neg_eight.cbrt(RoundingMode::NearestEven);
+        let neg_two = FixedFloat::<53>::try_from_i64_exact(-2).unwrap();
+        assert_eq!(c.partial_cmp(&neg_two).0, Some(Ordering::Equal));
     }
 
     #[test]

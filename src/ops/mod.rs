@@ -12,6 +12,8 @@
 #[cfg(feature = "big")]
 pub(crate) mod addsub;
 #[cfg(feature = "big")]
+pub(crate) mod cbrt;
+#[cfg(feature = "big")]
 pub(crate) mod div;
 #[cfg(feature = "big")]
 pub(crate) mod fma;

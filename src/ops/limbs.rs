@@ -292,6 +292,134 @@ pub(crate) fn isqrt_limbs(n: &[u64]) -> (Vec<u64>, Vec<u64>) {
     (s, r)
 }
 
+/// Integer `k`-th root: returns `(root, remainder)` such that
+/// `root = floor(n^(1/k))` and `n = root^k + remainder`, with
+/// `0 <= remainder` and `(root+1)^k > n`. Requires `k >= 1`; `k == 1`
+/// returns `(n, 0)`.
+///
+/// Algorithm: integer Newton on `g(y) = y^k - n` from an over-estimate
+/// `y0 = 2^(floor(bitlen/k) + 1)`, iterating
+/// `y' = floor(((k-1)·y + floor(n / y^(k-1))) / k)` until the sequence
+/// stops decreasing (Brent-Zimmermann, *Modern Computer Arithmetic*
+/// §1.5.2, Algorithm 1.14 `RootInt`), then a final `±1` correction loop
+/// that makes the floor exact regardless of any integer-Newton boundary
+/// wobble: on exit the two invariants `root^k <= n` and `(root+1)^k > n`
+/// hold by construction, which is the definition of `floor(n^(1/k))`.
+/// For `k == 2` the result agrees with [`isqrt_limbs`] (cross-checked in
+/// the tests); the dedicated `isqrt` digit-recurrence stays the sqrt
+/// kernel's path, while this general routine backs the `cbrt` kernel
+/// (`k = 3`, ADR-0056).
+///
+/// Complexity: `O(log B)` Newton iterations, each a `divmod_limbs`
+/// (sub-quadratic for large operands via the recursive divider) plus
+/// `O(log k)` multiplies of `O(B)`-bit numbers, where `B` is `n`'s bit
+/// length. Polynomial in `B` and `log k`, never linear in `k`.
+pub(crate) fn iroot_limbs(n: &[u64], k: u32) -> (Vec<u64>, Vec<u64>) {
+    use core::cmp::Ordering;
+    debug_assert!(k >= 1, "iroot_limbs requires k >= 1");
+    let r_len = n.len().max(1);
+    let Some(b) = top_set_bit(n) else {
+        // n == 0: root 0, remainder 0.
+        return (vec![0u64], vec![0u64; r_len]);
+    };
+    if k == 1 {
+        return (n.to_vec(), vec![0u64; r_len]);
+    }
+
+    // Over-estimate y0 = 2^(b/k + 1) >= floor(n^(1/k)) + 1: with
+    // 2^b <= n < 2^(b+1) we have n^(1/k) < 2^((b+1)/k) <= 2^(b/k + 1)
+    // (the last step uses (b+1)/k <= b/k + 1 for k >= 1), so y0 strictly
+    // exceeds the true root and Newton-from-above decreases monotonically
+    // toward it.
+    let mut y = bit_to_limbs(b / (k as usize) + 1);
+
+    // Newton: y' = ((k-1)·y + floor(n / y^(k-1))) / k. Stop when the
+    // sequence stops strictly decreasing.
+    let km1 = u64::from(k - 1);
+    loop {
+        let y_pow = pow_limbs(&y, k - 1);
+        let (quot, _) = divmod_limbs(n, &y_pow);
+        let mut sum = multiply_limbs(&y, &[km1]);
+        // Widen sum so the add of `quot` cannot drop a carry.
+        sum.resize(sum.len().max(quot.len()) + 1, 0);
+        let carry = limbs_add_assign(&mut sum, &quot);
+        debug_assert!(!carry, "iroot sum carry escaped widened buffer");
+        let (next, _) = divmod_limbs(&sum, &[u64::from(k)]);
+        if cmp_limbs(&next, &y) != Ordering::Less {
+            break;
+        }
+        y = next;
+        trim_zeros(&mut y);
+    }
+    trim_zeros(&mut y);
+
+    // ±1 correction. Drive y down while y^k > n (y stays >= 1 because
+    // 1^k = 1 <= n for n >= 1), then up while (y+1)^k <= n. At most a
+    // couple of steps fire after Newton.
+    while cmp_limbs(&pow_limbs(&y, k), n) == Ordering::Greater {
+        limbs_sub_assign(&mut y, &[1]);
+        trim_zeros(&mut y);
+    }
+    loop {
+        let mut y_plus = y.clone();
+        y_plus.push(0); // room for a carry out of the top limb
+        let _ = limbs_add_assign(&mut y_plus, &[1]);
+        trim_zeros(&mut y_plus);
+        if cmp_limbs(&pow_limbs(&y_plus, k), n) == Ordering::Greater {
+            break;
+        }
+        y = y_plus;
+    }
+
+    // remainder = n - y^k (>= 0 by the loop invariant). y^k is trimmed,
+    // so it has at most r_len significant limbs.
+    let y_k = pow_limbs(&y, k);
+    let mut rem = vec![0u64; r_len];
+    let copy = n.len().min(r_len);
+    rem[..copy].copy_from_slice(&n[..copy]);
+    limbs_sub_assign(&mut rem, &y_k);
+    (y, rem)
+}
+
+/// `base^k` via square-and-multiply (`k >= 1`), trimming trailing zero
+/// limbs between steps so the working buffers stay near the true
+/// magnitude. Used by [`iroot_limbs`].
+fn pow_limbs(base: &[u64], k: u32) -> Vec<u64> {
+    debug_assert!(k >= 1, "pow_limbs requires k >= 1");
+    let mut result = vec![1u64];
+    let mut b = base.to_vec();
+    trim_zeros(&mut b);
+    let mut e = k;
+    while e > 0 {
+        if e & 1 == 1 {
+            result = multiply_limbs(&result, &b);
+            trim_zeros(&mut result);
+        }
+        e >>= 1;
+        if e > 0 {
+            b = multiply_limbs(&b, &b);
+            trim_zeros(&mut b);
+        }
+    }
+    result
+}
+
+/// Little-endian limb representation of `2^bit` (a single set bit).
+fn bit_to_limbs(bit: usize) -> Vec<u64> {
+    let limb = bit / 64;
+    let off = bit % 64;
+    let mut v = vec![0u64; limb + 1];
+    v[limb] = 1u64 << off;
+    v
+}
+
+/// Drop trailing zero limbs, keeping at least one.
+fn trim_zeros(v: &mut Vec<u64>) {
+    while v.len() > 1 && *v.last().unwrap() == 0 {
+        v.pop();
+    }
+}
+
 /// Divisor size (in significant limbs) at or above which
 /// [`divmod_limbs`] switches from Knuth Algorithm D to the recursive
 /// (Burnikel-Ziegler) divider. Below it Knuth's `O(qlen·dlen)` has the
@@ -1261,6 +1389,119 @@ mod tests {
         assert!(
             r.iter().all(|&v| v == 0),
             "remainder should be zero for perfect square"
+        );
+    }
+
+    /// `(root+1)^k` for the definition check: copy with a carry limb,
+    /// add one, then raise to the k-th power.
+    fn pow_of_plus_one(root: &[u64], k: u32) -> Vec<u64> {
+        let mut yp1 = root.to_vec();
+        yp1.push(0);
+        let _ = limbs_add_assign(&mut yp1, &[1]);
+        pow_limbs(&yp1, k)
+    }
+
+    #[test]
+    fn iroot_small_known_values() {
+        // (n, k, expected_root, expected_rem)
+        for &(n, k, root, rem) in &[
+            (0u64, 3u32, 0u64, 0u64),
+            (1, 3, 1, 0),
+            (7, 3, 1, 6),
+            (8, 3, 2, 0),
+            (9, 3, 2, 1),
+            (26, 3, 2, 18),
+            (27, 3, 3, 0),
+            (1_000_000, 3, 100, 0),
+            (1_000_001, 3, 100, 1),
+            (16, 4, 2, 0),
+            (80, 4, 2, 64),
+            (81, 4, 3, 0),
+            (32, 5, 2, 0),
+            (1, 7, 1, 0),
+        ] {
+            let (y, r) = iroot_limbs(&[n], k);
+            assert_eq!(y[0], root, "iroot({n}, {k}) root");
+            assert!(
+                y.iter().skip(1).all(|&v| v == 0),
+                "iroot({n}, {k}) root high limbs"
+            );
+            assert_eq!(r[0], rem, "iroot({n}, {k}) remainder");
+        }
+    }
+
+    #[test]
+    fn iroot_matches_definition() {
+        // For random multi-limb N and k in 2..=5, verify
+        // y^k <= N < (y+1)^k and N == y^k + r.
+        let mut state: u64 = 0xA1B2_C3D4_E5F6_0718;
+        for _ in 0..2000 {
+            let len = 1 + (xorshift(&mut state) % 4) as usize;
+            let mut n: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
+            // Occasionally zero the top limbs to exercise short values.
+            if xorshift(&mut state) & 1 == 0 {
+                let keep = 1 + (xorshift(&mut state) % len as u64) as usize;
+                for limb in n.iter_mut().skip(keep) {
+                    *limb = 0;
+                }
+            }
+            for k in 2u32..=5 {
+                let (y, r) = iroot_limbs(&n, k);
+                let yk = pow_limbs(&y, k);
+                assert_ne!(
+                    cmp_limbs(&yk, &n),
+                    core::cmp::Ordering::Greater,
+                    "y^k > N for N={n:?}, k={k}"
+                );
+                let yp1k = pow_of_plus_one(&y, k);
+                assert_eq!(
+                    cmp_limbs(&yp1k, &n),
+                    core::cmp::Ordering::Greater,
+                    "(y+1)^k <= N for N={n:?}, k={k}"
+                );
+                // N == y^k + r.
+                let mut recon = yk.clone();
+                let need = recon.len().max(r.len()) + 1;
+                recon.resize(need, 0);
+                let _ = limbs_add_assign(&mut recon, &r);
+                assert_eq!(
+                    cmp_limbs(&recon, &n),
+                    core::cmp::Ordering::Equal,
+                    "y^k + r != N for N={n:?}, k={k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn iroot_k2_matches_isqrt() {
+        // The general routine at k=2 must agree bit-for-bit with the
+        // dedicated digit-recurrence isqrt.
+        let mut state: u64 = 0x0F1E_2D3C_4B5A_6978;
+        for _ in 0..2000 {
+            let len = 1 + (xorshift(&mut state) % 4) as usize;
+            let n: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
+            let (y2, _) = iroot_limbs(&n, 2);
+            let (s, _) = isqrt_limbs(&n);
+            assert_eq!(
+                cmp_limbs(&y2, &s),
+                core::cmp::Ordering::Equal,
+                "iroot(_, 2) != isqrt for N={n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iroot_multi_limb_perfect_cube() {
+        // (2^100)^3 = 2^300 is an exact cube; iroot(.., 3) recovers 2^100
+        // with zero remainder.
+        let base = bit_to_limbs(100); // 2^100
+        let cube = multiply_limbs(&multiply_limbs(&base, &base), &base);
+        let (y, r) = iroot_limbs(&cube, 3);
+        assert_eq!(cmp_limbs(&y, &base), core::cmp::Ordering::Equal);
+        assert!(
+            r.iter().all(|&v| v == 0),
+            "perfect cube remainder must be zero"
         );
     }
 
