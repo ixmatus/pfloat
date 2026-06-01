@@ -11,6 +11,17 @@ description = "Pure Rust correctly-rounded arbitrary-precision floats."
 keywords = ["float", "ieee754", "arbitrary-precision", "no_std", "mpfr"]
 categories = ["mathematics", "no-std", "no-std::no-alloc"]
 
+[workspace]
+# pfloat is the workspace root package; `pfloat-libm` (Phase 2, the
+# correctly-rounded libm shell over pfloat) is a member. The
+# `tools/alloc-profile` helper keeps its own `[workspace]` root and is
+# excluded. `default-members` scopes bare cargo commands to pfloat, so
+# the member builds only in its own explicit lane and the v1.0 CI
+# matrix is unaffected.
+members = ["pfloat-libm"]
+default-members = ["."]
+exclude = ["tools/alloc-profile"]
+
 [features]
 # Defaults match the std + dynamic-precision profile most callers
 # expect from an MPFR replacement. Embedded users opt out via
@@ -367,6 +378,14 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "oracle_smoke_gate"
 path = "tests/oracle_smoke_gate.rs"
+required-features = ["differential-mpfr"]
+
+# Cross-check the pure-Rust f32/f64 conversion (src/convert.rs)
+# against the rug/MPFR reference over a broad off-grid sweep, all
+# rounding modes (pf-lm1a, Phase 2 conversion API).
+[[test]]
+name = "convert_oracle"
+path = "tests/convert_oracle.rs"
 required-features = ["differential-mpfr"]
 
 # pf-tqzz cross-check smoke (slice p1g.3, ADR-0039). Per-release
