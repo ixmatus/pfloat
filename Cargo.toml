@@ -11,6 +11,17 @@ description = "Pure Rust correctly-rounded arbitrary-precision floats."
 keywords = ["float", "ieee754", "arbitrary-precision", "no_std", "mpfr"]
 categories = ["mathematics", "no-std", "no-std::no-alloc"]
 
+[workspace]
+# pfloat is the workspace root package; `pfloat-libm` (Phase 2, the
+# correctly-rounded libm shell over pfloat) is a member. The
+# `tools/alloc-profile` helper keeps its own `[workspace]` root and is
+# excluded. `default-members` scopes bare cargo commands to pfloat, so
+# the member builds only in its own explicit lane and the v1.0 CI
+# matrix is unaffected.
+members = ["pfloat-libm"]
+default-members = ["."]
+exclude = ["tools/alloc-profile"]
+
 [features]
 # Defaults match the std + dynamic-precision profile most callers
 # expect from an MPFR replacement. Embedded users opt out via

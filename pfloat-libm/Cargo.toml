@@ -1,0 +1,31 @@
+[package]
+name = "pfloat-libm"
+version = "0.1.0"
+edition = "2021"
+# No `rust-version`: pfloat-libm builds pfloat, which requires nightly
+# Rust for `feature(generic_const_exprs)` (pfloat ADR-0011). The
+# workspace `rust-toolchain.toml` pins the channel.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ixmatus/pfloat"
+description = "Pure-Rust correctly-rounded libm: unary elementary functions exhaustively verified over the f32 grid, built on pfloat"
+authors = ["Parnell Springmeyer <parnell@digitalmentat.com>"]
+keywords = ["libm", "correctly-rounded", "floating-point", "math", "no_std"]
+categories = ["mathematics", "no-std", "science"]
+readme = "README.md"
+
+[features]
+# Default is no_std + alloc: the shell computes through pfloat's
+# `BigFloat`, which allocates, so there is no alloc-free profile.
+# Correct rounding grows the working precision at runtime past any
+# compile-time width. `std` pulls pfloat's thread-local sticky flags.
+default = ["std"]
+std = ["pfloat/std"]
+
+[dependencies]
+# Phase 2 keystone: pfloat-libm is a thin shell over verified pfloat.
+# The `trig` tier (-> exp-log -> big -> alloc) covers the elementary
+# surface and the reciprocal kernels; the public f32/f64 conversion
+# API and the six direct kernels (cot/sec/csc/cbrt/hypot/rootn) land
+# in pfloat 1.1, the pfloat side of Phase 2. As a workspace member the
+# dependency is the sibling root package.
+pfloat = { path = "..", default-features = false, features = ["trig"] }
