@@ -15,12 +15,16 @@ categories = ["mathematics", "no-std", "no-std::no-alloc"]
 # pfloat is the workspace root package; `pfloat-libm` (Phase 2, the
 # correctly-rounded libm shell over pfloat) is a member. The
 # `tools/alloc-profile` helper keeps its own `[workspace]` root and is
-# excluded. `default-members` scopes bare cargo commands to pfloat, so
-# the member builds only in its own explicit lane and the v1.0 CI
-# matrix is unaffected.
+# excluded. `fuzz` is excluded too: it is intentionally not a workspace
+# member (ADR-0013), built standalone by `cargo fuzz`; once a
+# `[workspace]` table existed at the root (added with `pfloat-libm`),
+# `cargo fuzz build` failed with "current package believes it's in a
+# workspace when it's not" until `fuzz` was named here. `default-members`
+# scopes bare cargo commands to pfloat, so the member builds only in its
+# own explicit lane and the v1.0 CI matrix is unaffected.
 members = ["pfloat-libm"]
 default-members = ["."]
-exclude = ["tools/alloc-profile"]
+exclude = ["tools/alloc-profile", "fuzz"]
 
 [features]
 # Defaults match the std + dynamic-precision profile most callers
