@@ -110,6 +110,13 @@ libm phase's first commit is a per function kernel list document
 that cites ADR-0032 against each of the six as `direct kernel
 required, not aliased`.
 
+The pfloat side of this landed in pfloat 1.1 (ADR-0056): the six are
+direct primary kernels, each verified against the Phase 1 harness (cbrt
+against MPFR, cot, sec, csc against Arb, which carries no such
+primitive, hypot and rootn on the two argument MPFR differential lanes),
+shipping alongside the public f32/f64 conversion API (ADR-0055). The
+`pfloat-libm` shell that wraps them is the remaining Phase 2 work.
+
 ## Phase 3: pfloat adoption polish
 
 The polish that earns 1.x adoption. Sequenced after the v1.0 tag

@@ -67,6 +67,7 @@ use pfloat::RoundingMode;
 /// orders via `--function Jn:7` style syntax.
 const MPFR_PRIMARY_FNIDS: &[FnId] = &[
     FnId::Sqrt,
+    FnId::Cbrt,
     FnId::Exp,
     FnId::Exp2,
     FnId::Exp10,
@@ -117,6 +118,11 @@ const ARB_PRIMARY_FNIDS: &[FnId] = &[
     FnId::BesselI1,
     FnId::BesselK0,
     FnId::BesselK1,
+    // Reciprocal trig (pfloat 1.1 libm, ADR-0056): MPFR has no
+    // cot/sec/csc primitive, so they are verified via the Arb backend.
+    FnId::Cot,
+    FnId::Sec,
+    FnId::Csc,
 ];
 
 struct Args {

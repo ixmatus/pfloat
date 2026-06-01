@@ -12,13 +12,22 @@
 #[cfg(feature = "big")]
 pub(crate) mod addsub;
 #[cfg(feature = "big")]
+pub(crate) mod cbrt;
+#[cfg(feature = "big")]
 pub(crate) mod div;
 #[cfg(feature = "big")]
 pub(crate) mod fma;
+// `hypot` uses the Ziv driver (gated `exp-log`), like `rootn`. ADR-0056.
+#[cfg(feature = "exp-log")]
+pub(crate) mod hypot;
 #[cfg(feature = "big")]
 pub(crate) mod limbs;
 #[cfg(feature = "big")]
 pub(crate) mod mul;
+// `rootn` uses the Ziv driver (gated `exp-log`), so it cannot live under
+// bare `big`; `cbrt` (exact-integer, no Ziv) does. ADR-0056.
+#[cfg(feature = "exp-log")]
+pub(crate) mod rootn;
 #[cfg(feature = "big")]
 pub(crate) mod sqrt;
 

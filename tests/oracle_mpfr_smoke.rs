@@ -180,7 +180,7 @@ fn mpfr_primary_enclosures_are_well_formed() {
 /// than silently fall through; the MPFR backend should not pretend
 /// to cover functions MPFR has no primitive for.
 #[test]
-#[should_panic(expected = "Arb backend (next slice)")]
+#[should_panic(expected = "requires the Arb backend")]
 fn arb_only_fnids_panic_under_mpfr_backend() {
     let o = MpfrOracle;
     let _ = o.enclose(FnId::BesselI0, 0.5_f32.to_bits(), NE, 64);

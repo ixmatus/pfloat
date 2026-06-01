@@ -446,6 +446,10 @@ pub(super) fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
         FnId::BesselK0 => ("k", "0".to_string()),
         FnId::BesselK1 => ("k", "1".to_string()),
         FnId::BesselKn(n) => ("k", n.to_string()),
+        // Reciprocal trig (pfloat 1.1, ADR-0056): Arb-primary, native.
+        FnId::Cot => ("cot", "-".to_string()),
+        FnId::Sec => ("sec", "-".to_string()),
+        FnId::Csc => ("csc", "-".to_string()),
         _ => panic!("ArbOracle::enclose called with non-Arb-primary FnId: {f:?}"),
     }
 }

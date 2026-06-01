@@ -92,6 +92,7 @@ pub trait OracleBackend: Send + Sync {
 pub enum FnId {
     // Elementary.
     Sqrt,
+    Cbrt,
     Exp,
     Exp2,
     Exp10,
@@ -103,6 +104,9 @@ pub enum FnId {
     Sin,
     Cos,
     Tan,
+    Cot,
+    Sec,
+    Csc,
     Asin,
     Acos,
     Atan,
@@ -151,6 +155,7 @@ impl FnId {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Sqrt => "sqrt",
+            Self::Cbrt => "cbrt",
             Self::Exp => "exp",
             Self::Exp2 => "exp2",
             Self::Exp10 => "exp10",
@@ -162,6 +167,9 @@ impl FnId {
             Self::Sin => "sin",
             Self::Cos => "cos",
             Self::Tan => "tan",
+            Self::Cot => "cot",
+            Self::Sec => "sec",
+            Self::Csc => "csc",
             Self::Asin => "asin",
             Self::Acos => "acos",
             Self::Atan => "atan",

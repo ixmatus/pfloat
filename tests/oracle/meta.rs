@@ -190,6 +190,11 @@ pub fn is_arb_primary(f: FnId) -> bool {
             | FnId::BesselK0
             | FnId::BesselK1
             | FnId::BesselKn(_)
+            // Reciprocal trig (pfloat 1.1, ADR-0056): MPFR has no
+            // cot/sec/csc primitive, so they are Arb-primary.
+            | FnId::Cot
+            | FnId::Sec
+            | FnId::Csc
     )
 }
 

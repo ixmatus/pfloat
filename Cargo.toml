@@ -1,6 +1,6 @@
 [package]
 name = "pfloat"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 # No `rust-version`: pfloat requires nightly Rust for
 # `feature(generic_const_exprs)` per ADR-0011. The toolchain is pinned
@@ -209,6 +209,21 @@ required-features = ["differential-mpfr"]
 [[test]]
 name = "differential_sqrt"
 path = "tests/differential_sqrt.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_cbrt"
+path = "tests/differential_cbrt.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_hypot"
+path = "tests/differential_hypot.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "differential_rootn"
+path = "tests/differential_rootn.rs"
 required-features = ["differential-mpfr"]
 
 [[test]]
