@@ -231,6 +231,11 @@ pub const AGM_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// far under `2^24`.
 pub const ROOTN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
+/// `hypot`: `sqrt(x² + y²)` — two squares, one add, one (exact-rounded)
+/// sqrt at working precision. The sum of squares cannot cancel, so the
+/// error is `~4` ULP, far under `2^24`.
+pub const HYPOT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +290,7 @@ mod tests {
             ZETA_ERROR_GUARD,
             AGM_ERROR_GUARD,
             ROOTN_ERROR_GUARD,
+            HYPOT_ERROR_GUARD,
         ];
         const ZIV_BASE_GUARD_MARGIN: u32 = 48;
         for (i, bound) in bounds.iter().enumerate() {
@@ -308,10 +314,10 @@ mod tests {
         // 38 v1.0 = 6 elementary + 3 forward trig + 4 inverse trig
         // + 6 hyperbolic + 2 power + 4 gamma family + 2 erf
         // + 4 integral + 1 airy + 4 bessel + 1 zeta + 1 agm.
-        // + 1 v1.1 libm root kernel (rootn; cbrt is exact-integer with
-        //   no Ziv path, ADR-0056) = 39.
-        const EXPECTED_V1_KERNEL_BOUNDS: usize = 39;
-        const BOUNDS_LEN: usize = 39;
+        // + 2 v1.1 libm kernels with a Ziv path (rootn, hypot; cbrt is
+        //   exact-integer with no Ziv path, ADR-0056) = 40.
+        const EXPECTED_V1_KERNEL_BOUNDS: usize = 40;
+        const BOUNDS_LEN: usize = 40;
         assert_eq!(
             BOUNDS_LEN, EXPECTED_V1_KERNEL_BOUNDS,
             "v1.0 surface kernel count drifted; recount the families above"

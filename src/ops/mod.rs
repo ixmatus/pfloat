@@ -17,6 +17,9 @@ pub(crate) mod cbrt;
 pub(crate) mod div;
 #[cfg(feature = "big")]
 pub(crate) mod fma;
+// `hypot` uses the Ziv driver (gated `exp-log`), like `rootn`. ADR-0056.
+#[cfg(feature = "exp-log")]
+pub(crate) mod hypot;
 #[cfg(feature = "big")]
 pub(crate) mod limbs;
 #[cfg(feature = "big")]
