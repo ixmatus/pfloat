@@ -314,10 +314,15 @@ fn two_over_pi_compute(prec: u32) -> BigFloat {
 
 /// Compute `2/√π` at the requested precision via
 /// `2 / sqrt(π)` at working precision.
+// Consumed only by `two_over_sqrt_pi_at` (mod.rs), which is `specials`-
+// gated; cfg-gated here so a trig-only / `big,agm` build is dead-code-free
+// under clippy `-D warnings` (pf-gwum).
+#[cfg(feature = "specials")]
 pub(super) fn two_over_sqrt_pi_via_agm(prec: u32) -> BigFloat {
     cache::memoized(Kind::TwoOverSqrtPi, prec, || two_over_sqrt_pi_compute(prec))
 }
 
+#[cfg(feature = "specials")]
 fn two_over_sqrt_pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let pi = pi_via_agm(working);
@@ -335,10 +340,12 @@ fn two_over_sqrt_pi_compute(prec: u32) -> BigFloat {
 /// `ln(π) = 2 · atanh((π − 1) / (π + 1))` evaluated at working
 /// precision; the convergence factor `((π−1)/(π+1))² ≈ 0.267`
 /// gives roughly `log₂(1/0.267) ≈ 1.9` bits per term.
+#[cfg(feature = "specials")]
 pub(super) fn ln_2pi_via_agm(prec: u32) -> BigFloat {
     cache::memoized(Kind::Ln2Pi, prec, || ln_2pi_compute(prec))
 }
 
+#[cfg(feature = "specials")]
 fn ln_2pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let ln_2 = ln_2_via_atanh(working);
@@ -934,7 +941,10 @@ mod tests {
     /// entries. A repeat call adds none and the lookup borrow
     /// releasing before recompute is what keeps this from a `RefCell`
     /// double borrow.
-    #[cfg(feature = "std")]
+    // `ln_2pi_via_agm` is `specials`-gated (pf-gwum), so this recursive
+    // memoization check needs both `std` (the cache thread-local) and
+    // `specials`.
+    #[cfg(all(feature = "std", feature = "specials"))]
     #[test]
     fn memoization_caches_recursive_constants() {
         cache::reset();

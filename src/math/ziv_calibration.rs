@@ -153,19 +153,23 @@ pub const POW_INT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `gamma`: `sign(x) · exp(lgamma(x))` composition.
 /// The integer-fast-path dispatches exactly (pf-kk16, slice p1.29).
+#[cfg(feature = "specials")]
 pub const GAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `lgamma`: Spouge for `x ≥ z_min` + reflection for `x < z_min`,
 /// the more conservative composition of the family. `~30` ops at
 /// `z_min ≈ 20`; algebraic bound well under `2^24` ULP. Empirical
 /// confirmation pending pf-tqzz (p1g.3 active sweep guard).
+#[cfg(feature = "specials")]
 pub const LGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `digamma`: composition through `digamma_at_w` helper (slice p1.29).
+#[cfg(feature = "specials")]
 pub const DIGAMMA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `beta`: `exp(lgamma(x) + lgamma(y) - lgamma(x+y))` composition
 /// in the general case; product formula in the integer-arg branch.
+#[cfg(feature = "specials")]
 pub const BETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Error functions -------------------------------------------------
@@ -173,48 +177,59 @@ pub const BETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// `erf`: asymptotic (large `|x|`) or Maclaurin (small `|x|`)
 /// dispatched at working precision (slice p1.4; oracle bumps to
 /// `p = 53` for the f32-subnormal-midpoint trap).
+#[cfg(feature = "specials")]
 pub const ERF_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `erfc`: composition `1 - erf(...)` or direct asymptotic branch
 /// (slice p1.28).
+#[cfg(feature = "specials")]
 pub const ERFC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Integral functions ----------------------------------------------
 
 /// `Si`: Maclaurin (small `|x|`) or asymptotic (large `|x|`) branch
 /// (slice p1.30).
+#[cfg(feature = "integrals")]
 pub const SI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Ci`: Maclaurin or asymptotic (slice p1.30).
+#[cfg(feature = "integrals")]
 pub const CI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Li`: series summation (slice p1.30; oracle bumps to `p = 53`).
+#[cfg(feature = "integrals")]
 pub const LI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Ei`: series or asymptotic (slice p1.30).
+#[cfg(feature = "integrals")]
 pub const EI_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Airy and Bessel -------------------------------------------------
 
 /// `Airy` (Ai, Bi, Ai', Bi'): shared eval body (slice p1.31).
+#[cfg(feature = "airy")]
 pub const AIRY_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel J_n`: Maclaurin / Miller recurrence / asymptotic
 /// dispatched at working precision (slice p1.32; oracle bumps to
 /// `p = 320` for the cubic-correction trap).
+#[cfg(feature = "bessel")]
 pub const BESSEL_J_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel Y_n`: reflection formula composing J's and recurrence
 /// (slice p1.32). The oscillatory regime near the J zeros may
 /// surface as the first empirical-widening candidate at p1g.3.
+#[cfg(feature = "bessel")]
 pub const BESSEL_Y_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel I_n`: Maclaurin / Miller / asymptotic (slice p1.33;
 /// oracle bumps to `p = 320`).
+#[cfg(feature = "bessel")]
 pub const BESSEL_I_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `Bessel K_n`: reflection composing I's and recurrence
 /// (slice p1.33).
+#[cfg(feature = "bessel")]
 pub const BESSEL_K_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- zeta ------------------------------------------------------------
@@ -223,6 +238,7 @@ pub const BESSEL_K_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// (`gamma · sin · pow · zeta_borwein` composition) for `s < 0`
 /// (slice p1.34). The composition is the deepest on the surface;
 /// empirical confirmation pending pf-tqzz.
+#[cfg(feature = "zeta")]
 pub const ZETA_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- AGM -------------------------------------------------------------
@@ -248,18 +264,19 @@ pub const HYPOT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
-    /// Sanity guard: every per-kernel constant stays within the
-    /// driver's growth envelope. With `ZIV_BASE_GUARD = 64` and
-    /// `error_guard = 24` the first working iteration is at
-    /// `target + 64` and the half-width shift is `working - 24 = 40`,
-    /// leaving 40 bits of slack against the error bound. Any
-    /// per-kernel constant approaching 48 (the `ZIV_BASE_GUARD - 16`
-    /// safety margin) requires a paired bump to `ZIV_BASE_GUARD` to
-    /// keep the first Ziv iteration's working precision adequate.
-    #[test]
-    fn every_per_kernel_bound_fits_under_base_guard_margin() {
-        let bounds = [
+    /// Every per-kernel calibrated bound present under the active feature
+    /// set. The specials-family kernels are cfg-gated (pf-gwum) so a
+    /// trig-only or `big,agm` build — where those kernels are absent —
+    /// neither references a missing constant nor leaves one dead. `cbrt`
+    /// is exact-integer with no Ziv path (ADR-0056), so it has no entry.
+    fn calibrated_bounds() -> Vec<u32> {
+        let mut v: Vec<u32> = Vec::new();
+        // Always present when `ziv_calibration` compiles (`exp-log`):
+        // elementary, forward + inverse trig and the reciprocal trio,
+        // hyperbolic, power, agm, and the two libm root kernels.
+        v.extend_from_slice(&[
             EXP_ERROR_GUARD,
             EXP2_ERROR_GUARD,
             EXP10_ERROR_GUARD,
@@ -284,28 +301,52 @@ mod tests {
             ATANH_ERROR_GUARD,
             POW_ERROR_GUARD,
             POW_INT_ERROR_GUARD,
+            AGM_ERROR_GUARD,
+            ROOTN_ERROR_GUARD,
+            HYPOT_ERROR_GUARD,
+        ]);
+        #[cfg(feature = "specials")]
+        v.extend_from_slice(&[
             GAMMA_ERROR_GUARD,
             LGAMMA_ERROR_GUARD,
             DIGAMMA_ERROR_GUARD,
             BETA_ERROR_GUARD,
             ERF_ERROR_GUARD,
             ERFC_ERROR_GUARD,
+        ]);
+        #[cfg(feature = "integrals")]
+        v.extend_from_slice(&[
             SI_ERROR_GUARD,
             CI_ERROR_GUARD,
             LI_ERROR_GUARD,
             EI_ERROR_GUARD,
-            AIRY_ERROR_GUARD,
+        ]);
+        #[cfg(feature = "airy")]
+        v.extend_from_slice(&[AIRY_ERROR_GUARD]);
+        #[cfg(feature = "bessel")]
+        v.extend_from_slice(&[
             BESSEL_J_ERROR_GUARD,
             BESSEL_Y_ERROR_GUARD,
             BESSEL_I_ERROR_GUARD,
             BESSEL_K_ERROR_GUARD,
-            ZETA_ERROR_GUARD,
-            AGM_ERROR_GUARD,
-            ROOTN_ERROR_GUARD,
-            HYPOT_ERROR_GUARD,
-        ];
+        ]);
+        #[cfg(feature = "zeta")]
+        v.extend_from_slice(&[ZETA_ERROR_GUARD]);
+        v
+    }
+
+    /// Sanity guard: every per-kernel constant stays within the
+    /// driver's growth envelope. With `ZIV_BASE_GUARD = 64` and
+    /// `error_guard = 24` the first working iteration is at
+    /// `target + 64` and the half-width shift is `working - 24 = 40`,
+    /// leaving 40 bits of slack against the error bound. Any
+    /// per-kernel constant approaching 48 (the `ZIV_BASE_GUARD - 16`
+    /// safety margin) requires a paired bump to `ZIV_BASE_GUARD` to
+    /// keep the first Ziv iteration's working precision adequate.
+    #[test]
+    fn every_per_kernel_bound_fits_under_base_guard_margin() {
         const ZIV_BASE_GUARD_MARGIN: u32 = 48;
-        for (i, bound) in bounds.iter().enumerate() {
+        for (i, bound) in calibrated_bounds().iter().enumerate() {
             assert!(
                 *bound < ZIV_BASE_GUARD_MARGIN,
                 "calibration index {i} bound {bound} exceeds ZIV_BASE_GUARD - 16 = {ZIV_BASE_GUARD_MARGIN}; \
@@ -314,25 +355,30 @@ mod tests {
         }
     }
 
-    /// Conscious-calibration enumeration. Every constant exported
-    /// from this module must appear here. Adding a new
-    /// `<KERNEL>_ERROR_GUARD` const without adding it to the
-    /// `bounds` array in `every_per_kernel_bound_fits_under_base_guard_margin`
-    /// (and to the count below) fails this test, forcing the author
-    /// to acknowledge the calibration choice rather than rely on
-    /// `DEFAULT_ERROR_GUARD` implicitly.
+    /// Conscious-calibration enumeration. Every `<KERNEL>_ERROR_GUARD`
+    /// const must appear in `calibrated_bounds`; the expected count is
+    /// computed per active feature so the table cannot silently gain or
+    /// lose a kernel under a feature subset. Adding a const without
+    /// listing it (and bumping the matching group below) fails this test,
+    /// forcing the author to acknowledge the calibration choice rather
+    /// than rely on `DEFAULT_ERROR_GUARD` implicitly.
     #[test]
     fn calibration_table_enumerates_expected_kernel_count() {
-        // 38 v1.0 = 6 elementary + 3 forward trig + 4 inverse trig
-        // + 6 hyperbolic + 2 power + 4 gamma family + 2 erf
-        // + 4 integral + 1 airy + 4 bessel + 1 zeta + 1 agm.
-        // + 5 v1.1 libm kernels with a Ziv path (cot, sec, csc, rootn,
-        //   hypot; cbrt is exact-integer with no Ziv path, ADR-0056) = 43.
-        const EXPECTED_V1_KERNEL_BOUNDS: usize = 43;
-        const BOUNDS_LEN: usize = 43;
+        // 27 always-present: 6 elementary + 3 forward trig + 3 reciprocal
+        // trig + 4 inverse trig + 6 hyperbolic + 2 power + 1 agm + 2 libm
+        // roots (rootn, hypot). The specials family is feature-gated;
+        // `cbrt` is exact-integer with no Ziv path (ADR-0056). Full union
+        // = 27 + 6 + 4 + 1 + 4 + 1 = 43.
+        let expected: usize = 27
+            + 6 * usize::from(cfg!(feature = "specials"))
+            + 4 * usize::from(cfg!(feature = "integrals"))
+            + usize::from(cfg!(feature = "airy"))
+            + 4 * usize::from(cfg!(feature = "bessel"))
+            + usize::from(cfg!(feature = "zeta"));
         assert_eq!(
-            BOUNDS_LEN, EXPECTED_V1_KERNEL_BOUNDS,
-            "v1.0 surface kernel count drifted; recount the families above"
+            calibrated_bounds().len(),
+            expected,
+            "calibration table kernel count drifted; recount the families above"
         );
     }
 }
