@@ -119,6 +119,8 @@ pub(crate) mod sin;
 #[cfg(feature = "trig")]
 pub(crate) mod tan;
 #[cfg(feature = "trig")]
+pub(crate) mod trig_reciprocal;
+#[cfg(feature = "trig")]
 pub(crate) mod trig_reduce;
 
 #[cfg(feature = "agm")]

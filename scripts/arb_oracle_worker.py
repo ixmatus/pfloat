@@ -174,6 +174,15 @@ def dispatch(fn_id: str, order_or_dash: str, x: arb) -> arb:
         return x.bessel_i(arb(int(order_or_dash)))
     if fn_id == "k":
         return x.bessel_k(arb(int(order_or_dash)))
+    # Reciprocal circular functions (pfloat 1.1 libm kernels, ADR-0056).
+    # Arb computes these natively in rigorous ball arithmetic, so the
+    # enclosure stays independent of pfloat's own reduce+reciprocate path.
+    if fn_id == "cot":
+        return x.cot()
+    if fn_id == "sec":
+        return x.sec()
+    if fn_id == "csc":
+        return x.csc()
     raise ValueError(f"unknown fn_id: {fn_id}")
 
 
@@ -235,12 +244,21 @@ def special_case_at_zero(fn_id: str, sign: int) -> Optional[int]:
     Returns ``None`` for cases where the standard Ziv path should
     handle the input.
     """
+    # ci / k limits at zero are sign-independent (the functions are
+    # defined for x > 0); preserve the +0 behavior and let -0 fall
+    # through to the standard path exactly as before this signed-pole
+    # extension landed.
     if fn_id == "ci":
-        return _F32_NEG_INF  # ci(+0) = -inf
+        return _F32_NEG_INF if sign == 0 else None  # ci(+0) = -inf
     if fn_id == "k":
-        return _F32_POS_INF  # K_n(+0) = +inf (any order)
-    # Other functions at +/-0: li(0) = 0, si(0) = 0, bi(0) = a
-    # specific finite value, etc. The standard path computes them.
+        return _F32_POS_INF if sign == 0 else None  # K_n(+0) = +inf
+    # cot / csc are odd with a pole at zero: cot(+0) = csc(+0) = +inf,
+    # cot(-0) = csc(-0) = -inf (pfloat raises DIV_BY_ZERO there). Arb
+    # collapses +/-0 to a single 0, so the worker must supply the sign.
+    if fn_id in ("cot", "csc"):
+        return _F32_NEG_INF if sign == 1 else _F32_POS_INF
+    # Other functions at +/-0: sec(0) = 1, li(0) = 0, si(0) = 0, bi(0)
+    # a specific finite value, etc. The standard path computes them.
     return None
 
 
@@ -274,6 +292,14 @@ def handle_request(line: str) -> str:
     # Slice p1.5.6 introduced this; ADR-0035 preserves it.
     if input_bits == 0x0000_0000:
         special = special_case_at_zero(fn_id, sign=0)
+        if special is not None:
+            return f"OK {special:08x}"
+    # f32 -0: signed pole for cot / csc (ADR-0056). Arb has no signed
+    # zero, so the generic infinite-ball path below would lose the sign;
+    # supply it here. ci / k return None for sign=1, so their -0 still
+    # falls through to the standard path (unchanged behavior).
+    if input_bits == 0x8000_0000:
+        special = special_case_at_zero(fn_id, sign=1)
         if special is not None:
             return f"OK {special:08x}"
 

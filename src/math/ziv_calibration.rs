@@ -94,6 +94,15 @@ pub const COS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// `tan`: `sin/cos` composition after the same reduction.
 pub const TAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
+/// `cot`: `cos/sin` after the same reduction (pfloat 1.1, ADR-0056).
+pub const COT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
+/// `sec`: `1/cos` after the same reduction (pfloat 1.1, ADR-0056).
+pub const SEC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
+/// `csc`: `1/sin` after the same reduction (pfloat 1.1, ADR-0056).
+pub const CSC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
 // --- Inverse trig ----------------------------------------------------
 
 /// `asin`: `2·atan(|x|/(1+sqrt(1-x²)))` identity (slice p1.25).
@@ -260,6 +269,9 @@ mod tests {
             SIN_ERROR_GUARD,
             COS_ERROR_GUARD,
             TAN_ERROR_GUARD,
+            COT_ERROR_GUARD,
+            SEC_ERROR_GUARD,
+            CSC_ERROR_GUARD,
             ASIN_ERROR_GUARD,
             ACOS_ERROR_GUARD,
             ATAN_ERROR_GUARD,
@@ -314,10 +326,10 @@ mod tests {
         // 38 v1.0 = 6 elementary + 3 forward trig + 4 inverse trig
         // + 6 hyperbolic + 2 power + 4 gamma family + 2 erf
         // + 4 integral + 1 airy + 4 bessel + 1 zeta + 1 agm.
-        // + 2 v1.1 libm kernels with a Ziv path (rootn, hypot; cbrt is
-        //   exact-integer with no Ziv path, ADR-0056) = 40.
-        const EXPECTED_V1_KERNEL_BOUNDS: usize = 40;
-        const BOUNDS_LEN: usize = 40;
+        // + 5 v1.1 libm kernels with a Ziv path (cot, sec, csc, rootn,
+        //   hypot; cbrt is exact-integer with no Ziv path, ADR-0056) = 43.
+        const EXPECTED_V1_KERNEL_BOUNDS: usize = 43;
+        const BOUNDS_LEN: usize = 43;
         assert_eq!(
             BOUNDS_LEN, EXPECTED_V1_KERNEL_BOUNDS,
             "v1.0 surface kernel count drifted; recount the families above"
