@@ -182,6 +182,15 @@ pub(crate) fn drive<S: Shell>(
 /// the convenience fn is the sibling free fn, while `xb.$round(...)` is
 /// the inherent method. The `result` / `direct` discriminator selects
 /// whether the kernel method returns a `Result` (every kernel but `exp`).
+///
+/// The `*_sat` discriminators (`result_sat` / `direct_sat`) take an extra
+/// saturation function `$sat` (from [`crate::saturate`]) consulted before
+/// the kernel: for a finite argument beyond the function's saturation
+/// threshold it returns the saturated result directly, skipping the kernel
+/// whose argument-reduction cost grows with the argument's exponent. The
+/// generic `$sat` resolves its width from the `x: $hw` argument by
+/// inference. The saturated result is bit-for-bit identical to the kernel
+/// path (verified in the crate tests); see [`crate::saturate`].
 macro_rules! unary {
     ($hw:ty, $shell:ident, $name:ident, $round:ident, result, $disp:literal) => {
         #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
@@ -209,6 +218,41 @@ macro_rules! unary {
         #[doc = concat!($disp, " correctly rounded under `mode`, with IEEE 754 status flags.")]
         #[must_use]
         pub fn $round(x: $hw, mode: $crate::RoundingMode) -> ($hw, $crate::Status) {
+            $crate::round::drive::<$crate::round::$shell>(x, mode, |xb, w, dir| xb.$round(w, dir))
+        }
+    };
+    ($hw:ty, $shell:ident, $name:ident, $round:ident, result_sat, $sat:path, $disp:literal) => {
+        #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
+        #[must_use]
+        pub fn $name(x: $hw) -> $hw {
+            $round(x, $crate::RoundingMode::NearestEven).0
+        }
+
+        #[doc = concat!($disp, " correctly rounded under `mode`, with IEEE 754 status flags.")]
+        #[must_use]
+        pub fn $round(x: $hw, mode: $crate::RoundingMode) -> ($hw, $crate::Status) {
+            if let Some(r) = $sat(x, mode) {
+                return r;
+            }
+            $crate::round::drive::<$crate::round::$shell>(x, mode, |xb, w, dir| {
+                xb.$round(w, dir)
+                    .expect("w = PREC + guard >= 1: BuildError only on precision 0")
+            })
+        }
+    };
+    ($hw:ty, $shell:ident, $name:ident, $round:ident, direct_sat, $sat:path, $disp:literal) => {
+        #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
+        #[must_use]
+        pub fn $name(x: $hw) -> $hw {
+            $round(x, $crate::RoundingMode::NearestEven).0
+        }
+
+        #[doc = concat!($disp, " correctly rounded under `mode`, with IEEE 754 status flags.")]
+        #[must_use]
+        pub fn $round(x: $hw, mode: $crate::RoundingMode) -> ($hw, $crate::Status) {
+            if let Some(r) = $sat(x, mode) {
+                return r;
+            }
             $crate::round::drive::<$crate::round::$shell>(x, mode, |xb, w, dir| xb.$round(w, dir))
         }
     };
