@@ -136,7 +136,7 @@ apt-get update -q
 apt-get install -y -q git build-essential m4 pkg-config curl libgmp-dev libmpfr-dev python3-pip
 pip3 install --quiet --break-system-packages awscli
 
-trap 'rc=\$?; [ \$rc -eq 0 ] && exit 0; aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${fn}/sweep.log" 2>/dev/null || true; aws s3 cp /dev/null "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_FAILED_PREFLIGHT" 2>/dev/null || true; shutdown -h now' EXIT
+trap 'rc=\$?; [ \$rc -eq 0 ] && exit 0; aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${fn}/sweep.log" 2>/dev/null || true; echo done | aws s3 cp - "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_FAILED_PREFLIGHT" 2>/dev/null || true; shutdown -h now' EXIT
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
 . "/root/.cargo/env"
@@ -158,7 +158,7 @@ cargo build -p pfloat-libm --release --features differential-mpfr --example libm
 if ! cargo test -p pfloat-libm --release --features differential-mpfr \\
     --test libm_smoke_gate -- --nocapture; then
     aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${fn}/sweep.log"
-    aws s3 cp /dev/null "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_FAILED_PREFLIGHT"
+    echo done | aws s3 cp - "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_FAILED_PREFLIGHT"
     shutdown -h now; exit 1
 fi
 
@@ -169,6 +169,10 @@ fi
 NPROC=\$(nproc)
 echo "[pf-lm3] ${fn}: splitting 2^32 across \$NPROC vCPUs"
 set +e
+# Collect the sub-shard PIDs and wait on each EXPLICITLY. A bare \`wait\`
+# would also block on the \`tee\` from the \`exec > >(tee ...)\` redirection
+# above, which never exits, hanging the script before the upload.
+sweep_pids=""
 for k in \$(seq 0 \$((NPROC - 1))); do
     PFLOAT_GIT_SHA="${GIT_SHA}" ./target/release/examples/libm_sweep \\
         --function "${fn}" --width f32 --exhaustive \\
@@ -176,8 +180,9 @@ for k in \$(seq 0 \$((NPROC - 1))); do
         --directed-sample "${DIRECTED_SAMPLE}" \\
         --instance-type "${INSTANCE_TYPE}" \\
         --output-json "/tmp/result_\$k.json" > "/tmp/sub_\$k.log" 2>&1 &
+    sweep_pids="\$sweep_pids \$!"
 done
-wait
+for p in \$sweep_pids; do wait "\$p"; done
 set -e
 
 for k in \$(seq 0 \$((NPROC - 1))); do
@@ -185,7 +190,7 @@ for k in \$(seq 0 \$((NPROC - 1))); do
     aws s3 cp "/tmp/result_\$k.json" "s3://${S3_BUCKET}/${RUN_ID}/${fn}/result_\$k.json" || true
 done
 aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${fn}/sweep.log"
-aws s3 cp /dev/null "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_DONE"
+echo done | aws s3 cp - "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_DONE"
 shutdown -h now
 USERDATA
 
