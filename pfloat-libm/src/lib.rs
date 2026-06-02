@@ -17,10 +17,19 @@
 //! rounding grows the working precision at runtime past any compile-time
 //! width, so the computation allocates.
 //!
-//! This crate is a scaffold under active construction; see
-//! `docs/kernel-list.md` for the planned surface and its verification tiers.
+//! This slice wires the outer Ziv loop ([`round`]) and the full v0.1
+//! surface ([`f32`], [`f64`]); the exhaustive `f32` sweep and `f64`
+//! differential that certify it land in a following slice. See
+//! `docs/kernel-list.md` for the surface and its verification tiers, and
+//! the architecture decision records for the outer-loop design.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+pub use pfloat::{RoundingMode, Status};
+
+pub mod f32;
+pub mod f64;
+mod round;
