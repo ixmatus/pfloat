@@ -269,6 +269,7 @@ name = "pfloat-libm"
 version = "0.1.0"
 dependencies = [
  "pfloat",
+ "rug",
 ]
 
 [[package]]

@@ -81,6 +81,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta --all-targets -- -D warnings
 
+  # ---------- pfloat-libm member: shell + MPFR verification harness ----------
+  # The root test matrix scopes to the `pfloat` package (default-members
+  # = ["."]), so the `pfloat-libm` member has no other lane. This job
+  # builds it, lints both feature configurations, and runs the shell's
+  # unit tests plus the MPFR harness (smoke gate + f64 differential +
+  # Lefevre-Muller lanes) in one `--release` test run. Linux-only and
+  # MPFR-gated, like the pfloat `differential` job below: `rug`
+  # (gmp-mpfr-sys) does not build on stock Windows/macOS runners. The
+  # exhaustive 2^32 sweep is the EC2 deliverable (ADR-0058), not a
+  # per-push job. `--release` keeps the harness lanes at the seconds
+  # scale; a debug run is an order of magnitude slower.
+  pfloat-libm:
+    name: pfloat-libm (shell + MPFR harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MPFR + GMP
+        run: sudo apt-get update && sudo apt-get install -y libmpfr-dev libgmp-dev
+      - run: cargo build -p pfloat-libm --verbose
+      - run: cargo clippy -p pfloat-libm --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-libm --all-targets --features=differential-mpfr -- -D warnings
+      - run: cargo test -p pfloat-libm --release --features=differential-mpfr --verbose
+
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
   # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status
   # update records the shift: every-push runs were costly (~10
