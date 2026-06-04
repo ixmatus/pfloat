@@ -11,11 +11,43 @@ use pfloat::BigFloat;
 use crate::round::{drive, unary, F64Shell};
 use crate::{RoundingMode, Status};
 
-// --- exponentials ---
-unary!(f64, F64Shell, exp, exp_round, direct, "`exp`");
-unary!(f64, F64Shell, exp2, exp2_round, result, "`exp2`");
-unary!(f64, F64Shell, exp10, exp10_round, result, "`exp10`");
-unary!(f64, F64Shell, expm1, expm1_round, result, "`expm1`");
+// --- exponentials (saturation fast-path: see `crate::saturate`) ---
+unary!(
+    f64,
+    F64Shell,
+    exp,
+    exp_round,
+    direct_sat,
+    crate::saturate::sat_exp,
+    "`exp`"
+);
+unary!(
+    f64,
+    F64Shell,
+    exp2,
+    exp2_round,
+    result_sat,
+    crate::saturate::sat_exp2,
+    "`exp2`"
+);
+unary!(
+    f64,
+    F64Shell,
+    exp10,
+    exp10_round,
+    result_sat,
+    crate::saturate::sat_exp10,
+    "`exp10`"
+);
+unary!(
+    f64,
+    F64Shell,
+    expm1,
+    expm1_round,
+    result_sat,
+    crate::saturate::sat_expm1,
+    "`expm1`"
+);
 
 // --- logarithms ---
 unary!(f64, F64Shell, ln, ln_round, result, "`ln`");
@@ -40,10 +72,34 @@ unary!(f64, F64Shell, asin, asin_round, result, "`asin`");
 unary!(f64, F64Shell, acos, acos_round, result, "`acos`");
 unary!(f64, F64Shell, atan, atan_round, result, "`atan`");
 
-// --- hyperbolic ---
-unary!(f64, F64Shell, sinh, sinh_round, result, "`sinh`");
-unary!(f64, F64Shell, cosh, cosh_round, result, "`cosh`");
-unary!(f64, F64Shell, tanh, tanh_round, result, "`tanh`");
+// --- hyperbolic (saturation fast-path: see `crate::saturate`) ---
+unary!(
+    f64,
+    F64Shell,
+    sinh,
+    sinh_round,
+    result_sat,
+    crate::saturate::sat_sinh,
+    "`sinh`"
+);
+unary!(
+    f64,
+    F64Shell,
+    cosh,
+    cosh_round,
+    result_sat,
+    crate::saturate::sat_cosh,
+    "`cosh`"
+);
+unary!(
+    f64,
+    F64Shell,
+    tanh,
+    tanh_round,
+    result_sat,
+    crate::saturate::sat_tanh,
+    "`tanh`"
+);
 
 // --- inverse hyperbolic ---
 unary!(f64, F64Shell, asinh, asinh_round, result, "`asinh`");

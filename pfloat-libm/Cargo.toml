@@ -21,6 +21,15 @@ readme = "README.md"
 default = ["std"]
 std = ["pfloat/std"]
 
+# Gates the MPFR verification harness (pf-lm3): the oracle bridge, the
+# smoke gate, the f64 differential + Lefevre-Muller lanes, and the
+# `libm_sweep` example. cargo cannot make a dev-dependency optional, so
+# `rug` builds unconditionally on unix; this feature gates the harness
+# test/example FILES via their `required-features`. Mirrors pfloat's
+# own `differential-mpfr` gate (ADR-0014/0034). `std` because the
+# harness is std test code (the crate itself stays `no_std`).
+differential-mpfr = ["std"]
+
 [dependencies]
 # Phase 2 keystone: pfloat-libm is a thin shell over verified pfloat.
 # The `trig` tier (-> exp-log -> big -> alloc) covers the elementary
@@ -29,3 +38,34 @@ std = ["pfloat/std"]
 # in pfloat 1.1, the pfloat side of Phase 2. As a workspace member the
 # dependency is the sibling root package.
 pfloat = { path = "..", default-features = false, features = ["trig"] }
+
+# MPFR (via the safe `rug` wrapper over `gmp-mpfr-sys`) is the
+# independent oracle for the verification harness. Unix-only and
+# dev-only: it never enters the shipped crate's link graph. rug 1.30
+# exposes a correctly-rounded MPFR primitive for every v0.1 function,
+# including cot/sec/csc/cbrt/hypot/rootn, so the harness is MPFR-only
+# and Python-free (ADR-0058).
+[target.'cfg(unix)'.dev-dependencies]
+rug = { version = "1", default-features = false, features = ["float", "integer"] }
+
+# Harness test/example files, gated so the `rug` build is only pulled
+# when the verification lane runs.
+[[test]]
+name = "libm_oracle_smoke"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "libm_smoke_gate"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "libm_f64_differential"
+required-features = ["differential-mpfr"]
+
+[[test]]
+name = "libm_f64_lefevre_muller"
+required-features = ["differential-mpfr"]
+
+[[example]]
+name = "libm_sweep"
+required-features = ["differential-mpfr"]

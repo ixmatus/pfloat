@@ -33,3 +33,4 @@ pub use pfloat::{RoundingMode, Status};
 pub mod f32;
 pub mod f64;
 mod round;
+mod saturate;
