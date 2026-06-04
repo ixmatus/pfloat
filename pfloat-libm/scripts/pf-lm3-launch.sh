@@ -41,6 +41,22 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c8g.8xlarge}"
 MARKET="${MARKET:-on-demand}"      # on-demand: spot reclaim wastes a long sweep
 DIRECTED_SAMPLE="${DIRECTED_SAMPLE:-1048576}"
+# Wall-clock billing guard (minutes), issued post-launch via SSM. The slowest
+# saturating functions (atanh, tanh) legitimately run many hours; size this
+# above their measured wall time. 720 (12h) was too tight for a 32-vCPU atanh
+# (the in-domain shards finished right at the guard); a 64-vCPU re-run halves
+# that, but keep generous headroom.
+FALLBACK_MINUTES="${FALLBACK_MINUTES:-720}"
+# Targeted re-run knobs. Default empty = full-space sweep, instance-nproc
+# shard-count, per-function S3 dir (the normal path). Set all three to re-sweep
+# a subset of shard indices at a finer shard-count into a SEPARATE S3 prefix —
+# used to finish a load-imbalanced tail (a few slow contiguous shards spread
+# across all cores) without recomputing the banked shards or colliding their
+# result_<k>.json names. The aggregator groups by the JSON `function` field, so
+# the separate prefix still merges into the same function row.
+SHARD_COUNT_OVERRIDE="${SHARD_COUNT_OVERRIDE:-}"
+SHARD_INDEX_LIST="${SHARD_INDEX_LIST:-}"
+OUTPUT_SUBDIR_OVERRIDE="${OUTPUT_SUBDIR:-}"
 RUN_ID="${RUN_ID:-pf-lm3-$(date +%Y%m%d-%H%M%S)}"
 DRY_RUN=0
 PAY_OK=0
@@ -86,7 +102,9 @@ done
 # ===== Function (instance) enumeration =====
 
 if [[ -n "${ONLY_FN}" ]]; then
-    LAUNCH=("${ONLY_FN}")
+    # Accept a comma-separated list so a targeted re-run can relaunch several
+    # functions (e.g. --only atanh,tanh) under one RUN_ID and one fallback.
+    IFS=',' read -r -a LAUNCH <<< "${ONLY_FN}"
 elif [[ "${SMOKE}" -eq 1 ]]; then
     LAUNCH=("exp")
 else
@@ -130,6 +148,11 @@ set -euo pipefail
 exec > >(tee -a /var/log/sweep.log) 2>&1
 export HOME=/root
 export DEBIAN_FRONTEND=noninteractive
+# Targeted re-run params baked from the launcher (empty => instance-time
+# defaults computed below: full nproc sharding into the per-function dir).
+SHARD_COUNT_OVERRIDE="${SHARD_COUNT_OVERRIDE}"
+SHARD_INDEX_LIST="${SHARD_INDEX_LIST}"
+OUTPUT_SUBDIR="${OUTPUT_SUBDIR_OVERRIDE}"
 apt-get update -q
 # m4: gmp-mpfr-sys builds GMP/MPFR from vendored source (ADR-0049). No
 # python/Arb: the libm harness is MPFR-only (ADR-0058).
@@ -167,30 +190,44 @@ fi
 # crash), so do not abort the batch; the aggregator reads them from the
 # uploaded JSON.
 NPROC=\$(nproc)
-echo "[pf-lm3] ${fn}: splitting 2^32 across \$NPROC vCPUs"
+# Normal path: shard-count = nproc, all indices 0..nproc-1, output -> <fn>/.
+# Targeted-tail path: a finer SHARD_COUNT over an explicit index subset, into a
+# SEPARATE OUTSUB prefix so result_<k>.json names never collide with the banked
+# full-run shards (the aggregator merges by the JSON function-field, not dir).
+SHARD_COUNT="\${SHARD_COUNT_OVERRIDE:-\$NPROC}"
+INDICES="\${SHARD_INDEX_LIST:-\$(seq 0 \$((SHARD_COUNT - 1)))}"
+OUTSUB="\${OUTPUT_SUBDIR:-${fn}}"
+echo "[pf-lm3] ${fn}: shard-count=\$SHARD_COUNT, \$(echo \$INDICES | wc -w) indices -> ${RUN_ID}/\$OUTSUB"
 set +e
-# Collect the sub-shard PIDs and wait on each EXPLICITLY. A bare \`wait\`
-# would also block on the \`tee\` from the \`exec > >(tee ...)\` redirection
-# above, which never exits, hanging the script before the upload.
-sweep_pids=""
-for k in \$(seq 0 \$((NPROC - 1))); do
+# Each sub-shard uploads its OWN result the instant it finishes (not in one
+# batch after all NPROC complete). A wall-clock guard that fires mid-run then
+# loses only the still-running shards; every completed shard is already in S3,
+# so the aggregator sees partial coverage and a targeted re-run fills only the
+# gap. The earlier batch-at-end design lost an entire 24/32 function when the
+# guard fired inside the wait loop. run_and_upload is backgrounded per shard;
+# PIDs are waited on EXPLICITLY (a bare \`wait\` would also block on the \`tee\`
+# from the \`exec > >(tee ...)\` redirection, which never exits).
+run_and_upload() {
+    local k="\$1"
     PFLOAT_GIT_SHA="${GIT_SHA}" ./target/release/examples/libm_sweep \\
         --function "${fn}" --width f32 --exhaustive \\
-        --shard-index "\$k" --shard-count "\$NPROC" \\
+        --shard-index "\$k" --shard-count "\$SHARD_COUNT" \\
         --directed-sample "${DIRECTED_SAMPLE}" \\
         --instance-type "${INSTANCE_TYPE}" \\
-        --output-json "/tmp/result_\$k.json" > "/tmp/sub_\$k.log" 2>&1 &
+        --output-json "/tmp/result_\$k.json" > "/tmp/sub_\$k.log" 2>&1
+    cat "/tmp/sub_\$k.log" >> /var/log/sweep.log 2>/dev/null || true
+    aws s3 cp "/tmp/result_\$k.json" "s3://${S3_BUCKET}/${RUN_ID}/\$OUTSUB/result_\$k.json" || true
+}
+sweep_pids=""
+for k in \$INDICES; do
+    run_and_upload "\$k" &
     sweep_pids="\$sweep_pids \$!"
 done
 for p in \$sweep_pids; do wait "\$p"; done
 set -e
 
-for k in \$(seq 0 \$((NPROC - 1))); do
-    cat "/tmp/sub_\$k.log" >> /var/log/sweep.log 2>/dev/null || true
-    aws s3 cp "/tmp/result_\$k.json" "s3://${S3_BUCKET}/${RUN_ID}/${fn}/result_\$k.json" || true
-done
-aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/${fn}/sweep.log"
-echo done | aws s3 cp - "s3://${S3_BUCKET}/${RUN_ID}/${fn}/_DONE"
+aws s3 cp /var/log/sweep.log "s3://${S3_BUCKET}/${RUN_ID}/\$OUTSUB/sweep.log"
+echo done | aws s3 cp - "s3://${S3_BUCKET}/${RUN_ID}/\$OUTSUB/_DONE"
 shutdown -h now
 USERDATA
 
@@ -220,16 +257,18 @@ for fn in "${LAUNCH[@]}"; do
 done
 
 # Defensive shutdown fallback: bound billing if a cloud-init hangs. The
-# slowest function may legitimately run many hours, so the fallback is
-# generous (12h); a hung build is caught far sooner by the absence of a
-# _DONE sentinel in the status poller.
+# slowest function may legitimately run many hours (set FALLBACK_MINUTES
+# above its measured wall time); a hung build is caught far sooner by the
+# absence of a _DONE sentinel in the status poller. Per-shard incremental
+# upload (above) means a guard firing mid-run loses only the running shards,
+# not the whole function.
 if [[ "${DRY_RUN}" -eq 0 ]]; then
     sleep 60
     aws ssm send-command --region "${AWS_REGION}" \
         --document-name AWS-RunShellScript \
         --targets "Key=tag:RunId,Values=${RUN_ID}" \
-        --parameters 'commands=["shutdown -h +720 || true"]' \
-        --comment "pf-lm3 ${RUN_ID} 12h fallback" \
+        --parameters "commands=[\"shutdown -h +${FALLBACK_MINUTES} || true\"]" \
+        --comment "pf-lm3 ${RUN_ID} ${FALLBACK_MINUTES}m fallback" \
         > /dev/null || echo "[launch] SSM fallback scheduling skipped"
 fi
 
