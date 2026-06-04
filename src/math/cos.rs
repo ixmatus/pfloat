@@ -141,6 +141,17 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         auto_raise(Status::INVALID);
         return (result, merged);
     }
+    // cos(x) for finite normal x is transcendental (Lindemann–
+    // Weierstrass: cos α is transcendental for nonzero algebraic α,
+    // and cos(x) ∈ {0, ±1} only at rational multiples of π, never at a
+    // nonzero dyadic x), so the rounded result is INEXACT even where
+    // it lands on a grid value (pf-njs5 under-report, ADR-0060).
+    // cos(±0) = 1 is the only exact input and is special-cased above.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

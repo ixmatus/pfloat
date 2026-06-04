@@ -165,12 +165,21 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
 
     // x is finite positive normal, x ≠ 1. Correctly rounded under
     // `mode` via the Ziv interval test (ADR-0022).
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| ln_at_w(x, working_prec),
         target_precision,
         mode,
         LN_ERROR_GUARD,
-    )
+    );
+    // ln(x) for finite positive normal x ≠ 1 is transcendental
+    // (Lindemann–Weierstrass: ln α is transcendental for algebraic
+    // α ∉ {0, 1}, and a dyadic x is algebraic), hence irrational,
+    // hence INEXACT even where the working-precision evaluation
+    // rounds onto a grid value (pf-njs5, ADR-0060). x = 1 → 0 is the
+    // only exact input and is dispatched above.
+    let status = status | Status::INEXACT;
+    auto_raise(status);
+    (result, status)
 }
 
 /// Evaluate `ln(x)` at the supplied working precision via

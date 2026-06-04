@@ -114,6 +114,17 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         Class::Normal { .. } => {}
     }
 
+    // Exact-input dispatch (pf-njs5, ADR-0060). 10^x is exactly
+    // representable iff x is a non-negative integer and 10^x fits the
+    // target precision (10^x = 5^x·2^x; the odd 5^x factor sets the
+    // significant-bit count, the 2^x factor is a free exponent
+    // shift). For non-integer x the value is irrational (Lindemann–
+    // Weierstrass via 10^x = exp(x·ln 10)); for negative integer x it
+    // is 1/10^|x|, not dyadic. Both fall through and force INEXACT.
+    if let Some(v) = exp10_exact_if_small_nonneg_int(x, target_precision) {
+        return (v, Status::OK);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The
     // composition `exp(x · ln(10))` has no cancellation regime; the
     // Ziv driver's working-precision growth handles the rounding-
@@ -136,8 +147,25 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         mode,
         EXP10_ERROR_GUARD,
     );
+    // x is not in the exact-input set ⟹ 10^x is irrational or its
+    // exact value does not fit ⟹ INEXACT, even where the working-
+    // precision evaluation rounds onto a grid value.
+    let status = status | Status::INEXACT;
     auto_raise(status);
     (result, status)
+}
+
+/// `Some(10^x)` at `target_precision` if `x` is a non-negative
+/// integer whose exact `10^x` fits the target precision, else `None`.
+/// The dispatch returns this value with `Status::OK`; soundness (no
+/// wrongly cleared flag) rests on [`super::pow::ten_pow_if_fits`]
+/// returning only exact, representable powers of ten.
+fn exp10_exact_if_small_nonneg_int(x: &BigFloat, target_precision: u32) -> Option<BigFloat> {
+    let k = super::pow::integer_exponent(x)?;
+    if k < 0 {
+        return None;
+    }
+    super::pow::ten_pow_if_fits(k as u64, target_precision)
 }
 
 #[cfg(test)]

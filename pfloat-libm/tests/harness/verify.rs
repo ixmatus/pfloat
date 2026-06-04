@@ -20,8 +20,8 @@ use pfloat_libm::RoundingMode;
 
 use super::hw::Hw;
 use super::oracle::enclose;
-use super::status_gate::{check_flags, StatusGate};
-use super::types::{Enclosure, LibmArg, LibmFnId, Verdict};
+use super::status_gate::{check_flags, inexact_is_gated, StatusGate};
+use super::types::{Enclosure, FlagKind, LibmArg, LibmFnId, Verdict};
 
 /// First Ziv-at-oracle working precision (above both f32's 24 and f64's
 /// 53 mantissa bits).
@@ -30,6 +30,29 @@ pub const START_PREC: u32 = 64;
 /// Precision cap. Hard-to-round inputs that still straddle here yield
 /// [`Verdict::OracleInconclusive`].
 pub const MAX_PREC: u32 = 1024;
+
+/// Whether `f(x)`'s correctly rounded result is `INEXACT` in the
+/// hardware type, derived from the oracle enclosure — independent of
+/// the shell's flag (pf-njs5, ADR-0060).
+///
+/// `INEXACT` ⇔ the true value is not exactly the committed `H` float. A
+/// both-NaN bracket is a domain result (no `INEXACT`). If the bracket
+/// endpoints differ the true value needs more than `prec` bits, so it
+/// is not representable in `H`. If they coincide the true value is that
+/// exact point, and the result is inexact exactly when the committed
+/// hardware float lifted back to `prec` bits differs from it — which
+/// also flags the overflow (→ ±∞) and underflow (→ subnormal/±0) cases,
+/// matching the shell's conversion-derived `OVERFLOW`/`UNDERFLOW`
+/// `INEXACT`.
+fn result_is_inexact<H: Hw>(enc: &Enclosure, expected: H, prec: u32) -> bool {
+    if enc.lo.is_nan() || enc.hi.is_nan() {
+        return false;
+    }
+    if enc.lo != enc.hi {
+        return true;
+    }
+    H::lift(H::to_bits(expected), prec) != enc.lo
+}
 
 /// The unique hardware float both endpoints of `enc` round to under
 /// `mode`, or `None` when they straddle. A both-NaN bracket (the true
@@ -93,6 +116,22 @@ pub fn verify_input<H: Hw>(
                     expected: exp,
                     got: g,
                 };
+            }
+
+            // INEXACT gate for the kernels corrected under ADR-0060
+            // (pf-njs5). The expectation is enclosure-derived, not read
+            // from the shell; ValueOnly skips it.
+            if matches!(gate, StatusGate::ValueAndDomainHard) && inexact_is_gated(f) {
+                let exp_inexact = result_is_inexact::<H>(&enc, expected, prec);
+                if got_status.inexact() != exp_inexact {
+                    return Verdict::FlagMismatch {
+                        input: H::bits_to_u64(input),
+                        mode,
+                        flag: FlagKind::Inexact,
+                        expected: exp_inexact,
+                        got: got_status.inexact(),
+                    };
+                }
             }
             return Verdict::Ok;
         }

@@ -130,12 +130,24 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // (ADR-0022). The driver supplies a working precision, the
     // closure evaluates exp at that precision, and the driver grows
     // the guard until correct rounding is certified.
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| exp_at_w(x, working_prec),
         target_precision,
         mode,
         EXP_ERROR_GUARD,
-    )
+    );
+    // exp(x) for finite normal x ≠ 0 is transcendental (Lindemann–
+    // Weierstrass: e^α is transcendental for nonzero algebraic α, and
+    // a dyadic x is algebraic), hence irrational, hence never exactly
+    // representable. The result is therefore INEXACT even when it
+    // rounds onto a grid value because the residual fell below the
+    // kernel's working precision — e.g. exp(2^-1074) → 1.0, where the
+    // true 1 + 2^-1074 ≠ 1 but the working-precision evaluation never
+    // observes the rounding (pf-njs5 under-report, ADR-0060). x = 0 is
+    // the only exact input and is special-cased above to exp(0) = 1.
+    let status = status | Status::INEXACT;
+    auto_raise(status);
+    (result, status)
 }
 
 /// Evaluate `exp(x)` at the supplied working precision via

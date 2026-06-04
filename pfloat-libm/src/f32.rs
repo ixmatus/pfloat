@@ -168,18 +168,6 @@ mod tests {
         }
     }
 
-    /// A value that is mathematically exact and correctly returned in every
-    /// mode, but reached through a composed-transcendental kernel that may
-    /// conservatively report INEXACT (the kernel cannot cheaply prove the
-    /// result is exact). The correctly-rounded VALUE is asserted here; the
-    /// flag conservatism is documented in ADR-0057.
-    fn exact_value(f: fn(f32, RoundingMode) -> (f32, Status), x: f32, want: f32) {
-        for &mode in &MODES {
-            let (got, _st) = f(x, mode);
-            assert_eq!(got.to_bits(), want.to_bits(), "value x={x} mode={mode:?}");
-        }
-    }
-
     #[test]
     fn kernel_exact_values_clear_inexact() {
         exact_clear(exp_round, 0.0, 1.0);
@@ -194,16 +182,13 @@ mod tests {
         exact_clear(sec_round, 0.0, 1.0);
         exact_clear(tanh_round, 0.0, 0.0);
         exact_clear(atan_round, 0.0, 0.0);
-    }
-
-    #[test]
-    fn composed_exact_values_round_correctly() {
-        // log10 = ln/ln(10), exp10 = exp(x·ln 10), exp2 = exp(x·ln 2): all
-        // compose transcendentals, so INEXACT may be conservatively set even
-        // though the result is exact. The value must still be exact.
-        exact_value(log10_round, 1000.0, 3.0);
-        exact_value(exp10_round, 2.0, 100.0);
-        exact_value(exp2_round, 10.0, 1024.0);
+        // log10 = ln/ln(10), exp10 = exp(x·ln 10), exp2 = exp(x·ln 2)
+        // compose transcendentals; the exact-input dispatch (pf-njs5,
+        // ADR-0060) now clears INEXACT on the exact results, upgrading
+        // these from value-only to flag-clear.
+        exact_clear(log10_round, 1000.0, 3.0);
+        exact_clear(exp10_round, 2.0, 100.0);
+        exact_clear(exp2_round, 10.0, 1024.0);
     }
 
     #[test]

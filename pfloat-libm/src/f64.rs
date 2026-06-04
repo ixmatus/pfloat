@@ -164,15 +164,6 @@ mod tests {
         }
     }
 
-    /// Mathematically exact via a composed transcendental: value exact,
-    /// INEXACT may be conservatively set (ADR-0057).
-    fn exact_value(f: fn(f64, RoundingMode) -> (f64, Status), x: f64, want: f64) {
-        for &mode in &MODES {
-            let (got, _st) = f(x, mode);
-            assert_eq!(got.to_bits(), want.to_bits(), "value x={x} mode={mode:?}");
-        }
-    }
-
     #[test]
     fn kernel_exact_values_clear_inexact() {
         exact_clear(exp_round, 0.0, 1.0);
@@ -183,12 +174,12 @@ mod tests {
         exact_clear(cbrt_round, -27.0, -3.0);
         exact_clear(cos_round, 0.0, 1.0);
         exact_clear(sec_round, -0.0, 1.0);
-    }
-
-    #[test]
-    fn composed_exact_values_round_correctly() {
-        exact_value(exp10_round, 3.0, 1000.0);
-        exact_value(log10_round, 1000.0, 3.0);
+        // Composed-transcendental exact results: exact-input dispatch
+        // now clears INEXACT (pf-njs5, ADR-0060), upgrading these from
+        // value-only to flag-clear.
+        exact_clear(exp2_round, 10.0, 1024.0);
+        exact_clear(exp10_round, 3.0, 1000.0);
+        exact_clear(log10_round, 1000.0, 3.0);
     }
 
     #[test]

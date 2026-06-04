@@ -170,6 +170,18 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         auto_raise(Status::INVALID);
         return (result, merged);
     }
+    // sin(x) for finite normal x is transcendental (Lindemann–
+    // Weierstrass: sin α is transcendental for nonzero algebraic α,
+    // and sin(x) = 0 only at x = nπ, never at a nonzero dyadic x), so
+    // the rounded result is INEXACT even where it lands on a grid
+    // value — e.g. a huge argument whose reduced residual collapses
+    // (pf-njs5 under-report, ADR-0060). sin(±0) = ±0 is the only exact
+    // input and is special-cased above.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
