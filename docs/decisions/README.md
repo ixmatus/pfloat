@@ -110,3 +110,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0058: The pfloat-libm verification harness (MPFR only, value hard, range sharded)](0058-libm-verification-harness.md) (accepted)
 - [ADR-0059: small-argument fast-path family for the odd elementary kernels](0059-small-argument-fast-path-family.md) (accepted)
 - [ADR-0060: INEXACT flag fidelity for the transcendental exp/log and sin/cos kernels](0060-inexact-fidelity-transcendental-kernels.md) (accepted)
+- [ADR-0061: Toom-Cook 3-way multiplication, the rung above Karatsuba](0061-toom3-multiplication.md) (accepted)

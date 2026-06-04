@@ -934,16 +934,6 @@ pub(crate) fn multiply_limbs_karatsuba(a: &[u64], b: &[u64]) -> Vec<u64> {
     result
 }
 
-/// Multi-precision multiplication dispatcher: schoolbook for small
-/// inputs, Karatsuba for larger ones.
-pub(crate) fn multiply_limbs(a: &[u64], b: &[u64]) -> Vec<u64> {
-    if a.len().min(b.len()) <= KARATSUBA_THRESHOLD {
-        multiply_limbs_schoolbook(a, b)
-    } else {
-        multiply_limbs_karatsuba(a, b)
-    }
-}
-
 // --- Karatsuba support helpers ---
 
 /// Split `a` into two halves of `split` limbs (`lo`) and the rest
@@ -988,6 +978,280 @@ fn add_into_at_offset(dst: &mut [u64], src: &[u64], offset: usize) {
         return;
     }
     let _carry = limbs_add_assign(&mut dst[offset..], src);
+}
+
+// --- Toom-Cook 3-way multiplication (ADR-0061) ---
+
+/// Toom-3 dispatch threshold: the smaller operand's limb count must
+/// exceed this for [`multiply_limbs`] to choose Toom-3 over Karatsuba.
+///
+/// Calibrated empirically against pfloat's allocation-bound Karatsuba in
+/// `benches/mul_thresholds.rs` (ADR-0061), not taken from GMP-literature
+/// thresholds (which assume an allocation-free Karatsuba). The measured
+/// A/B (Toom-3 vs Karatsuba at identical sizes, aarch64-apple-darwin)
+/// puts the crossover near 160..192: Toom-3 is within noise below ~176
+/// and wins above it, the win growing with size because splitting by
+/// three makes a shallower recursion tree (fewer total allocating
+/// nodes) than Karatsuba's split-by-two — so allocation, the dominant
+/// cost here, falls. The win reaches roughly −43% at 1536 limbs (a
+/// 100,000-bit decimal parse) and ~−47% by 4096. Placing the threshold
+/// at 176 keeps the small, noisy band and the small in-tree consumers
+/// (a Ziv-lifted Bessel call lands near 173 limbs) on proven Karatsuba.
+/// Sits above [`KARATSUBA_THRESHOLD`]; sub-products recurse back through
+/// [`multiply_limbs`], so they bottom out in Karatsuba below 176.
+pub(crate) const TOOM3_THRESHOLD: usize = 176;
+
+/// `3⁻¹ mod 2⁶⁴`. `3 · 0xAAAA…AAAB = 2⁶⁵ + 1 ≡ 1 (mod 2⁶⁴)`.
+const INV3: u64 = 0xAAAA_AAAA_AAAA_AAAB;
+
+/// Exact division by 3 of a little-endian magnitude that is a multiple
+/// of 3 by construction (the Toom-3 interpolation only ever divides a
+/// known multiple). One left-to-right pass by the modular-inverse
+/// method: each quotient limb is `(xᵢ − borrow)·3⁻¹ mod 2⁶⁴`, and the
+/// borrow into the next limb is the high half of `3·qᵢ` plus the
+/// subtraction's underflow. A non-multiple trips the debug assertion.
+/// O(n), one allocation. Derived from Jebelean, "An algorithm for exact
+/// division" (J. Symbolic Computation, 1993); cross-checked against
+/// [`divmod_limbs`] by `[3]` in the tests.
+fn divexact_by3(x: &[u64]) -> Vec<u64> {
+    let mut q = vec![0u64; x.len()];
+    let mut borrow: u64 = 0;
+    for (i, &xi) in x.iter().enumerate() {
+        let (s, under) = xi.overflowing_sub(borrow);
+        let qi = s.wrapping_mul(INV3);
+        q[i] = qi;
+        let high = ((u128::from(qi) * 3) >> 64) as u64;
+        borrow = high + u64::from(under);
+    }
+    debug_assert_eq!(borrow, 0, "divexact_by3 on a non-multiple of 3");
+    q
+}
+
+/// A signed magnitude over little-endian limbs, for the Toom-3
+/// interpolation intermediates. The evaluation at `−1` and the
+/// difference steps go negative even though the operands and the final
+/// product coefficients do not, so the sign is carried as an explicit
+/// field rather than a two's-complement encoding over a dynamic width
+/// (which would make the sign an implicit, easily-corrupted property of
+/// the top limb). Magnitudes may carry trailing zero limbs.
+#[derive(Clone)]
+struct Signed {
+    neg: bool,
+    mag: Vec<u64>,
+}
+
+impl Signed {
+    fn pos(mag: Vec<u64>) -> Self {
+        Self { neg: false, mag }
+    }
+
+    fn zero() -> Self {
+        Self {
+            neg: false,
+            mag: vec![0],
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.mag.iter().all(|&l| l == 0)
+    }
+
+    /// `self + other`, dispatching on sign.
+    fn add(&self, other: &Signed) -> Signed {
+        if self.neg == other.neg {
+            return Signed {
+                neg: self.neg,
+                mag: add_owned(&self.mag, &other.mag),
+            };
+        }
+        // Opposite signs: the result takes the sign of the larger
+        // magnitude, value is the magnitude difference.
+        match cmp_limbs(&self.mag, &other.mag) {
+            core::cmp::Ordering::Equal => Signed::zero(),
+            core::cmp::Ordering::Greater => {
+                let mut m = self.mag.clone();
+                if m.len() < other.mag.len() {
+                    m.resize(other.mag.len(), 0);
+                }
+                limbs_sub_assign(&mut m, &other.mag);
+                Signed {
+                    neg: self.neg,
+                    mag: m,
+                }
+            }
+            core::cmp::Ordering::Less => {
+                let mut m = other.mag.clone();
+                if m.len() < self.mag.len() {
+                    m.resize(self.mag.len(), 0);
+                }
+                limbs_sub_assign(&mut m, &self.mag);
+                Signed {
+                    neg: other.neg,
+                    mag: m,
+                }
+            }
+        }
+    }
+
+    fn negated(&self) -> Signed {
+        if self.is_zero() {
+            return Signed::zero();
+        }
+        Signed {
+            neg: !self.neg,
+            mag: self.mag.clone(),
+        }
+    }
+
+    fn sub(&self, other: &Signed) -> Signed {
+        self.add(&other.negated())
+    }
+
+    /// `self * other` via the unsigned magnitude multiplier (which
+    /// recurses through [`multiply_limbs`], so the five Toom-3
+    /// sub-products fall back to Karatsuba/schoolbook by size).
+    fn mul(&self, other: &Signed) -> Signed {
+        if self.is_zero() || other.is_zero() {
+            return Signed::zero();
+        }
+        Signed {
+            neg: self.neg ^ other.neg,
+            mag: multiply_limbs(&self.mag, &other.mag),
+        }
+    }
+
+    /// `self · 2^bits` for `0 ≤ bits < 64`.
+    fn shl(&self, bits: u32) -> Signed {
+        Signed {
+            neg: self.neg,
+            mag: shl_limbs(&self.mag, bits),
+        }
+    }
+
+    /// Exact `/2`. The magnitude is even by construction.
+    fn half(&self) -> Signed {
+        debug_assert!(
+            self.mag.first().copied().unwrap_or(0) & 1 == 0,
+            "Signed::half on an odd magnitude"
+        );
+        Signed {
+            neg: self.neg,
+            mag: shr_limbs(&self.mag, 1),
+        }
+    }
+
+    /// Exact `/3`. The magnitude is a multiple of 3 by construction.
+    fn third(&self) -> Signed {
+        Signed {
+            neg: self.neg,
+            mag: divexact_by3(&self.mag),
+        }
+    }
+}
+
+/// Little-endian slice `v[lo..hi]` as an owned magnitude, zero when the
+/// range is empty or past the end. Never returns an empty `Vec`.
+fn limb_window(v: &[u64], lo: usize, hi: usize) -> Vec<u64> {
+    if lo >= v.len() {
+        return vec![0u64];
+    }
+    let end = hi.min(v.len());
+    if end <= lo {
+        return vec![0u64];
+    }
+    v[lo..end].to_vec()
+}
+
+/// Toom-Cook 3-way multiplication of two little-endian magnitudes.
+///
+/// Splits each operand into three `s = ⌈max_len / 3⌉`-limb parts
+/// `a = a₀ + a₁B + a₂B²` (`B = 2^{64 s}`), evaluates the product
+/// polynomial at `{0, 1, −1, 2, ∞}`, and interpolates the five product
+/// coefficients. The interpolation is derived from the Vandermonde
+/// inverse at those points (Brent & Zimmermann, *Modern Computer
+/// Arithmetic* §1.3.3; Bodrato & Zanoni, WAIFI 2007); the five
+/// sub-products recurse through [`multiply_limbs`].
+///
+/// Returns `a.len() + b.len()` limbs, matching the other multipliers.
+/// Falls back to [`multiply_limbs`] when either operand is at or below
+/// [`TOOM3_THRESHOLD`], so the recursion bottoms out.
+fn multiply_limbs_toom3(a: &[u64], b: &[u64]) -> Vec<u64> {
+    if a.len() <= TOOM3_THRESHOLD || b.len() <= TOOM3_THRESHOLD {
+        return multiply_limbs(a, b);
+    }
+
+    let n = a.len().max(b.len());
+    let s = n.div_ceil(3);
+
+    // Three-way split (parts are non-negative).
+    let a0 = Signed::pos(limb_window(a, 0, s));
+    let a1 = Signed::pos(limb_window(a, s, 2 * s));
+    let a2 = Signed::pos(limb_window(a, 2 * s, a.len()));
+    let b0 = Signed::pos(limb_window(b, 0, s));
+    let b1 = Signed::pos(limb_window(b, s, 2 * s));
+    let b2 = Signed::pos(limb_window(b, 2 * s, b.len()));
+
+    // Evaluate a(x), b(x) at x ∈ {0, 1, −1, 2}; x = ∞ is the leading
+    // coefficient. a(2) = a0 + 2a1 + 4a2, etc.
+    let a_at1 = a0.add(&a1).add(&a2);
+    let b_at1 = b0.add(&b1).add(&b2);
+    let a_atm1 = a0.add(&a2).sub(&a1);
+    let b_atm1 = b0.add(&b2).sub(&b1);
+    let a_at2 = a0.add(&a1.shl(1)).add(&a2.shl(2));
+    let b_at2 = b0.add(&b1.shl(1)).add(&b2.shl(2));
+
+    // Five pointwise products.
+    let v0 = a0.mul(&b0); // c0
+    let v1 = a_at1.mul(&b_at1); // c0+c1+c2+c3+c4
+    let vm1 = a_atm1.mul(&b_atm1); // c0−c1+c2−c3+c4
+    let v2 = a_at2.mul(&b_at2); // c0+2c1+4c2+8c3+16c4
+    let vinf = a2.mul(&b2); // c4
+
+    // Interpolation (derived from the Vandermonde inverse):
+    //   even = (v1 + vm1)/2 = c0 + c2 + c4
+    //   odd  = (v1 − vm1)/2 = c1 + c3
+    //   c2   = even − v0 − vinf
+    //   w    = (v2 − v0 − 4c2 − 16 vinf)/2 = c1 + 4c3
+    //   c3   = (w − odd)/3
+    //   c1   = odd − c3
+    let c0 = v0;
+    let c4 = vinf;
+    let even = v1.add(&vm1).half();
+    let odd = v1.sub(&vm1).half();
+    let c2 = even.sub(&c0).sub(&c4);
+    let w = v2.sub(&c0).sub(&c2.shl(2)).sub(&c4.shl(4)).half();
+    let c3 = w.sub(&odd).third();
+    let c1 = odd.sub(&c3);
+
+    // Every coefficient of a product of non-negative operands is
+    // non-negative; a sign here means the interpolation is wrong.
+    debug_assert!(
+        !c0.neg && !c1.neg && !c2.neg && !c3.neg && !c4.neg,
+        "Toom-3 produced a negative product coefficient"
+    );
+
+    // Recompose: result = c0 + c1 B + c2 B² + c3 B³ + c4 B⁴, with cj at
+    // limb offset j·s. The true product fits in a.len()+b.len() limbs
+    // and the cj are non-negative, so the running sum never overflows.
+    let mut result = vec![0u64; a.len() + b.len()];
+    for (j, c) in [c0, c1, c2, c3, c4].iter().enumerate() {
+        add_into_at_offset(&mut result, &c.mag, j * s);
+    }
+    result
+}
+
+/// Multi-precision multiplication dispatcher: schoolbook for small
+/// inputs, Karatsuba above [`KARATSUBA_THRESHOLD`], Toom-3 above
+/// [`TOOM3_THRESHOLD`]. Routes on `min(a.len(), b.len())`.
+pub(crate) fn multiply_limbs(a: &[u64], b: &[u64]) -> Vec<u64> {
+    let m = a.len().min(b.len());
+    if m <= KARATSUBA_THRESHOLD {
+        multiply_limbs_schoolbook(a, b)
+    } else if m <= TOOM3_THRESHOLD {
+        multiply_limbs_karatsuba(a, b)
+    } else {
+        multiply_limbs_toom3(a, b)
+    }
 }
 
 #[cfg(test)]
@@ -1247,6 +1511,69 @@ mod tests {
         let p_k = multiply_limbs_karatsuba(&a, &b);
         let p_s = multiply_limbs_schoolbook(&a, &b);
         assert_eq!(p_k, p_s, "Karatsuba must agree with schoolbook bit-for-bit");
+    }
+
+    #[test]
+    fn divexact_by3_matches_divmod() {
+        // Generate a random m, form n = 3·m (a guaranteed multiple of
+        // 3), and check divexact_by3(n) reproduces both m and the
+        // general divider's quotient with a zero remainder.
+        let mut state: u64 = 0x3333_5555_7777_9999;
+        for _ in 0..3000 {
+            let len = 1 + (xorshift(&mut state) % 12) as usize;
+            let m: Vec<u64> = (0..len).map(|_| xorshift(&mut state)).collect();
+            let n = multiply_limbs_schoolbook(&m, &[3]);
+            let q = divexact_by3(&n);
+            let (q_ref, r_ref) = divmod_limbs(&n, &[3]);
+            assert!(r_ref.iter().all(|&l| l == 0), "3·m is divisible by 3");
+            assert_eq!(
+                cmp_limbs(&q, &q_ref),
+                core::cmp::Ordering::Equal,
+                "divexact_by3 disagrees with the divmod quotient"
+            );
+            assert_eq!(
+                cmp_limbs(&q, &m),
+                core::cmp::Ordering::Equal,
+                "divexact_by3(3·m) != m"
+            );
+        }
+    }
+
+    #[test]
+    fn toom3_matches_schoolbook() {
+        // Sizes spanning all three dispatcher regimes plus the
+        // deep-recursion tail (≥ 3·TOOM3_THRESHOLD forces a Toom-3
+        // node whose sub-products recurse back into Toom-3). Mixed
+        // pairs also exercise the degenerate-split (short-operand) path.
+        let mut state: u64 = 0x7001_7003_7005_7007;
+        let sizes = [129usize, 150, 200, 260, 400, 600];
+        for &na in &sizes {
+            for &nb in &sizes {
+                let a: Vec<u64> = (0..na).map(|_| xorshift(&mut state)).collect();
+                let b: Vec<u64> = (0..nb).map(|_| xorshift(&mut state)).collect();
+                let p_t = multiply_limbs_toom3(&a, &b);
+                let p_s = multiply_limbs_schoolbook(&a, &b);
+                assert_eq!(p_t, p_s, "Toom-3 disagrees with schoolbook at {na}x{nb}");
+            }
+        }
+    }
+
+    #[test]
+    fn toom3_signed_intermediate_stress() {
+        // A dominant middle third forces a0 − a1 + a2 < 0, so the
+        // evaluation at −1 and the interpolation run the signed path.
+        let s = 130usize;
+        let n = 3 * s;
+        let mut a = vec![0u64; n];
+        let mut b = vec![0u64; n];
+        for i in 0..n {
+            let dominant = (i / s) == 1;
+            a[i] = if dominant { u64::MAX } else { 1 };
+            b[i] = if dominant { u64::MAX } else { 1 };
+        }
+        let p_t = multiply_limbs_toom3(&a, &b);
+        let p_s = multiply_limbs_schoolbook(&a, &b);
+        assert_eq!(p_t, p_s, "Toom-3 signed-intermediate stress");
     }
 
     #[test]
