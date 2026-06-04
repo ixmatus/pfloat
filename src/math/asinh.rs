@@ -100,6 +100,25 @@ fn asinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: asinh(x) = x − x³/6 + … shrinks toward x in magnitude
+    // (the −x³/6 correction opposes x's sign), so round x with that
+    // opposite-sign infinitesimal directly, bypassing the log1p
+    // composition that otherwise grinds at moderate working precision
+    // for moderately tiny x (ADR-0059).
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!(),
+    };
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // magnitude shrinks: the −x³/6 correction opposes x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the cancellation-resistant identity
     // `asinh(|x|) = log1p(|x| + |x|²/(sqrt(|x|²+1)+1))` on |x| at
@@ -237,5 +256,64 @@ mod tests {
         let (r, status) = sn.asinh(RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
+    }
+
+    #[test]
+    fn asinh_tiny_input_directed_modes() {
+        // Tiny-x short-circuit (ADR-0059). asinh(x) = x − x³/6 + …
+        // shrinks toward zero, so for tiny x the result is x under the
+        // three modes that round toward or onto x and x's toward-zero
+        // neighbour under the two that round inward. Pins the shrink
+        // direction (the signature of subtracts_magnitude = true): a
+        // flipped flag or a bare "return x" would round the inward modes
+        // to x.
+        use core::cmp::Ordering;
+        use RoundingMode::{NearestAway, NearestEven, TowardNegative, TowardPositive, TowardZero};
+        let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+        let mut x = BigFloat::try_from_i64_exact(1, 200).unwrap();
+        for _ in 0..100 {
+            x = x.div(&two, RoundingMode::NearestEven).0;
+        }
+        let x53 = x
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+
+        // Positive tiny x: TowardZero and TowardNegative round below x.
+        for &m in &[NearestEven, NearestAway, TowardPositive] {
+            let (r, _) = x53.asinh(m);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Equal),
+                "asinh +tiny {m:?}"
+            );
+        }
+        for &m in &[TowardZero, TowardNegative] {
+            let (r, _) = x53.asinh(m);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Less),
+                "asinh +tiny {m:?} shrinks"
+            );
+        }
+
+        // Negative tiny x: TowardZero and TowardPositive round above x.
+        let neg = x53.negated();
+        for &m in &[NearestEven, NearestAway, TowardNegative] {
+            let (r, _) = neg.asinh(m);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Equal),
+                "asinh -tiny {m:?}"
+            );
+        }
+        for &m in &[TowardZero, TowardPositive] {
+            let (r, _) = neg.asinh(m);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Greater),
+                "asinh -tiny {m:?} shrinks"
+            );
+        }
     }
 }

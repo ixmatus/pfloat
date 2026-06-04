@@ -204,6 +204,44 @@ pub fn rug_from_i64(n: i64, p: u32) -> Float {
     Float::with_val(p, n)
 }
 
+/// Construct a [`BigFloat`] equal to `2^exp` at precision `p`.
+///
+/// A power of two is a single set bit, so repeated multiply/divide by
+/// two only shifts the stored exponent and never rounds; the value is
+/// exact at any precision. The integer-input lanes cannot reach the
+/// tiny-x activation band of the small-argument fast-paths (ADR-0059);
+/// this and [`rug_pow2`] feed the dedicated band sweep.
+pub fn bigfloat_pow2(exp: i64, p: u32) -> BigFloat {
+    let two = BigFloat::try_from_i64_exact(2, p).expect("precision >= 1");
+    let mut v = BigFloat::try_from_i64_exact(1, p).expect("precision >= 1");
+    for _ in 0..exp.unsigned_abs() {
+        v = if exp < 0 {
+            v.div(&two, RoundingMode::NearestEven).0
+        } else {
+            v.mul(&two, RoundingMode::NearestEven).0
+        };
+    }
+    v
+}
+
+/// Construct a [`rug::Float`] equal to `2^exp` at precision `p`, exact
+/// via `mul_2si` (split into i32 chunks like [`mul_2si_chunked`]).
+/// Companion to [`bigfloat_pow2`] for the tiny-x band sweep.
+pub fn rug_pow2(exp: i64, p: u32) -> Float {
+    let mut f = Float::with_val(p, 1u32);
+    let mut remaining = exp;
+    while remaining != 0 {
+        let step = if remaining >= 0 {
+            remaining.min(i64::from(i32::MAX)) as i32
+        } else {
+            remaining.max(i64::from(i32::MIN)) as i32
+        };
+        f <<= step;
+        remaining -= i64::from(step);
+    }
+    f
+}
+
 /// Splitmix64 step. Used by each `differential_*` test for
 /// deterministic input generation; consolidated here so the
 /// helper isn't duplicated 23 times and so the i64 range math is

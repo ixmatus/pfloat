@@ -370,6 +370,13 @@ name = "differential_zeta"
 path = "tests/differential_zeta.rs"
 required-features = ["differential-mpfr"]
 
+# ADR-0059: the tiny-x fast-path band sweep. Reaches the small-argument
+# activation band the integer-input lanes above never touch.
+[[test]]
+name = "differential_small_arg"
+path = "tests/differential_small_arg.rs"
+required-features = ["differential-mpfr"]
+
 # Slice p1.3: Phase 1 Oracle harness smoke tests. Build behind the
 # existing `differential-mpfr` feature lane (rug dependency). The
 # harness types live in `tests/oracle/`; each consumer below imports
@@ -544,6 +551,11 @@ required-features = ["bessel"]
 name = "airy_dispatch"
 harness = false
 required-features = ["airy"]
+
+[[bench]]
+name = "small_arg"
+harness = false
+required-features = ["trig"]
 
 [profile.release]
 lto = "thin"
