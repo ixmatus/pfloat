@@ -123,6 +123,28 @@ fn atanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         _ => {}
     }
 
+    // Tiny x: atanh(x) = x + x³/3 + … grows away from x in magnitude
+    // (every term of the odd series shares x's sign), so round x with
+    // that same-sign infinitesimal directly, bypassing the Ziv loop that
+    // otherwise drives the full log1p(x) − log1p(−x) identity at high
+    // working precision for a value that is x to within rounding. The
+    // infinitesimal carries the directed-mode information a bare
+    // "x rounded under mode" return would drop — the same trap log1p
+    // documents at its own tiny-x short-circuit (ADR-0059).
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!(),
+    };
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            sign,
+            false, // magnitude grows: the +x³/3 correction shares x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the cancellation-resistant identity
     // `atanh(x) = (log1p(x) − log1p(-x)) / 2` at working precision
@@ -272,5 +294,73 @@ mod tests {
         let (r, status) = sn.atanh(RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
+    }
+
+    #[test]
+    fn atanh_tiny_input_directed_modes() {
+        // Tiny-x short-circuit (ADR-0059). atanh(x) = x + x³/3 + …
+        // grows away from x: for x = 2⁻¹⁰⁰ at p=53 the cubic correction
+        // ≈ 2⁻³⁰⁰ sits far below the half-ULP ≈ 2⁻¹⁵³, so the result is
+        // x under the four modes that round toward x and x's
+        // away-from-zero neighbour under the single mode that rounds
+        // away. This is the visible signature of `subtracts_magnitude =
+        // false`; a regression to a bare "return x" or a flipped flag
+        // would round the away mode to x, which this asserts against.
+        // Unlike tanh (which shrinks and defers directed modes to the
+        // sweep), the grow direction is known, so all five modes are
+        // pinned here.
+        let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+        let mut x = BigFloat::try_from_i64_exact(1, 200).unwrap();
+        for _ in 0..100 {
+            x = x.div(&two, RoundingMode::NearestEven).0;
+        }
+        let x53 = x
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+
+        // x's away-from-zero neighbour at p=53: x + 2⁻¹⁵². The two set
+        // bits span 52 places, so the add is exact at p=53.
+        let mut ulp = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        for _ in 0..152 {
+            ulp = ulp.div(&two, RoundingMode::NearestEven).0;
+        }
+        let (x_up, _) = x53.add(&ulp, RoundingMode::NearestEven);
+
+        use RoundingMode::{NearestAway, NearestEven, TowardNegative, TowardPositive, TowardZero};
+
+        // Positive tiny x: only TowardPositive rounds away (up).
+        for &mode in &[NearestEven, NearestAway, TowardZero, TowardNegative] {
+            let (r, _) = x53.atanh(mode);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Equal),
+                "atanh(2^-100) under {mode:?} = {r}, expected {x53}"
+            );
+        }
+        let (r_tp, _) = x53.atanh(TowardPositive);
+        assert_eq!(
+            r_tp.partial_cmp(&x_up).0,
+            Some(Ordering::Equal),
+            "atanh(2^-100) under TowardPositive = {r_tp}, expected {x_up}"
+        );
+
+        // Negative tiny x: mirror, only TowardNegative rounds away (down).
+        let neg = x53.negated();
+        let neg_down = x_up.negated();
+        for &mode in &[NearestEven, NearestAway, TowardZero, TowardPositive] {
+            let (r, _) = neg.atanh(mode);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Equal),
+                "atanh(-2^-100) under {mode:?} = {r}, expected {neg}"
+            );
+        }
+        let (r_tn, _) = neg.atanh(TowardNegative);
+        assert_eq!(
+            r_tn.partial_cmp(&neg_down).0,
+            Some(Ordering::Equal),
+            "atanh(-2^-100) under TowardNegative = {r_tn}, expected {neg_down}"
+        );
     }
 }

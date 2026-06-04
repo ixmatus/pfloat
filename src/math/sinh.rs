@@ -98,6 +98,25 @@ fn sinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: sinh(x) = x + x³/6 + … grows away from x in magnitude
+    // (the +x³/6 correction shares x's sign), so round x with that
+    // same-sign infinitesimal directly, bypassing the
+    // (expm1(x) − expm1(−x))/2 composition that otherwise grinds at
+    // moderate working precision for moderately tiny x (ADR-0059).
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!(),
+    };
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            false, // magnitude grows: the +x³/6 correction shares x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the existing `(expm1(x) - expm1(-x))/2`
     // composition at working precision `w` under NE; the outer
@@ -228,5 +247,58 @@ mod tests {
         let (r, status) = sn.sinh(RoundingMode::NearestEven);
         assert!(r.is_quiet_nan());
         assert!(status.invalid());
+    }
+
+    #[test]
+    fn sinh_tiny_input_directed_modes() {
+        // Tiny-x short-circuit (ADR-0059). sinh(x) = x + x³/6 + … grows
+        // away from x, so for tiny x the result is x under the four modes
+        // that round toward or onto x and x's away-from-zero neighbour
+        // under the one that rounds away. Pins the grow direction (the
+        // signature of subtracts_magnitude = false).
+        use core::cmp::Ordering;
+        use RoundingMode::{NearestAway, NearestEven, TowardNegative, TowardPositive, TowardZero};
+        let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+        let mut x = BigFloat::try_from_i64_exact(1, 200).unwrap();
+        for _ in 0..100 {
+            x = x.div(&two, RoundingMode::NearestEven).0;
+        }
+        let x53 = x
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+
+        // Positive tiny x: only TowardPositive rounds away (up).
+        for &m in &[NearestEven, NearestAway, TowardZero, TowardNegative] {
+            let (r, _) = x53.sinh(m);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Equal),
+                "sinh +tiny {m:?}"
+            );
+        }
+        let (r, _) = x53.sinh(TowardPositive);
+        assert_eq!(
+            r.partial_cmp(&x53).0,
+            Some(Ordering::Greater),
+            "sinh +tiny TP grows"
+        );
+
+        // Negative tiny x: only TowardNegative rounds away (down).
+        let neg = x53.negated();
+        for &m in &[NearestEven, NearestAway, TowardZero, TowardPositive] {
+            let (r, _) = neg.sinh(m);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Equal),
+                "sinh -tiny {m:?}"
+            );
+        }
+        let (r, _) = neg.sinh(TowardNegative);
+        assert_eq!(
+            r.partial_cmp(&neg).0,
+            Some(Ordering::Less),
+            "sinh -tiny TN grows"
+        );
     }
 }

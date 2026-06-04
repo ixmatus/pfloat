@@ -120,6 +120,29 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: tanh(x) = x − x³/3 + … shrinks toward x in magnitude (the
+    // −x³/3 correction opposes x's sign). ADR-0050 removed the
+    // pre-Phase-1f tiny-x short-circuit that returned |x| rounded under
+    // mode: NE-correct, but it dropped the directed-mode information and
+    // rounded the wrong way under TZ/TP/TN. This restores a short-circuit
+    // through the mode-aware round_with_infinitesimal — which carries the
+    // sign of the dropped correction term — and bypasses the expm1 form
+    // that otherwise grinds at moderate working precision for moderately
+    // tiny x (ADR-0059).
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!(),
+    };
+    if e <= -(i64::from(target_precision) + 2) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // magnitude shrinks: the −x³/3 correction opposes x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     let sign = x.sign();
     let abs_x = x.abs();
     ziv_round(
@@ -328,6 +351,64 @@ mod tests {
                 r_neg.partial_cmp(&neg).0,
                 Some(Ordering::Equal),
                 "tanh(-2^-100) under {mode:?} = {r_neg}, expected {neg}"
+            );
+        }
+    }
+
+    #[test]
+    fn tanh_tiny_input_directed_modes() {
+        // Tiny-x short-circuit restored mode-aware (ADR-0059, contrast
+        // ADR-0050). tanh(x) = x − x³/3 + … shrinks toward zero, so for
+        // tiny x the result is x under the three modes that round toward
+        // or onto x and x's toward-zero neighbour under the two that
+        // round inward. The pre-Phase-1f short-circuit returned bare |x|
+        // and rounded these inward modes the wrong way; this pins the
+        // correct shrink direction (subtracts_magnitude = true).
+        use RoundingMode::{NearestAway, NearestEven, TowardNegative, TowardPositive, TowardZero};
+        let two = BigFloat::try_from_i64_exact(2, 200).unwrap();
+        let mut x = BigFloat::try_from_i64_exact(1, 200).unwrap();
+        for _ in 0..100 {
+            x = x.div(&two, RoundingMode::NearestEven).0;
+        }
+        let x53 = x
+            .round_to_precision(53, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
+
+        // Positive tiny x: TowardZero and TowardNegative round below x.
+        for &m in &[NearestEven, NearestAway, TowardPositive] {
+            let (r, _) = x53.tanh(m);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Equal),
+                "tanh +tiny {m:?}"
+            );
+        }
+        for &m in &[TowardZero, TowardNegative] {
+            let (r, _) = x53.tanh(m);
+            assert_eq!(
+                r.partial_cmp(&x53).0,
+                Some(Ordering::Less),
+                "tanh +tiny {m:?} shrinks"
+            );
+        }
+
+        // Negative tiny x: TowardZero and TowardPositive round above x.
+        let neg = x53.negated();
+        for &m in &[NearestEven, NearestAway, TowardNegative] {
+            let (r, _) = neg.tanh(m);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Equal),
+                "tanh -tiny {m:?}"
+            );
+        }
+        for &m in &[TowardZero, TowardPositive] {
+            let (r, _) = neg.tanh(m);
+            assert_eq!(
+                r.partial_cmp(&neg).0,
+                Some(Ordering::Greater),
+                "tanh -tiny {m:?} shrinks"
             );
         }
     }
