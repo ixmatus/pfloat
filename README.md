@@ -103,6 +103,23 @@ Verification posture below for what the audit does). The public API is
 stable under semver as of v1.0 (ADR-0054); the per-function rounding
 status is published at `docs/rounding-status.md`.
 
+## pfloat-libm
+
+[`pfloat-libm`](pfloat-libm/README.md) is the companion crate: a
+correctly-rounded `libm` for `f32` and `f64` built on these kernels. A
+call widens the hardware float to a `BigFloat`, evaluates the function
+through pfloat, and rounds the result back to the hardware width under
+an outer Ziv loop that commits a value only once an enclosure proves
+it, so the second rounding is never blind. Its unary `f32` surface is
+verified exhaustively: every one of the `2^32` `binary32` inputs is
+checked against an independent MPFR oracle under all five rounding
+modes, with zero mismatches. A bounded set of extreme-exponent inputs
+on the saturating functions is recorded inconclusive, a limit of the
+MPFR oracle's own exponent range rather than a coverage gap. This sweep
+is distinct from pfloat's own NearestEven `binary32` audit under Status
+above: pfloat is the arbitrary-precision container, pfloat-libm the
+fixed-width correctly-rounded surface over it.
+
 ## Quickstart
 
 ```rust
