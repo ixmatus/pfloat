@@ -198,3 +198,6 @@ jobs:
       # Keep the published rounding-status table (docs/rounding-status.md)
       # in lockstep with the oracle status records it is generated from.
       - run: ./scripts/rounding-status-table.sh --check
+      # Keep the ADR index (docs/decisions/README.md) in lockstep with the
+      # ADR files it lists, so it cannot rot behind the directory.
+      - run: ./scripts/adr-index.sh --check
