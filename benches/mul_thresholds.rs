@@ -67,13 +67,16 @@ fn dense_bigfloat(limbs: usize, seed: u64) -> BigFloat {
     v
 }
 
-/// Limb counts swept across the schoolbook -> Karatsuba crossover
-/// region (slice 7d / ADR-0027). Dense around the current threshold
-/// (30), then geometric out to where Karatsuba is unambiguously
-/// winning. Held constant from ADR-0027 so existing baselines for the
-/// small region stay comparable.
+/// Limb counts swept across the schoolbook -> Karatsuba -> Toom-3
+/// crossover region (slice 7d / ADR-0027; extended for ADR-0061). Dense
+/// around `KARATSUBA_THRESHOLD` (48), then through the Karatsuba ->
+/// Toom-3 crossover band (128 .. 192) added for the Toom-3 calibration,
+/// then geometric. The original ADR-0027 points are unchanged so the
+/// small-region baselines stay comparable; 144/160/176 are the
+/// additions.
 const LIMB_SIZES: &[usize] = &[
-    8, 16, 20, 24, 26, 28, 30, 32, 34, 36, 40, 48, 56, 64, 80, 96, 128, 192, 256, 384, 512,
+    8, 16, 20, 24, 26, 28, 30, 32, 34, 36, 40, 48, 56, 64, 80, 96, 128, 144, 160, 176, 192, 256,
+    384, 512,
 ];
 
 /// Large-precision tail (slice 2a.1). Geometric from 768 up to 65536
@@ -129,10 +132,11 @@ fn bench_skewed(c: &mut Criterion) {
     group.finish();
 }
 
-/// Large-precision tail, equal-size operands (slice 2a.1). The
-/// Karatsuba region only; pfloat does not yet ship Toom-Cook or FFT,
-/// so every point here is `multiply_limbs_karatsuba` at the named
-/// limb count. The measurement is the input to ADR-0040.
+/// Large-precision tail, equal-size operands (slice 2a.1). Every point
+/// past `TOOM3_THRESHOLD` (128) now routes through
+/// `multiply_limbs_toom3` (ADR-0061); below it the Karatsuba curve
+/// stands. The measurement fed the ADR-0040 FFT decision and the
+/// ADR-0061 Toom-3 crossover.
 fn bench_equal_tail(c: &mut Criterion) {
     let mut group = c.benchmark_group("mul_equal_tail");
     group.measurement_time(TAIL_MEASUREMENT_TIME);

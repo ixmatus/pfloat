@@ -1,10 +1,10 @@
 # ADR-0010: Schönhage-Strassen FFT multiplication deferred to 1.x
 
 - **Status**: accepted; amended at Phase 2a slice 2a.1 (2026-05-27)
-  with a measurement-based reconfirmation per ADR-0040. The original
-  deferral stands; the FFT-region cost gap is now characterized
-  rather than assumed.
-- **Date**: 2026-05-10 (amended 2026-05-27)
+  with a measurement-based reconfirmation per ADR-0040, and again on
+  2026-06-04 when Toom-Cook 3-way landed (ADR-0061). The FFT deferral
+  stands; the Toom-Cook 3-way deferral does not.
+- **Date**: 2026-05-10 (amended 2026-05-27, 2026-06-04)
 
 ## Context
 
@@ -41,10 +41,15 @@ fires above the crossover.
 
 1.0 ships schoolbook plus Karatsuba multiplication.
 
-Toom-Cook 3-way and Schönhage-Strassen FFT are tracked as a 1.x
-issue. The threshold for Karatsuba is tuned empirically in Phase 7
-against the bench harness; the upper bound at which "no faster
-algorithm available" kicks in is documented honestly.
+Toom-Cook 3-way landed post-1.0 (ADR-0061, 2026-06-04): the measured
+A/B inverted the going-in prior, because pfloat's allocation-bound
+Karatsuba makes Toom-3's shallower split-by-three recursion allocate
+less, winning ~40% at the consumer tail. Schönhage-Strassen FFT
+remains deferred (no v1.0-surface call site reaches the ~10^4-limb
+region where it would pay; ADR-0040). The thresholds for Karatsuba
+and Toom-3 are tuned empirically against the bench harness; the upper
+bound at which "no faster algorithm available" kicks in is documented
+honestly.
 
 A user who needs multiplication faster than Karatsuba at 10⁴+ limbs
 in 1.0 has two options: use MPFR via `gmp-mpfr-sys` for that
