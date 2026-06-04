@@ -91,8 +91,20 @@ fn log2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     let (rounded, round_status) = ratio
         .round_to_precision(target_precision, mode)
         .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, ln_status | div_status | round_status)
+    let mut status = ln_status | div_status | round_status;
+    // A finite normal result for x outside the exact set is an
+    // irrational log2 rounded onto the grid ⟹ INEXACT, even where the
+    // composition lands exactly on an integer (for a dyadic x = m·2^e
+    // with odd m > 1, log2 x = e + log2 m and log2 of an odd m > 1 is
+    // irrational; pf-njs5 over-report). The exact x = 2^k case is
+    // dispatched above. Non-finite or domain results (qNaN + INVALID
+    // from x < 0 or x = NaN, ±∞ / DIV_BY_ZERO from x = ±0 or x = +∞)
+    // flow through the composition and keep their status untouched.
+    if matches!(rounded.parts(), Parts::Normal { .. }) {
+        status |= Status::INEXACT;
+    }
+    auto_raise(status);
+    (rounded, status)
 }
 
 /// If `x` is `+2^k` for some `k ∈ i64`, returns `Some(k)`;

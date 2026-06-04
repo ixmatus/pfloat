@@ -2,8 +2,8 @@
 //!
 //! Asserts the oracle bridge wires end to end: known values certify and
 //! match the shell; domain errors and poles certify the right
-//! `INVALID`/`DIV_BY_ZERO`; composed-exact results match in value
-//! without the (ungated) `INEXACT` over-report failing the gate; both
+//! `INVALID`/`DIV_BY_ZERO`; composed-exact results clear `INEXACT` and
+//! the enclosure-derived `INEXACT` gate agrees (pf-njs5, ADR-0060); both
 //! widths work. Sub-second; not the coverage gate (that is
 //! `libm_smoke_gate`).
 
@@ -102,10 +102,11 @@ fn poles_certify_div_by_zero() {
 }
 
 #[test]
-fn composed_exact_value_matches_without_flag_failure() {
-    // log10(1000)=3, exp10(2)=100, exp2(10)=1024 are exact; the shell
-    // may set INEXACT conservatively (pf-njs5). Value matches and the
-    // (ungated) INEXACT does not fail the hard gate.
+fn composed_exact_values_clear_inexact_and_gate_agrees() {
+    // log10(1000)=3, exp10(2)=100, exp2(10)=1024 are exact. The
+    // exact-input dispatch (pf-njs5, ADR-0060) clears INEXACT, and the
+    // enclosure-derived INEXACT gate confirms it: value matches AND the
+    // now-hard INEXACT flag agrees.
     ok_unary_f32(LibmFnId::Log10, 1000.0);
     ok_unary_f32(LibmFnId::Exp10, 2.0);
     ok_unary_f32(LibmFnId::Exp2, 10.0);

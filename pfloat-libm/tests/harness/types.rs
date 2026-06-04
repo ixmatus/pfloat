@@ -175,13 +175,14 @@ impl LibmFnId {
 
 /// Which IEEE 754 status flag a [`Verdict::FlagMismatch`] is about. The
 /// harness gates `INVALID` and `DIV_BY_ZERO` hard (an independent
-/// expectation, see `status_gate`); `INEXACT`/`OVERFLOW`/`UNDERFLOW`
-/// are not gated (the directed-pair shell conservatively over-reports
-/// `INEXACT` on composed-exact results, pf-njs5).
+/// expectation, see `status_gate`). `INEXACT` is gated for the exp/log
+/// family and sin/cos (pf-njs5, ADR-0060) against an enclosure-derived
+/// expectation; `OVERFLOW`/`UNDERFLOW` remain ungated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlagKind {
     Invalid,
     DivByZero,
+    Inexact,
 }
 
 impl FlagKind {
@@ -189,6 +190,7 @@ impl FlagKind {
         match self {
             FlagKind::Invalid => "INVALID",
             FlagKind::DivByZero => "DIV_BY_ZERO",
+            FlagKind::Inexact => "INEXACT",
         }
     }
 }

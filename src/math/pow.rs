@@ -452,7 +452,7 @@ pub(super) fn integer_parity(y: &BigFloat) -> Option<Parity> {
 /// site (it needs the base); this extractor only decides integrality
 /// and `i64` range, so an out-of-range integer falls back to the
 /// `exp·ln` path (which handles overflow/underflow via `exp`).
-fn integer_exponent(y: &BigFloat) -> Option<i64> {
+pub(super) fn integer_exponent(y: &BigFloat) -> Option<i64> {
     match &y.class {
         Class::Zero { .. } => Some(0),
         Class::Normal {
@@ -495,7 +495,7 @@ fn integer_exponent(y: &BigFloat) -> Option<i64> {
 
 /// Lowest set bit index of a little-endian limb buffer, or `None`
 /// if every limb is zero.
-fn lowest_set_bit(buffer: &[u64]) -> Option<usize> {
+pub(super) fn lowest_set_bit(buffer: &[u64]) -> Option<usize> {
     for (i, &limb) in buffer.iter().enumerate() {
         if limb != 0 {
             return Some(i * 64 + limb.trailing_zeros() as usize);
@@ -509,7 +509,7 @@ fn lowest_set_bit(buffer: &[u64]) -> Option<usize> {
 /// internal rounding). The caller reciprocates for negative `n` and
 /// feeds the result through [`ziv_round`] for the directed final
 /// round, so exact powers settle bit-exactly at the first guard.
-fn pow_int(x: &BigFloat, n_abs: u64, w: u32) -> BigFloat {
+pub(super) fn pow_int(x: &BigFloat, n_abs: u64, w: u32) -> BigFloat {
     let mut result = BigFloat::try_from_i64_exact(1, w).expect("w >= 1");
     let mut base = x
         .round_to_precision(w, RoundingMode::NearestEven)
@@ -526,6 +526,57 @@ fn pow_int(x: &BigFloat, n_abs: u64, w: u32) -> BigFloat {
         }
     }
     result
+}
+
+/// Significant-bit count of a finite `BigFloat`: the span from its top
+/// set bit down to its lowest set bit, inclusive. The mantissa is
+/// top-bit-normalized (`top_set_bit` is `precision − 1`), so this is
+/// `precision − lowest_set_bit`. Non-normal classes report 0.
+///
+/// Used by the exp/log exact-input dispatch (pf-njs5, ADR-0060) to
+/// decide whether an exactly computed value fits a target precision.
+pub(super) fn significant_bits(v: &BigFloat) -> u32 {
+    match &v.class {
+        Class::Normal { mantissa, .. } => {
+            let m = extract_as_integer(mantissa, v.precision);
+            match lowest_set_bit(&m) {
+                Some(lsb) => v.precision - lsb as u32,
+                None => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// `Some(10^k)` rounded into `precision` bits iff `10^k` is exactly
+/// representable there, else `None`.
+///
+/// `10^k = 5^k · 2^k`; the odd `5^k` factor fixes the significant-bit
+/// count and the `2^k` factor is a free exponent shift. The value is
+/// computed by exact integer exponentiation at a working precision
+/// `precision + 128`; `pow_int` is exact whenever that working
+/// precision covers `sig-bits(10^k)`, so the `significant_bits >
+/// precision` rejection catches both the does-not-fit case and the
+/// (here-unreachable) rounded case. A returned value is therefore
+/// always exactly `10^k` and representable at `precision` — no false
+/// positive. Shared by `exp10`'s exact-input dispatch and `log10`'s
+/// power-of-ten detector (pf-njs5, ADR-0060).
+pub(super) fn ten_pow_if_fits(k: u64, precision: u32) -> Option<BigFloat> {
+    // 10^k needs ≈ 3.32·k significant bits, strictly more than k; if
+    // k ≥ precision it cannot fit, so skip the exponentiation.
+    if k >= u64::from(precision) {
+        return None;
+    }
+    let w = precision.saturating_add(128);
+    let ten = BigFloat::try_from_i64_exact(10, w).expect("w >= 1");
+    let v = pow_int(&ten, k, w);
+    if significant_bits(&v) > precision {
+        return None;
+    }
+    let (v_p, _) = v
+        .round_to_precision(precision, RoundingMode::NearestEven)
+        .expect("precision >= 1");
+    Some(v_p)
 }
 
 #[cfg(test)]

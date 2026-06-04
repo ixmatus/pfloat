@@ -113,6 +113,17 @@ fn exp2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Exact-input dispatch (pf-njs5, ADR-0060). 2^x is exactly
+    // representable iff x is an integer: then 2^x is a single-bit
+    // power of two, exact at every precision and exponent. For a
+    // non-integer x, 2^x is irrational — Gelfond–Schneider gives
+    // transcendence for irrational algebraic exponents, and a
+    // rational non-integer p/q yields an irrational q-th root — so
+    // the composition fall-through below forces INEXACT.
+    if let Some(k) = super::pow::integer_exponent(x) {
+        return (two_pow_at(k, target_precision), Status::OK);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The
     // composition `exp(x · ln(2))` has no cancellation regime; the
     // Ziv driver's working-precision growth handles the rounding-
@@ -135,8 +146,23 @@ fn exp2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         mode,
         EXP2_ERROR_GUARD,
     );
+    // Non-integer x ⟹ 2^x irrational ⟹ INEXACT, even where the
+    // working-precision evaluation rounds onto a grid value.
+    let status = status | Status::INEXACT;
     auto_raise(status);
     (result, status)
+}
+
+/// `2^k` at precision `precision`: `1.0` with its exponent shifted by
+/// `k`. `2^k` is a single-bit power of two, exact at every precision;
+/// [`super::pow::integer_exponent`] guarantees `|k| < 2^63`, so the
+/// exponent shift never saturates.
+fn two_pow_at(k: i64, precision: u32) -> BigFloat {
+    let mut v = BigFloat::try_from_i64_exact(1, precision).expect("precision >= 1");
+    if let Class::Normal { exponent, .. } = &mut v.class {
+        *exponent = exponent.saturating_add(k);
+    }
+    v
 }
 
 #[cfg(test)]

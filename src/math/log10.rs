@@ -10,8 +10,12 @@
 //! away from `k`, which rounds to the exact integer at the 64-bit
 //! guard precision for moderate `k`.
 
-use crate::big::{BigFloat, BuildError};
+use core::cmp::Ordering;
+
+use crate::big::{BigFloat, BuildError, Parts};
+use crate::class::Class;
 use crate::rounding::RoundingMode;
+use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
 #[cfg(feature = "fixed")]
@@ -60,6 +64,18 @@ where
 }
 
 fn log10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    // Exact-input dispatch (pf-njs5, ADR-0060). log10(10^k) = k for
+    // integer k ≥ 0 (this includes x = 1 → 0). Powers of ten are the
+    // only dyadic inputs with a rational base-10 logarithm; every
+    // other finite positive x yields an irrational log10 (Lindemann–
+    // Weierstrass). If k does not fit at target_precision the value is
+    // genuinely inexact and the composition below handles it.
+    if let Some(k) = power_of_ten_exponent(x) {
+        if let Ok(result) = BigFloat::try_from_i64_exact(k, target_precision) {
+            return (result, Status::OK);
+        }
+    }
+
     let working_prec = target_precision.saturating_add(64);
     let (ln_x, ln_status) = x
         .ln_round(working_prec, RoundingMode::NearestEven)
@@ -69,8 +85,62 @@ fn log10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
     let (rounded, round_status) = ratio
         .round_to_precision(target_precision, mode)
         .expect("precision >= 1");
-    auto_raise(round_status);
-    (rounded, ln_status | div_status | round_status)
+    let mut status = ln_status | div_status | round_status;
+    // A finite normal result for x outside the exact set is an
+    // irrational log10 rounded onto the grid ⟹ INEXACT, even where the
+    // composition lands exactly on an integer (pf-njs5 over-report).
+    // Non-finite or domain results keep their status: ±∞ from x = ±0
+    // (DIV_BY_ZERO) or x = +∞, qNaN from x < 0 (INVALID); +0 arises
+    // only from x = 1, which is dispatched above.
+    if matches!(rounded.class, Class::Normal { .. }) {
+        status |= Status::INEXACT;
+    }
+    auto_raise(status);
+    (rounded, status)
+}
+
+/// If `x` is exactly `10^k` for some integer `k ≥ 0`, returns
+/// `Some(k)`, else `None`. Powers of ten are the complete exact-input
+/// set of `log10` over the dyadic rationals (it includes x = 1 → 0).
+///
+/// Any representable `10^k` has `sig-bits(10^k) ≈ 2.32·k ≤
+/// x.precision`, hence `k < x.precision` and binary exponent
+/// `e = ⌊k·log2 10⌋ < 4·x.precision`. The detector inverts `e` to a
+/// small candidate `k ≈ e·log10 2`, then confirms by exact
+/// comparison — the comparison, not the estimate, carries
+/// correctness, so a coarse estimate can only miss a true power of
+/// ten (leaving an over-report), never clear the flag wrongly.
+fn power_of_ten_exponent(x: &BigFloat) -> Option<i64> {
+    let e = match x.parts() {
+        Parts::Normal {
+            sign: Sign::Positive,
+            exponent,
+            ..
+        } => exponent,
+        _ => return None,
+    };
+    // x < 1 ⟹ a power of ten would need k < 0 (non-dyadic); a binary
+    // exponent past 4·precision implies k ≥ precision, so 10^k cannot
+    // be representable at x.precision. Either way x ≠ 10^k.
+    if e < 0 || e >= 4 * i64::from(x.precision) {
+        return None;
+    }
+    // k ≈ e / log2(10) = e · log10(2) ≈ e · 0.30103. Over the
+    // supported precision range (e ≤ ~4·4096) the rational estimate
+    // lands within ±1 of the true k; the ±2 window plus the exact
+    // comparison absorbs the slack (floor bias undershoots).
+    let k_est = (i128::from(e) * 30103 / 100_000) as i64;
+    for cand in [k_est - 1, k_est, k_est + 1, k_est + 2] {
+        if cand < 0 {
+            continue;
+        }
+        if let Some(p10) = super::pow::ten_pow_if_fits(cand as u64, x.precision) {
+            if matches!(x.partial_cmp(&p10).0, Some(Ordering::Equal)) {
+                return Some(cand);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

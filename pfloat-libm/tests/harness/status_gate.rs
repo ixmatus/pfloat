@@ -3,12 +3,20 @@
 //! VALUE bit-exactness is always the hard gate (see `verify`). On the
 //! IEEE status flags this module decides the policy. Under the default
 //! [`StatusGate::ValueAndDomainHard`], `INVALID` and `DIV_BY_ZERO` are
-//! also hard, checked against an independent expectation; `INEXACT`,
-//! `OVERFLOW`, and `UNDERFLOW` are not gated, because the directed-pair
-//! shell conservatively over-reports `INEXACT` on composed-exact
-//! results (`log10(1000)=3`, `exp10(2)=100`, `exp2(10)=1024`; pf-njs5).
+//! hard, checked against an independent expectation, and `INEXACT` is
+//! hard for the exp/log family and sin/cos (pf-njs5, ADR-0060), checked
+//! against an expectation derived from the oracle enclosure rather than
+//! the shell. `OVERFLOW` and `UNDERFLOW` remain ungated.
 //!
-//! The two gated expectations are derived independently of the shell:
+//! pfloat's `INEXACT` over-reported on composed-exact results
+//! (`log10(1000)=3`, `exp10(2)=100`, `exp2(10)=1024`) and under-reported
+//! on sub-working-precision residuals (`exp(2^-1074)=1.0`); ADR-0060
+//! closes both for the gated functions via a pre-Ziv exact-input
+//! dispatch plus a transcendental force, so the flag is now reliable
+//! enough to gate. The function set ([`inexact_is_gated`]) is exactly
+//! the kernels fixed there; the rest stay ungated pending pf-uqd1.
+//!
+//! The gated expectations are derived independently of the shell:
 //!
 //! - `INVALID` comes straight from the oracle enclosure: a finite or
 //!   infinite (non-NaN) input whose true value is NaN is a domain error
@@ -68,10 +76,38 @@ pub fn expected_div_by_zero(f: LibmFnId, value: f64) -> bool {
     }
 }
 
+/// Whether `INEXACT` is hard-gated for `f`. The set is exactly the
+/// kernels whose exact-output set over the dyadic inputs is fully
+/// characterized and whose flag was corrected under pf-njs5 / ADR-0060:
+/// the exp/log family and sin/cos. Every other function stays ungated
+/// until pf-uqd1 extends the force-INEXACT rule across the trig /
+/// hyperbolic / special surface.
+///
+/// The expectation itself is `INEXACT` ⇔ the true result is not exactly
+/// representable in the hardware type, witnessed by the oracle
+/// enclosure (not the shell). That test is width-generic, so it lives
+/// at the `verify` call site where the `Hw` width and oracle precision
+/// are in scope; this predicate is the policy half.
+pub fn inexact_is_gated(f: LibmFnId) -> bool {
+    matches!(
+        f,
+        LibmFnId::Exp
+            | LibmFnId::Exp2
+            | LibmFnId::Exp10
+            | LibmFnId::Ln
+            | LibmFnId::Log2
+            | LibmFnId::Log10
+            | LibmFnId::Sin
+            | LibmFnId::Cos
+    )
+}
+
 /// Check the gated flags. Returns the first disagreement as
 /// `(flag, expected, got)`, or `None` when the gated flags agree (or
 /// the gate is [`StatusGate::ValueOnly`]). Only called after VALUE has
-/// matched.
+/// matched. `INEXACT` is gated separately at the `verify` call site
+/// (see [`inexact_is_gated`]); it needs the hardware width and oracle
+/// precision this function does not carry.
 pub fn check_flags(
     gate: StatusGate,
     f: LibmFnId,
