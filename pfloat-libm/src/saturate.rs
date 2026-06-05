@@ -16,9 +16,10 @@
 //! reproduce exactly what the shell already returns for these inputs:
 //! `over_pos`/`over_neg`/`under_pos` mirror pfloat's conversion
 //! (`src/convert.rs` `overflow` / `tiny`), and `pos_one`/`neg_one` mirror
-//! the kernel's exact `±1` saturation (past the threshold the residual has
-//! fallen below the kernel's working precision, so it evaluates `tanh` /
-//! `expm1` to exactly `±1` with no flag). The fast-path is therefore a
+//! the kernel's `±1` saturation (past the threshold the residual has
+//! fallen below the kernel's working precision, so it rounds `tanh` /
+//! `expm1` to `±1`, with `INEXACT` because the true value is strictly
+//! inside the saturation limit; ADR-0063). The fast-path is therefore a
 //! transparent, behavior-preserving speedup: bit-for-bit identical to the
 //! kernel path for every input it handles. That identity is the
 //! load-bearing claim and is checked against the kernel in the crate tests.
@@ -62,16 +63,16 @@ pub(crate) trait SatHw: Copy {
     /// `+0` (NE/NA/TZ/TN) or the smallest positive subnormal (TP),
     /// `UNDERFLOW | INEXACT`.
     fn under_pos(mode: RoundingMode) -> (Self, Status);
-    /// Exactly `+1`, `Status::OK`, for every mode. Past the threshold the
-    /// kernel evaluates `tanh` to exactly `1` (its residual `2·e^{-2x}`
-    /// has fallen below the kernel's working precision) and the directed
-    /// pair both land there, so the shell commits `1` with no flag; the
-    /// fast-path reproduces that. (Whether that is the ideal directed
-    /// rounding is a separate kernel-precision question, pf-njs5; the
-    /// fast-path preserves the shell's behavior rather than changing it.)
+    /// Exactly `+1` with `INEXACT`, for every mode. Past the threshold the
+    /// kernel rounds `tanh` to `1` (its residual `2·e^{-2x}` has fallen
+    /// below the working precision), but the true value is strictly inside
+    /// `(−1, 1)`, so the result is inexact (ADR-0063, resolving the
+    /// pf-njs5 question the fast-path previously deferred). The kernel now
+    /// forces `INEXACT` there, and the fast-path reproduces it.
     fn pos_one() -> (Self, Status);
-    /// Exactly `-1`, `Status::OK`, for every mode (the negative-saturation
-    /// analogue of [`SatHw::pos_one`], shared by `tanh` and `expm1`).
+    /// Exactly `-1` with `INEXACT`, for every mode (the negative-saturation
+    /// analogue of [`SatHw::pos_one`], shared by `tanh` and `expm1`; the
+    /// true value is strictly above `-1`).
     fn neg_one() -> (Self, Status);
 }
 
@@ -120,11 +121,11 @@ macro_rules! impl_sat_hw {
             }
             #[inline]
             fn pos_one() -> ($hw, Status) {
-                (1.0, Status::OK)
+                (1.0, Status::INEXACT)
             }
             #[inline]
             fn neg_one() -> ($hw, Status) {
-                (-1.0, Status::OK)
+                (-1.0, Status::INEXACT)
             }
         }
     };

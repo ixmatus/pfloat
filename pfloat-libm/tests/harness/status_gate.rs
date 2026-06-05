@@ -76,12 +76,13 @@ pub fn expected_div_by_zero(f: LibmFnId, value: f64) -> bool {
     }
 }
 
-/// Whether `INEXACT` is hard-gated for `f`. The set is exactly the
-/// kernels whose exact-output set over the dyadic inputs is fully
-/// characterized and whose flag was corrected under pf-njs5 / ADR-0060:
-/// the exp/log family and sin/cos. Every other function stays ungated
-/// until pf-uqd1 extends the force-INEXACT rule across the trig /
-/// hyperbolic / special surface.
+/// Whether `INEXACT` is hard-gated for `f`. The set is the kernels whose
+/// exact-output set over the dyadic inputs is fully characterized and
+/// whose flag was corrected under ADR-0060 (the exp/log family and
+/// sin/cos) and ADR-0063 (the rest of the elementary transcendental
+/// surface: the remaining trig, the reciprocal trig, inverse trig,
+/// hyperbolic, inverse hyperbolic, and expm1/log1p). Algebraic kernels
+/// (sqrt/cbrt/hypot/rootn) are not transcendental and stay ungated.
 ///
 /// The expectation itself is `INEXACT` ⇔ the true result is not exactly
 /// representable in the hardware type, witnessed by the oracle
@@ -91,6 +92,7 @@ pub fn expected_div_by_zero(f: LibmFnId, value: f64) -> bool {
 pub fn inexact_is_gated(f: LibmFnId) -> bool {
     matches!(
         f,
+        // exp/log family + sin/cos (ADR-0060).
         LibmFnId::Exp
             | LibmFnId::Exp2
             | LibmFnId::Exp10
@@ -99,6 +101,22 @@ pub fn inexact_is_gated(f: LibmFnId) -> bool {
             | LibmFnId::Log10
             | LibmFnId::Sin
             | LibmFnId::Cos
+            // The rest of the elementary transcendentals (ADR-0063).
+            | LibmFnId::Tan
+            | LibmFnId::Cot
+            | LibmFnId::Sec
+            | LibmFnId::Csc
+            | LibmFnId::Asin
+            | LibmFnId::Acos
+            | LibmFnId::Atan
+            | LibmFnId::Sinh
+            | LibmFnId::Cosh
+            | LibmFnId::Tanh
+            | LibmFnId::Asinh
+            | LibmFnId::Acosh
+            | LibmFnId::Atanh
+            | LibmFnId::Expm1
+            | LibmFnId::Log1p
     )
 }
 

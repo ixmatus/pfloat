@@ -122,6 +122,15 @@ fn cosh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         mode,
         COSH_ERROR_GUARD,
     );
+    // cosh(x) for finite normal x ≠ 0 is transcendental (Lindemann–
+    // Weierstrass), hence irrational, hence INEXACT even where it rounds
+    // onto a grid value (pf-uqd1, ADR-0063). cosh(±0) = 1 is the only
+    // exact input and is dispatched above.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

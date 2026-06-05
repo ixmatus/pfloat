@@ -145,12 +145,24 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 
     let sign = x.sign();
     let abs_x = x.abs();
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| tanh_at_w(&abs_x, sign, working_prec),
         target_precision,
         mode,
         TANH_ERROR_GUARD,
-    )
+    );
+    // tanh(x) for finite normal x ≠ 0 is transcendental (Lindemann–
+    // Weierstrass), hence irrational, hence INEXACT even where it rounds
+    // onto a grid value (pf-uqd1, ADR-0063). tanh(±0) = ±0 and tanh(±∞) =
+    // ±1 are dispatched above; the tiny-x fast path sets INEXACT via
+    // round_with_infinitesimal.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
+    auto_raise(status);
+    (result, status)
 }
 
 /// Evaluate `tanh(x)` at the supplied working precision via the

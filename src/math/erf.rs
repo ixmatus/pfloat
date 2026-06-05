@@ -131,7 +131,7 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     };
     let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| {
             let v = erf_at_w(&abs_x, working_prec, use_asymptotic);
             if matches!(sign, Sign::Negative) {
@@ -143,7 +143,18 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         target_precision,
         mode,
         ERF_ERROR_GUARD,
-    )
+    );
+    // erf(x) for finite normal x ≠ 0 is transcendental (erf of a nonzero
+    // algebraic is transcendental), hence irrational, hence INEXACT even
+    // where it rounds onto a grid value (pf-uqd1, ADR-0063). erf(±0) = ±0
+    // and erf(±∞) = ±1 are dispatched above.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
+    auto_raise(status);
+    (result, status)
 }
 
 /// Evaluate `erf(|x|)` at the supplied working precision. The regime

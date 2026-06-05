@@ -167,6 +167,16 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         mode,
         ASIN_ERROR_GUARD,
     );
+    // asin(x) for finite normal x with 0 < |x| < 1 is transcendental
+    // (Lindemann–Weierstrass), hence irrational, hence INEXACT even where
+    // it rounds onto a grid value (pf-uqd1, ADR-0063). asin(±0) = ±0 is
+    // dispatched above; asin(±1) = ±π/2 already carries INEXACT from
+    // pi_over_2_at_round (the irrational constant rounds inexactly).
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

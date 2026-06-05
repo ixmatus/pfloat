@@ -200,6 +200,16 @@ fn reciprocal_via_ziv(
         auto_raise(Status::INVALID);
         return (result, merged);
     }
+    // cot/sec/csc of a finite normal x are transcendental (Lindemann–
+    // Weierstrass), hence irrational, hence INEXACT even where the result
+    // rounds onto a grid value (pf-uqd1, ADR-0063). The only exact input,
+    // sec(±0) = 1, and the cot/csc poles at 0 are dispatched in the
+    // kernels above before this helper runs.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
