@@ -27,7 +27,7 @@
 #![cfg(all(feature = "big", feature = "exp-log", feature = "trig"))]
 
 use core::cmp::Ordering;
-use pfloat::{BigFloat, RoundingMode};
+use pfloat::{BigFloat, RoundingMode, Sign};
 
 const MODES: [RoundingMode; 5] = [
     RoundingMode::NearestEven,
@@ -272,5 +272,146 @@ fn ordinary_transcendentals_are_inexact_every_mode() {
             five_halves.exp10_round(53, m).expect("p>=1").1.inexact(),
             "exp10(2.5) inexact (mode {m:?})"
         );
+    }
+}
+
+// ---------------------------------------------------------------------
+// pf-uqd1 (ADR-0063): the rest of the transcendental surface — trig,
+// inverse trig, hyperbolic, inverse hyperbolic, expm1/log1p, erf/erfc.
+// ---------------------------------------------------------------------
+
+fn inf(sign: Sign, p: u32) -> BigFloat {
+    BigFloat::try_new_infinity(sign, p).expect("precision >= 1")
+}
+
+#[test]
+fn acos_acosh_of_one_are_exact_zero_every_mode() {
+    // Normal inputs with an exactly representable result: acos(1) = 0,
+    // acosh(1) = 0. INEXACT must be clear.
+    let one = from_i(1, 53);
+    let zero = from_i(0, 53);
+    for m in MODES {
+        let (va, sa) = one.acos(m);
+        assert!(
+            !sa.inexact(),
+            "acos(1) = 0 exact; INEXACT clear (mode {m:?})"
+        );
+        assert!(eq(&va, &zero), "acos(1) value (mode {m:?})");
+        let (vc, sc) = one.acosh(m);
+        assert!(
+            !sc.inexact(),
+            "acosh(1) = 0 exact; INEXACT clear (mode {m:?})"
+        );
+        assert!(eq(&vc, &zero), "acosh(1) value (mode {m:?})");
+    }
+}
+
+#[test]
+fn exact_special_and_limit_values_clear_inexact_every_mode() {
+    // Exact results at special-class inputs and exact non-finite limits.
+    let z = from_i(0, 53);
+    let one = from_i(1, 53);
+    let neg_one = from_i(-1, 53);
+    let pos_inf = inf(Sign::Positive, 53);
+    let neg_inf = inf(Sign::Negative, 53);
+    for m in MODES {
+        // cosh(0) = 1, sec(0) = 1, tanh(0) = 0: rational, exact.
+        assert!(!z.cosh(m).1.inexact(), "cosh(0) = 1 clear (mode {m:?})");
+        assert!(!z.sec(m).1.inexact(), "sec(0) = 1 clear (mode {m:?})");
+        assert!(!z.tanh(m).1.inexact(), "tanh(0) = 0 clear (mode {m:?})");
+        // Exact non-finite limits: tanh(∞) = 1, expm1(−∞) = −1.
+        let (vt, st) = pos_inf.tanh(m);
+        assert!(
+            !st.inexact() && eq(&vt, &one),
+            "tanh(∞) = 1 clear (mode {m:?})"
+        );
+        let (ve, se) = neg_inf.expm1(m);
+        assert!(
+            !se.inexact() && eq(&ve, &neg_one),
+            "expm1(−∞) = −1 clear (mode {m:?})"
+        );
+    }
+}
+
+#[test]
+fn trig_hyperbolic_transcendentals_are_inexact_every_mode() {
+    // A representable, non-special input on each kernel; the result is
+    // irrational (Lindemann–Weierstrass) and must report INEXACT.
+    let half = two_pow_neg(1, 53); // 0.5
+    let one = from_i(1, 53);
+    let two = from_i(2, 53);
+    for m in MODES {
+        // trig + reciprocal trig
+        assert!(one.tan(m).1.inexact(), "tan(1) (mode {m:?})");
+        assert!(one.cot(m).1.inexact(), "cot(1) (mode {m:?})");
+        assert!(one.sec(m).1.inexact(), "sec(1) (mode {m:?})");
+        assert!(one.csc(m).1.inexact(), "csc(1) (mode {m:?})");
+        // inverse trig
+        assert!(half.asin(m).1.inexact(), "asin(0.5) (mode {m:?})");
+        assert!(half.acos(m).1.inexact(), "acos(0.5) (mode {m:?})");
+        assert!(one.atan(m).1.inexact(), "atan(1) (mode {m:?})");
+        assert!(one.atan2(&two, m).1.inexact(), "atan2(1,2) (mode {m:?})");
+        // hyperbolic + inverse hyperbolic
+        assert!(one.sinh(m).1.inexact(), "sinh(1) (mode {m:?})");
+        assert!(one.cosh(m).1.inexact(), "cosh(1) (mode {m:?})");
+        assert!(one.tanh(m).1.inexact(), "tanh(1) (mode {m:?})");
+        assert!(one.asinh(m).1.inexact(), "asinh(1) (mode {m:?})");
+        assert!(two.acosh(m).1.inexact(), "acosh(2) (mode {m:?})");
+        assert!(half.atanh(m).1.inexact(), "atanh(0.5) (mode {m:?})");
+        // expm1 / log1p
+        assert!(one.expm1(m).1.inexact(), "expm1(1) (mode {m:?})");
+        assert!(one.log1p(m).1.inexact(), "log1p(1) (mode {m:?})");
+    }
+}
+
+#[test]
+fn irrational_constant_results_are_inexact_every_mode() {
+    // asin(1) = π/2, acos(0) = π/2, atan2(1, +0) = π/2 — the result is an
+    // irrational constant, so INEXACT must be set even though it is
+    // returned via a special-case dispatch.
+    let one = from_i(1, 53);
+    let zero = from_i(0, 53);
+    for m in MODES {
+        assert!(
+            one.asin(m).1.inexact(),
+            "asin(1) = π/2 inexact (mode {m:?})"
+        );
+        assert!(
+            zero.acos(m).1.inexact(),
+            "acos(0) = π/2 inexact (mode {m:?})"
+        );
+        assert!(
+            one.atan2(&zero, m).1.inexact(),
+            "atan2(1,0) = π/2 inexact (mode {m:?})"
+        );
+    }
+}
+
+#[test]
+fn hyperbolic_collapse_to_grid_is_inexact_every_mode() {
+    // cosh(2^-1074) = 1 + 2^-2149 + … rounds to 1.0 at target 53; the
+    // residual is far below working precision so the kernel collapses to
+    // 1.0, but the true value ≠ 1, so INEXACT must be set (under-report).
+    let tiny = two_pow_neg(1074, 64);
+    for m in MODES {
+        let (v, s) = tiny.cosh(m);
+        assert!(s.inexact(), "cosh(2^-1074) ≠ 1; INEXACT set (mode {m:?})");
+        assert!(v.is_normal(), "cosh(2^-1074) finite normal (mode {m:?})");
+    }
+}
+
+#[cfg(feature = "specials")]
+#[test]
+fn erf_erfc_inexact_fidelity_every_mode() {
+    let one = from_i(1, 53);
+    let z = from_i(0, 53);
+    let pos_inf = inf(Sign::Positive, 53);
+    for m in MODES {
+        // Transcendental at a representable input.
+        assert!(one.erf(m).1.inexact(), "erf(1) inexact (mode {m:?})");
+        assert!(one.erfc(m).1.inexact(), "erfc(1) inexact (mode {m:?})");
+        // Exact: erfc(0) = 1, erf(∞) = 1.
+        assert!(!z.erfc(m).1.inexact(), "erfc(0) = 1 clear (mode {m:?})");
+        assert!(!pos_inf.erf(m).1.inexact(), "erf(∞) = 1 clear (mode {m:?})");
     }
 }

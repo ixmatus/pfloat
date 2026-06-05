@@ -188,6 +188,17 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         mode,
         ACOS_ERROR_GUARD,
     );
+    // acos(x) for finite normal x with |x| < 1, x ≠ 0 is transcendental
+    // (Lindemann–Weierstrass), hence irrational, hence INEXACT even where
+    // it rounds onto a grid value (pf-uqd1, ADR-0063). acos(1) = 0 is the
+    // only exact input and is dispatched above; acos(0) = π/2 and
+    // acos(−1) = π already carry INEXACT from pi_over_2_at_round /
+    // pi_at_round (the irrational constants round inexactly).
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

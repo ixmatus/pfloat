@@ -200,6 +200,17 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         mode,
         LOG1P_ERROR_GUARD,
     );
+    // log1p(x) = ln(1 + x) for finite normal x ≠ 0 is transcendental
+    // (Lindemann–Weierstrass: ln of an algebraic ≠ 1 is transcendental,
+    // and 1 + x ≠ 1 for x ≠ 0), hence irrational, hence INEXACT even
+    // where it rounds onto a grid value (pf-uqd1, ADR-0063). log1p(±0) =
+    // ±0 is dispatched above, the pole at −1 too; the tiny-x fast path
+    // sets INEXACT via round_with_infinitesimal.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

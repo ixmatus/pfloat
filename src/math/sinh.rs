@@ -140,6 +140,15 @@ fn sinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         mode,
         SINH_ERROR_GUARD,
     );
+    // sinh(x) for finite normal x ≠ 0 is transcendental (Lindemann–
+    // Weierstrass), hence irrational, hence INEXACT even where it rounds
+    // onto a grid value (pf-uqd1, ADR-0063). sinh(±0) = ±0 is dispatched
+    // above; the tiny-x fast path sets INEXACT via round_with_infinitesimal.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
