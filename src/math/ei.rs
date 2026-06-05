@@ -147,6 +147,19 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         mode,
         EI_ERROR_GUARD,
     );
+    // Ei(x) for finite-normal x ≠ 0 is transcendental (the exponential
+    // integral takes transcendental values at nonzero algebraic
+    // arguments), so the rounded result is INEXACT even where the
+    // working-precision evaluation lands on a grid value (ADR-0064).
+    // Ei's real zero at x ≈ 0.3725 is itself transcendental, so no
+    // dyadic input yields an exact zero. Ei(±0) = −∞ (pole) and the
+    // exact limits Ei(+∞) = +∞, Ei(−∞) = −0 are dispatched above and
+    // are not Class::Normal, so they keep their status.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

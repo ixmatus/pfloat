@@ -415,3 +415,103 @@ fn erf_erfc_inexact_fidelity_every_mode() {
         assert!(!pos_inf.erf(m).1.inexact(), "erf(∞) = 1 clear (mode {m:?})");
     }
 }
+
+// ---------------------------------------------------------------------
+// pf-cjnk (ADR-0064): the proven-transcendence special functions —
+// integrals (this slice), Bessel, Airy. The integrals Si/Ci/Ei/li take
+// transcendental values at nonzero algebraic arguments (no named open
+// problem blocks this), so a finite-normal result is INEXACT even where
+// the working-precision evaluation collapses onto a grid value. The
+// exact-output inputs (Si(±0)=±0, li(0)=0) clear it; poles and exact
+// non-finite limits keep their status.
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "integrals")]
+#[test]
+fn integrals_transcendental_are_inexact_every_mode() {
+    let one = from_i(1, 53);
+    let two = from_i(2, 53);
+    // Under-report demonstrator: Si(x) = x − x³/18 + … collapses onto
+    // 2⁻¹⁰⁰ at target 53 (the cubic term sits ~200 bits below the working
+    // precision), yet the true value is irrational, so INEXACT must be set.
+    let tiny = two_pow_neg(100, 64);
+    for m in MODES {
+        assert!(
+            one.si_round(53, m).expect("p>=1").1.inexact(),
+            "Si(1) inexact (mode {m:?})"
+        );
+        assert!(
+            one.ci_round(53, m).expect("p>=1").1.inexact(),
+            "Ci(1) inexact (mode {m:?})"
+        );
+        assert!(
+            one.ei_round(53, m).expect("p>=1").1.inexact(),
+            "Ei(1) inexact (mode {m:?})"
+        );
+        assert!(
+            two.li_round(53, m).expect("p>=1").1.inexact(),
+            "li(2) inexact (mode {m:?})"
+        );
+        let (v, s) = tiny.si_round(53, m).expect("p>=1");
+        assert!(
+            s.inexact(),
+            "Si(2⁻¹⁰⁰) collapses to grid; INEXACT must be set (mode {m:?})"
+        );
+        assert!(v.is_normal(), "Si(2⁻¹⁰⁰) finite normal (mode {m:?})");
+    }
+}
+
+#[cfg(feature = "integrals")]
+#[test]
+fn integrals_exact_outputs_clear_inexact_every_mode() {
+    // Si(±0) = ±0 and li(0) = 0 are exact, dispatched to OK before Ziv.
+    let zero = from_i(0, 53);
+    for m in MODES {
+        let (vs, ss) = zero.si_round(53, m).expect("p>=1");
+        assert!(!ss.inexact(), "Si(0) = 0 clear (mode {m:?})");
+        assert!(eq(&vs, &zero), "Si(0) value (mode {m:?})");
+        let (vl, sl) = zero.li_round(53, m).expect("p>=1");
+        assert!(!sl.inexact(), "li(0) = 0 clear (mode {m:?})");
+        assert!(eq(&vl, &zero), "li(0) value (mode {m:?})");
+    }
+}
+
+#[cfg(feature = "integrals")]
+#[test]
+fn integrals_poles_and_limits_keep_status_every_mode() {
+    // The force on the Normal fall-through must not touch non-finite
+    // results: poles keep DIV_BY_ZERO with no spurious INEXACT, and exact
+    // limits keep OK.
+    let zero = from_i(0, 53);
+    let one = from_i(1, 53);
+    let pos_inf = inf(Sign::Positive, 53);
+    let neg_inf = inf(Sign::Negative, 53);
+    for m in MODES {
+        // Ci(+0) = −∞, Ei(±0) = −∞, li(1) = −∞ are simple poles.
+        let (vc, sc) = zero.ci_round(53, m).expect("p>=1");
+        assert!(
+            sc.div_by_zero() && !sc.inexact(),
+            "Ci(0) pole status (mode {m:?})"
+        );
+        assert!(eq(&vc, &neg_inf), "Ci(0) = −∞ (mode {m:?})");
+        let (ve, se) = zero.ei_round(53, m).expect("p>=1");
+        assert!(
+            se.div_by_zero() && !se.inexact(),
+            "Ei(0) pole status (mode {m:?})"
+        );
+        assert!(eq(&ve, &neg_inf), "Ei(0) = −∞ (mode {m:?})");
+        let (vl, sl) = one.li_round(53, m).expect("p>=1");
+        assert!(
+            sl.div_by_zero() && !sl.inexact(),
+            "li(1) pole status (mode {m:?})"
+        );
+        assert!(eq(&vl, &neg_inf), "li(1) = −∞ (mode {m:?})");
+        // Exact non-finite limit Ei(+∞) = +∞ keeps OK.
+        let (vei, sei) = pos_inf.ei_round(53, m).expect("p>=1");
+        assert!(
+            !sei.inexact() && sei.is_ok(),
+            "Ei(∞) = ∞ clear (mode {m:?})"
+        );
+        assert!(eq(&vei, &pos_inf), "Ei(∞) = +∞ (mode {m:?})");
+    }
+}

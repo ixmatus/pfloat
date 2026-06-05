@@ -151,6 +151,19 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         mode,
         SI_ERROR_GUARD,
     );
+    // Si(x) for finite-normal x ≠ 0 is transcendental (the sine
+    // integral takes transcendental values at nonzero algebraic
+    // arguments), so the rounded result is INEXACT even where the
+    // working-precision evaluation collapses onto a grid value — e.g.
+    // Si(2⁻ᵏ) → 2⁻ᵏ when the −x³/18 term falls below the working
+    // precision, yet the true value differs (pf-njs5 under-report,
+    // ADR-0064). Si(±0) = ±0 and the exact limits Si(±∞) = ±π/2 are
+    // dispatched above; only finite-normal x ≠ 0 reaches here.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

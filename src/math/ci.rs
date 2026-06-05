@@ -161,6 +161,19 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         mode,
         CI_ERROR_GUARD,
     );
+    // Ci(x) for finite-normal x > 0 is transcendental (the cosine
+    // integral takes transcendental values at nonzero algebraic
+    // arguments), so the rounded result is INEXACT even where the
+    // working-precision evaluation lands on a grid value (ADR-0064).
+    // Ci's real zero at x ≈ 0.6165 is itself transcendental, so no
+    // dyadic input yields an exact zero. Ci(+0) = −∞ (pole), the
+    // exact limit Ci(+∞) = +0, and x < 0 (INVALID) are dispatched
+    // above and are not Class::Normal, so they keep their status.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
