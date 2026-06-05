@@ -254,6 +254,19 @@ fn bessel_i_kernel(
                 mode,
                 BESSEL_I_ERROR_GUARD,
             );
+            // Iₙ(x) for finite-normal x ≠ 0 is transcendental (Siegel:
+            // the modified Bessel functions of the first kind are
+            // E-functions, so Iₙ(α) is transcendental for nonzero
+            // algebraic α), so a finite-normal result is INEXACT even
+            // where the working-precision evaluation lands on a grid
+            // value (ADR-0064). I₀(0)=1, Iₙ(0)=0 (n ≠ 0), and the ±∞
+            // limits are dispatched above; only finite-normal x ≠ 0
+            // reaches here.
+            let status = if matches!(result.class, Class::Normal { .. }) {
+                status | Status::INEXACT
+            } else {
+                status
+            };
             auto_raise(status);
             (result, status)
         }
