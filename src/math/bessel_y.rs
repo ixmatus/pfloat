@@ -273,6 +273,20 @@ fn bessel_y_kernel(
                 mode,
                 BESSEL_Y_ERROR_GUARD,
             );
+            // Yₙ(x) for finite-normal x > 0 is transcendental at nonzero
+            // algebraic argument (ADR-0064; Y is a second-kind solution
+            // with a logarithmic term at the origin, so the guarantee
+            // comes from the transcendence theory of the Bessel
+            // differential system rather than the E-function theorem, and
+            // no named open problem obstructs it). A finite-normal result
+            // is therefore INEXACT even where the working-precision
+            // evaluation lands on a grid value. The +0 pole and the ±∞
+            // limits are dispatched above.
+            let status = if matches!(result.class, Class::Normal { .. }) {
+                status | Status::INEXACT
+            } else {
+                status
+            };
             auto_raise(status);
             (result, status)
         }

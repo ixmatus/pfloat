@@ -515,3 +515,98 @@ fn integrals_poles_and_limits_keep_status_every_mode() {
         assert!(eq(&vei, &pos_inf), "Ei(∞) = +∞ (mode {m:?})");
     }
 }
+
+// ---------------------------------------------------------------------
+// pf-cjnk (ADR-0064): Bessel J/Y/I/K. J and I (integer order) are Siegel
+// E-functions, so their values are transcendental at nonzero algebraic
+// arguments; Y and K (second-kind, log term at the origin) are
+// transcendental there by the Bessel differential system. So a
+// finite-normal result reports INEXACT. The exact outputs J₀(0)=1,
+// Jₙ(0)=0, I₀(0)=1, Iₙ(0)=0 clear it; the Y/K poles at +0 and the ±∞
+// envelope limits keep their status.
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "bessel")]
+#[test]
+fn bessel_transcendental_are_inexact_every_mode() {
+    let one = from_i(1, 53);
+    let two = from_i(2, 53);
+    for m in MODES {
+        assert!(one.j0(m).1.inexact(), "J0(1) inexact (mode {m:?})");
+        assert!(one.j1(m).1.inexact(), "J1(1) inexact (mode {m:?})");
+        assert!(two.jn(2, m).1.inexact(), "J2(2) inexact (mode {m:?})");
+        assert!(one.y0(m).1.inexact(), "Y0(1) inexact (mode {m:?})");
+        assert!(two.yn(2, m).1.inexact(), "Y2(2) inexact (mode {m:?})");
+        assert!(one.i0(m).1.inexact(), "I0(1) inexact (mode {m:?})");
+        assert!(two.in_(2, m).1.inexact(), "I2(2) inexact (mode {m:?})");
+        assert!(one.k0(m).1.inexact(), "K0(1) inexact (mode {m:?})");
+        assert!(two.kn(2, m).1.inexact(), "K2(2) inexact (mode {m:?})");
+    }
+}
+
+#[cfg(feature = "bessel")]
+#[test]
+fn bessel_exact_outputs_clear_inexact_every_mode() {
+    // J₀(0)=1, I₀(0)=1, Jₙ(0)=0, Iₙ(0)=0 (n ≠ 0) are exact, dispatched to
+    // OK on the zero-input arm before the Ziv loop.
+    let zero = from_i(0, 53);
+    let one = from_i(1, 53);
+    for m in MODES {
+        let (vj0, sj0) = zero.j0(m);
+        assert!(
+            !sj0.inexact() && eq(&vj0, &one),
+            "J0(0) = 1 clear (mode {m:?})"
+        );
+        let (vi0, si0) = zero.i0(m);
+        assert!(
+            !si0.inexact() && eq(&vi0, &one),
+            "I0(0) = 1 clear (mode {m:?})"
+        );
+        let (vj2, sj2) = zero.jn(2, m);
+        assert!(
+            !sj2.inexact() && eq(&vj2, &zero),
+            "J2(0) = 0 clear (mode {m:?})"
+        );
+        let (vi2, si2) = zero.in_(2, m);
+        assert!(
+            !si2.inexact() && eq(&vi2, &zero),
+            "I2(0) = 0 clear (mode {m:?})"
+        );
+    }
+}
+
+#[cfg(feature = "bessel")]
+#[test]
+fn bessel_poles_and_limits_keep_status_every_mode() {
+    // The force must not touch non-finite results: the Y/K poles at +0
+    // keep DIV_BY_ZERO with no spurious INEXACT, and the exact J/I limits
+    // at +∞ keep OK.
+    let zero = from_i(0, 53);
+    let pos_inf = inf(Sign::Positive, 53);
+    let neg_inf = inf(Sign::Negative, 53);
+    for m in MODES {
+        let (vy0, sy0) = zero.y0(m);
+        assert!(
+            sy0.div_by_zero() && !sy0.inexact(),
+            "Y0(+0) pole status (mode {m:?})"
+        );
+        assert!(eq(&vy0, &neg_inf), "Y0(+0) = −∞ (mode {m:?})");
+        let (vk0, sk0) = zero.k0(m);
+        assert!(
+            sk0.div_by_zero() && !sk0.inexact(),
+            "K0(+0) pole status (mode {m:?})"
+        );
+        assert!(eq(&vk0, &pos_inf), "K0(+0) = +∞ (mode {m:?})");
+        // Exact envelope limits J₀(+∞) = +0, I₀(+∞) = +∞ keep OK.
+        let (vj, sj) = pos_inf.j0(m);
+        assert!(
+            !sj.inexact() && sj.is_ok() && eq(&vj, &zero),
+            "J0(+∞) = +0 clear (mode {m:?})"
+        );
+        let (vi, si) = pos_inf.i0(m);
+        assert!(
+            !si.inexact() && si.is_ok() && eq(&vi, &pos_inf),
+            "I0(+∞) = +∞ clear (mode {m:?})"
+        );
+    }
+}

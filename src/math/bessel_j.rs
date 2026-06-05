@@ -208,7 +208,7 @@ fn bessel_j_kernel(
     let negate = (m % 2 == 1) && ((n < 0) ^ x.is_sign_negative());
     let ax = x.abs();
 
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| {
             let v = bessel_j_eval_normal(m, &ax, working_prec);
             if negate {
@@ -220,7 +220,21 @@ fn bessel_j_kernel(
         target_precision,
         mode,
         BESSEL_J_ERROR_GUARD,
-    )
+    );
+    // Jₙ(x) for finite-normal x ≠ 0 is transcendental (Siegel: the Bessel
+    // functions of the first kind are E-functions, so Jₙ(α) is
+    // transcendental for nonzero algebraic α), so a finite-normal result
+    // is INEXACT even where the working-precision evaluation lands on a
+    // grid value (ADR-0064). J₀(0)=1, Jₙ(0)=0 (n ≠ 0), and the ±∞
+    // envelope limits are dispatched above; only finite-normal x ≠ 0
+    // reaches here.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
+    auto_raise(status);
+    (result, status)
 }
 
 /// Binary exponent of `v`, or `i64::MIN`/`i64::MAX` for zero /
