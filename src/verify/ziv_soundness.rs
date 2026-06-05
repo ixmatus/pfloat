@@ -58,13 +58,20 @@
 //! pf-tqzz sweep cross-check that actively guards the kernel-side
 //! error bound at every f32 input.
 //!
-//! A future slice that resolves the CBMC-on-Vec limitation (whether
-//! via a `BoundedBigFloat<80>` fixed-array encoding the audit doc
-//! sketches, or an alternative verification backend) would lift the
-//! discharge to true universal quantification over the mantissa
-//! domain. The scaffolding here records the operand-bounding choice
-//! at the source level so the future widening is structurally
-//! obvious rather than archaeological.
+//! Lifting the discharge to true universal quantification over the
+//! mantissa domain was investigated in pf-25zw (ADR-0062). The
+//! `BoundedBigFloat<80>` fixed-array *operand* encoding is necessary
+//! but not sufficient: the harness still evaluates the theorem through
+//! the real `Vec`-backed `add` / `sub` / `round_to_precision` /
+//! `partial_cmp`, and CBMC's model of pfloat's `Vec` storage is hostile
+//! at the allocation level (it spuriously fails even a copy-and-compare
+//! round-trip), not merely in the arithmetic loops. So a fixed-array
+//! shim into the real ops cannot discharge; the genuine path is a
+//! fully `Vec`-free re-implementation of the four operations on
+//! `[u64; N]`, verified for fidelity against the real ops, which
+//! ADR-0062 scopes as the open follow-up. Until then this
+//! eight-constant discharge plus the pf-tqzz sweep cross-check stand
+//! in for the universal claim, as ADR-0039 records.
 
 use crate::big::BigFloat;
 use crate::rounding::RoundingMode;
