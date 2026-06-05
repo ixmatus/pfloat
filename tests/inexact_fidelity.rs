@@ -610,3 +610,63 @@ fn bessel_poles_and_limits_keep_status_every_mode() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// pf-cjnk (ADR-0064): Airy Ai/Bi/Ai′/Bi′. Every Airy value is
+// transcendental, including at x = 0 (Ai/Bi reduce to ₀F₁, an E-function,
+// at argument x³/9; the x = 0 constants are rational multiples of
+// 1/Γ(1/3), 1/Γ(2/3) with Γ(1/3), Γ(2/3) transcendental — Chudnovsky).
+// There is no exact-output dispatch; every finite-normal result reports
+// INEXACT, while the exact ±∞ limits keep their status.
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "airy")]
+#[test]
+fn airy_transcendental_are_inexact_every_mode() {
+    let zero = from_i(0, 53);
+    let one = from_i(1, 53);
+    let neg_one = from_i(-1, 53);
+    for m in MODES {
+        // x = 0: the boundary constants are transcendental, forced on the
+        // zero-input arm.
+        assert!(zero.ai(m).1.inexact(), "Ai(0) inexact (mode {m:?})");
+        assert!(zero.bi(m).1.inexact(), "Bi(0) inexact (mode {m:?})");
+        assert!(zero.ai_prime(m).1.inexact(), "Ai'(0) inexact (mode {m:?})");
+        assert!(zero.bi_prime(m).1.inexact(), "Bi'(0) inexact (mode {m:?})");
+        // Nonzero algebraic arguments, both signs.
+        assert!(one.ai(m).1.inexact(), "Ai(1) inexact (mode {m:?})");
+        assert!(one.bi(m).1.inexact(), "Bi(1) inexact (mode {m:?})");
+        assert!(neg_one.ai(m).1.inexact(), "Ai(-1) inexact (mode {m:?})");
+        assert!(
+            neg_one.bi_prime(m).1.inexact(),
+            "Bi'(-1) inexact (mode {m:?})"
+        );
+    }
+}
+
+#[cfg(feature = "airy")]
+#[test]
+fn airy_limits_keep_status_every_mode() {
+    // The force must not touch the exact non-finite limits: Ai(±∞) = +0
+    // and Bi(+∞) = +∞ keep OK.
+    let pos_inf = inf(Sign::Positive, 53);
+    let neg_inf = inf(Sign::Negative, 53);
+    let zero = from_i(0, 53);
+    for m in MODES {
+        let (vai, sai) = pos_inf.ai(m);
+        assert!(
+            !sai.inexact() && sai.is_ok() && eq(&vai, &zero),
+            "Ai(+∞) = +0 clear (mode {m:?})"
+        );
+        let (vbi, sbi) = pos_inf.bi(m);
+        assert!(
+            !sbi.inexact() && sbi.is_ok() && eq(&vbi, &pos_inf),
+            "Bi(+∞) = +∞ clear (mode {m:?})"
+        );
+        let (vain, sain) = neg_inf.ai(m);
+        assert!(
+            !sain.inexact() && sain.is_ok() && eq(&vain, &zero),
+            "Ai(−∞) = +0 clear (mode {m:?})"
+        );
+    }
+}

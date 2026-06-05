@@ -229,6 +229,17 @@ fn airy_kernel(
             let (rounded, status) = value
                 .round_to_precision(target_precision, mode)
                 .expect("precision >= 1");
+            // f(±0) is a transcendental constant: Ai(0), Bi(0) are
+            // rational multiples of 1/Γ(2/3) and Ai′(0), Bi′(0) of
+            // 1/Γ(1/3), with Γ(1/3), Γ(2/3) transcendental (Chudnovsky),
+            // so a finite-normal rounded value is INEXACT (ADR-0064). The
+            // round above already sets it for an irrational; the force
+            // makes that structural so it cannot regress.
+            let status = if matches!(rounded.class, Class::Normal { .. }) {
+                status | Status::INEXACT
+            } else {
+                status
+            };
             auto_raise(status);
             return (rounded, status);
         }
@@ -268,6 +279,18 @@ fn airy_kernel(
         mode,
         AIRY_ERROR_GUARD,
     );
+    // Ai/Bi and their derivatives for finite-normal x ≠ 0 are
+    // transcendental: they reduce to ₀F₁ (an E-function) at argument
+    // x³/9, so the value is transcendental at every nonzero algebraic
+    // argument (Siegel-Shidlovsky). A finite-normal result is therefore
+    // INEXACT even where the working-precision evaluation lands on a grid
+    // value (ADR-0064). The x = 0 constants are forced on the zero arm
+    // above; the ±∞ limits are dispatched and are not Class::Normal.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
