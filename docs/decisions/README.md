@@ -113,3 +113,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0061: Toom-Cook 3-way multiplication, the rung above Karatsuba](0061-toom3-multiplication.md) (accepted)
 - [ADR-0062: The BoundedBigFloat Kani discharge of Ziv soundness is blocked at the Vec allocation level, not the arithmetic](0062-bounded-bigfloat-ziv-discharge-investigation.md) (accepted)
 - [ADR-0063: INEXACT flag fidelity across the rest of the elementary transcendental surface](0063-inexact-fidelity-elementary-transcendentals.md) (accepted)
+- [ADR-0064: INEXACT flag fidelity for the proven-transcendence special functions](0064-inexact-fidelity-special-functions-proven.md) (accepted)
