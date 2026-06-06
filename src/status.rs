@@ -29,6 +29,7 @@
 /// under [`merge`](Self::merge): combine two statuses by union of
 /// their flags.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(transparent)]
 pub struct Status(u8);
 

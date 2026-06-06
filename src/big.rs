@@ -45,6 +45,7 @@ pub struct BigFloat {
 /// integer conversion. Later slices extend it with rounding-related
 /// errors as needed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuildError {
     /// `precision` was `0`. Precisions must be at least one bit per
     /// ADR-0002.

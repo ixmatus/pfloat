@@ -26,6 +26,18 @@ members = ["pfloat-libm"]
 default-members = ["."]
 exclude = ["tools/alloc-profile", "fuzz"]
 
+[dependencies]
+# The only optional runtime dependency, gated behind the `serde`
+# feature. `default-features = false` plus the `alloc` feature keeps it
+# no_std-clean (Vec serialization without `std`); `derive` pulls
+# `serde_derive` for the simple-type impls. Absent from the default
+# build, so the zero-runtime-dependency posture holds unless a caller
+# opts in. ADR-0068.
+serde = { version = "1", default-features = false, features = [
+    "derive",
+    "alloc",
+], optional = true }
+
 [features]
 # Defaults match the std + dynamic-precision profile most callers
 # expect from an MPFR replacement. Embedded users opt out via
@@ -127,6 +139,13 @@ bessel = ["specials"]
 # the design and the DLMF provenance. Slice 6r.
 zeta = ["specials"]
 
+# Optional serde Serialize/Deserialize for the public types. Bit-exact
+# round-trip for BigFloat and FixedFloat<PREC> (the hand-written impls
+# validate the canonical form on deserialize, a trust boundary), derive
+# for the simple enums. Off by default so the zero-runtime-dependency
+# posture holds. ADR-0068.
+serde = ["dep:serde"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -181,6 +200,12 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # needed to run under `cargo bench`.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
+# JSON round-trip for the `serde` feature's integration test
+# (`tests/serde_roundtrip.rs`). Dev-only; not in the shipped graph. The
+# serde impls do not branch on `is_human_readable`, so one format's
+# round-trip exercises them fully.
+serde_json = "1"
+
 # `rug` is the safe high-level wrapper over `gmp-mpfr-sys`. Unix-only
 # per ADR-0014; Windows differential coverage is not available
 # because gmp-mpfr-sys does not build on stock Windows toolchains.
@@ -190,6 +215,11 @@ rug = { version = "1", default-features = false, features = ["float", "integer"]
 # Differential tests only build when the `differential-mpfr` feature
 # is active. Without the feature flag, `cargo test` skips them, and
 # the test binaries do not link against `rug`.
+[[test]]
+name = "serde_roundtrip"
+path = "tests/serde_roundtrip.rs"
+required-features = ["serde", "fixed", "std"]
+
 [[test]]
 name = "differential_add"
 path = "tests/differential_add.rs"

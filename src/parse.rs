@@ -47,6 +47,7 @@ use crate::fixed::FixedFloat;
 /// Failure modes for [`BigFloat::parse_str`] and
 /// [`FixedFloat::parse_str`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParseError {
     /// Input was empty (or contained only whitespace).
     Empty,

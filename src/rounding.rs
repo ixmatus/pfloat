@@ -34,6 +34,7 @@ use crate::status::Status;
 /// The default is [`NearestEven`](Self::NearestEven), matching IEEE
 /// 754's default rounding for arithmetic operations.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RoundingMode {
     /// Round to nearest, ties to even (IEEE 754 default).
     /// Also called "banker's rounding."

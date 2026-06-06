@@ -16,6 +16,7 @@
 /// zero has sign 0; the value `+1.0` is the canonical positive
 /// mantissa pattern).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Sign {
     #[default]
     Positive,

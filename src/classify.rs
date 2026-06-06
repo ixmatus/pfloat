@@ -32,6 +32,7 @@ use crate::sign::Sign;
 /// translation. The two subnormal variants are unused by pfloat
 /// values (pfloat has no subnormals); they are kept for ABI parity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IeeeClass {
     SignalingNaN,
     QuietNaN,

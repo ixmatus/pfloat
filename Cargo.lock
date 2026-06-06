@@ -262,6 +262,8 @@ dependencies = [
  "criterion",
  "proptest",
  "rug",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
