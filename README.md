@@ -199,26 +199,19 @@ and `alloc`-free consumers can pick only what they need.
 | | `airy` | `specials` | `Ai`, `Bi`, `Ai′`, `Bi′` |
 | | `bessel` | `specials` | `J₀`, `J₁`, `Jₙ` (and `Y/I/K` siblings) |
 | | `zeta` | `specials` | Riemann ζ on the real axis |
+| Interop | `serde` | | `Serialize`/`Deserialize` for the public types, bit-exact round-trip |
+| | `num-traits` | `fixed`, `ops` | `Zero`/`One`/`Num`/`Signed`/`NumCast`/`From`+`ToPrimitive`/`Inv` for `FixedFloat<PREC>` |
 | Verification (dev) | `kani` | | Compile Kani proof harnesses (off in normal builds) |
 | | `differential-mpfr` | full feature union | Differential testing against MPFR via `rug` (Unix-only) |
 | | `differential-arb` | `differential-mpfr` | Arb oracle backend via Python subprocess |
 
+Two surfaces ride on existing features rather than their own flag. The `constants` module (`pi`, `ln_2`, `ln_10`, the Euler–Mascheroni constant, and more, each at a caller-chosen precision and rounding mode) ships with the `exp-log` cluster and above. The shortest round-trip decimal formatter (`BigFloat::to_shortest_decimal_string`) ships with `big`; it emits the fewest digits that parse back to the value, while `Display` keeps the always-safe digit count.
+
 ## Why
 
-`rug` and `gmp-mpfr-sys` force a C toolchain on every Rust project that needs more than the 53-bit hardware `f64` mantissa with correct rounding. `astro-float` is the closest pure-Rust alternative and covers basic arithmetic plus elementary transcendentals well; the special-function surface (gamma, erf, Bessel, zeta, etc.) and shipped formal-verification artifacts are gaps that pfloat fills directly. The companion goal is to displace the GMP/MPFR build dependency for scientific, financial, and symbolic-computation crates that want WebAssembly or embedded targets.
+pfloat fills a specific gap: correctly rounded arbitrary-precision floating point that is pure Rust, permissively licensed, and able to build without `std`. Arbitrary precision has long required a C toolchain (GMP and MPFR), which complicates WebAssembly, cross-compiled embedded, and reproducible-build pipelines, and carries an LGPL license that constrains static linking and redistribution for some consumers. pfloat is licensed `MIT OR Apache-2.0`, has zero runtime dependencies, and CI builds it for bare-metal ARM (`thumbv6m-none-eabi`) with no `std` and no C dependency.
 
-## pfloat vs rug
-
-`rug` (the Rust binding to GMP, MPFR, and MPC) is the mature, fast, battle-tested option, and when a C toolchain is available and raw throughput matters most it stays the right choice. pfloat does not try to win on speed or on decades of production hardening; MPFR has both, and pfloat is candid that it does not.
-
-Choose pfloat when one of these is load-bearing:
-
-- **No C toolchain.** pfloat is pure Rust with zero runtime dependencies, so it builds anywhere `cargo` does, including WebAssembly and cross-compiled embedded targets where `gmp-mpfr-sys` cannot.
-- **Permissive license.** pfloat is `MIT OR Apache-2.0`. `rug` is licensed LGPL, as are GMP and MPFR, which constrains static linking and redistribution for some consumers.
-- **Real `no_std`.** pfloat builds for bare-metal ARM (`thumbv6m-none-eabi`) in CI with no `std` and no C dependency, a target `gmp-mpfr-sys` cannot reach. `rug` requires `std` and a C library.
-- **Verification artifacts in the box.** pfloat ships its Kani harnesses, differential lanes, fuzz targets, and the per-function rounding-status table alongside the code, so the correctness evidence travels with the crate rather than living in an upstream C project.
-
-Choose `rug` when a C toolchain is acceptable and you want the fastest, most production-proven arbitrary-precision arithmetic available, or when you need MPC-style complex arithmetic that pfloat does not yet provide.
+Two things travel inside the crate that an upstream C project keeps elsewhere. The first is a broad special-function surface (the gamma and erf families, Bessel, Airy, the integrals, zeta) correctly rounded under the chosen mode. The second is the verification evidence itself: the Kani harnesses, differential lanes, fuzz targets, and the per-function rounding-status table, so the correctness story ships with the code rather than living in a separate project.
 
 ## Rounding status
 
