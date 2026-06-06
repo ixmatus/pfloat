@@ -426,6 +426,8 @@ mod ops_traits;
 mod parse;
 #[cfg(feature = "big")]
 mod rounding;
+#[cfg(feature = "serde")]
+mod serde_impls;
 mod sign;
 mod status;
 #[cfg(all(kani, feature = "big"))]
