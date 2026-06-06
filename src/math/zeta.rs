@@ -207,6 +207,20 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
                 mode,
                 ZETA_ERROR_GUARD,
             );
+            // Defensive INEXACT guard (pf-umlm, ADR-0066). The dispatched
+            // dyadic outputs (ζ(0) = −1/2, the trivial zeros ζ(−2n) = 0,
+            // ζ(+∞) = 1) return above; the negative-odd-integer rationals
+            // (ζ(−1) = −1/12, …) are non-dyadic and already flag INEXACT,
+            // and ζ(s) > 1 strictly for s > 1 makes the large-s collapse
+            // to 1.0 a true INEXACT. The ADR-0065 sweep found this path
+            // flags INEXACT everywhere, so the force is a no-op hardening
+            // against regression; its worst-case soundness rests on the
+            // irrationality of ζ at the non-special set (ζ(5) is open).
+            let status = if matches!(result.class, Class::Normal { .. }) {
+                status | Status::INEXACT
+            } else {
+                status
+            };
             auto_raise(status);
             (result, status)
         }

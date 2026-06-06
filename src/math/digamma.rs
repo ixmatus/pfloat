@@ -136,6 +136,17 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
         mode,
         DIGAMMA_ERROR_GUARD,
     );
+    // Defensive INEXACT guard (pf-umlm, ADR-0066): ψ has no dyadic
+    // outputs (every value is ψ(n) = −γ + H_{n−1} or a reflection of one,
+    // irrational), so a finite-normal result is INEXACT. The ADR-0065
+    // sweep showed this path already flags it everywhere, so the force is
+    // a no-op hardening against regression; its worst-case soundness
+    // rests on the irrationality of γ = −ψ(1), an open problem.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
