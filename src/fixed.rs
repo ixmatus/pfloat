@@ -380,6 +380,14 @@ where
         (Self::from_big_at_same_precision(b), s)
     }
 
+    /// IEEE 754-2019 `remainder(self, other)` (§5.3.1). Exact; the
+    /// quotient rounds to nearest with ties to even.
+    #[must_use]
+    pub fn remainder(&self, other: &Self) -> (Self, Status) {
+        let (b, s) = self.to_big().remainder(&other.to_big());
+        (Self::from_big_at_same_precision(b), s)
+    }
+
     /// IEEE 754-2019 `squareRoot(self)`.
     #[must_use]
     pub fn sqrt(&self, mode: RoundingMode) -> (Self, Status) {

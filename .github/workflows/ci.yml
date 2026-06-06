@@ -31,7 +31,7 @@ jobs:
           - "--no-default-features --features=fixed"
           - "--no-default-features --features=ops,big"
           - "--no-default-features --features=big,agm"
-          - "--features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta,serde"
+          - "--features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta,serde,num-traits"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -79,7 +79,7 @@ jobs:
           toolchain: ${{ env.PFLOAT_NIGHTLY }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta,serde --all-targets -- -D warnings
+      - run: cargo clippy --features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta,serde,num-traits --all-targets -- -D warnings
 
   # ---------- pfloat-libm member: shell + MPFR verification harness ----------
   # The root test matrix scopes to the `pfloat` package (default-members

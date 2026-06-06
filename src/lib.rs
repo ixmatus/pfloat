@@ -418,6 +418,8 @@ mod fmt;
 mod mantissa;
 #[cfg(any(feature = "exp-log", feature = "agm"))]
 mod math;
+#[cfg(feature = "num-traits")]
+mod num_traits_impls;
 #[cfg(feature = "big")]
 mod ops;
 #[cfg(all(feature = "big", feature = "ops"))]
@@ -445,6 +447,8 @@ pub use big::{BigFloat, BuildError, Parts};
 pub use classify::IeeeClass;
 #[cfg(all(feature = "big", feature = "fixed"))]
 pub use fixed::{ClassFixed, FixedFloat};
+#[cfg(feature = "num-traits")]
+pub use num_traits_impls::RadixParseError;
 #[cfg(feature = "big")]
 pub use parse::ParseError;
 #[cfg(feature = "big")]

@@ -14,7 +14,9 @@
 //! method. `Neg` flips the sign without touching the rounding
 //! pipeline.
 
-use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use core::ops::{
+    Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
+};
 
 use crate::big::BigFloat;
 use crate::rounding::RoundingMode;
@@ -92,6 +94,24 @@ impl Div<&BigFloat> for BigFloat {
     }
 }
 
+// `Rem` (`%`) is IEEE 754-2019 §5.3.1 `remainder`, which is exact, so
+// unlike the other overloads it takes no rounding mode.
+impl Rem for BigFloat {
+    type Output = Self;
+    #[inline]
+    fn rem(self, rhs: Self) -> Self {
+        BigFloat::remainder(&self, &rhs).0
+    }
+}
+
+impl Rem<&BigFloat> for BigFloat {
+    type Output = Self;
+    #[inline]
+    fn rem(self, rhs: &BigFloat) -> Self {
+        BigFloat::remainder(&self, rhs).0
+    }
+}
+
 impl Neg for BigFloat {
     type Output = Self;
     #[inline]
@@ -125,6 +145,13 @@ impl DivAssign for BigFloat {
     #[inline]
     fn div_assign(&mut self, rhs: Self) {
         *self = BigFloat::div(self, &rhs, RM).0;
+    }
+}
+
+impl RemAssign for BigFloat {
+    #[inline]
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = BigFloat::remainder(self, &rhs).0;
     }
 }
 
@@ -175,6 +202,18 @@ where
     #[inline]
     fn div(self, rhs: Self) -> Self {
         FixedFloat::<PREC>::div(&self, &rhs, RM).0
+    }
+}
+
+#[cfg(feature = "fixed")]
+impl<const PREC: u32> Rem for FixedFloat<PREC>
+where
+    [(); limbs_for(PREC)]:,
+{
+    type Output = Self;
+    #[inline]
+    fn rem(self, rhs: Self) -> Self {
+        FixedFloat::<PREC>::remainder(&self, &rhs).0
     }
 }
 
@@ -231,6 +270,17 @@ where
     #[inline]
     fn div_assign(&mut self, rhs: Self) {
         *self = FixedFloat::<PREC>::div(self, &rhs, RM).0;
+    }
+}
+
+#[cfg(feature = "fixed")]
+impl<const PREC: u32> RemAssign for FixedFloat<PREC>
+where
+    [(); limbs_for(PREC)]:,
+{
+    #[inline]
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = FixedFloat::<PREC>::remainder(self, &rhs).0;
     }
 }
 
