@@ -1,6 +1,6 @@
 # ADR-0029: Dragon4 / Steele-White shortest formatter deferred to 1.x
 
-- **Status**: accepted
+- **Status**: superseded by ADR-0071
 - **Date**: 2026-05-18
 
 ## Context

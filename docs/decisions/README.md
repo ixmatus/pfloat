@@ -78,7 +78,7 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0026: Riemann zeta function on the real line](0026-zeta.md) (accepted)
 - [ADR-0027: Karatsuba threshold calibrated to 48 limbs](0027-karatsuba-threshold-calibration.md) (accepted)
 - [ADR-0028: Allocation profiling, and `BigFloat` inline storage deferred to 1.x with data](0028-allocation-profiling-and-inline-storage.md) (accepted)
-- [ADR-0029: Dragon4 / Steele-White shortest formatter deferred to 1.x](0029-dragon4-shortest-formatter-deferred.md) (accepted)
+- [ADR-0029: Dragon4 / Steele-White shortest formatter deferred to 1.x](0029-dragon4-shortest-formatter-deferred.md) (superseded)
 - [ADR-0030: Beta function on the negative real domain (sign and pole convention)](0030-beta-negative-domain.md) (accepted)
 - [ADR-0031: Decimal parser feasibility cap and the intrinsic pow5 cost](0031-decimal-parser-feasibility-cap.md) (accepted)
 - [ADR-0032: Libm reciprocal and root kernels (cot, sec, csc, cbrt, hypot, rootn) ship as direct primary kernels, not derived aliases](0032-libm-reciprocal-and-root-kernels-direct.md) (accepted)
@@ -120,3 +120,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0068: Optional serde serialization behind a feature](0068-serde-serialization-behind-a-feature.md) (accepted)
 - [ADR-0069: IEEE 754-2019 remainder kernel](0069-ieee-remainder-kernel.md) (accepted)
 - [ADR-0070: num-traits impls scoped to FixedFloat](0070-num-traits-impls-fixedfloat.md) (accepted)
+- [ADR-0071: Dragon4 shortest-output formatter](0071-dragon4-shortest-formatter.md) (accepted)
