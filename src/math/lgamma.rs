@@ -153,12 +153,25 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
     // Negative non-integer and positive finite both feed the Ziv
     // driver. The closure dispatches on the sign at each retry.
     let z_min = z_min_for_target(target_precision);
-    ziv_round(
+    let (result, status) = ziv_round(
         |working_prec| lgamma_at_w(x, z_min, working_prec),
         target_precision,
         mode,
         LGAMMA_ERROR_GUARD,
-    )
+    );
+    // Defensive INEXACT guard (pf-umlm, ADR-0066): a finite-normal
+    // fall-through (x ∉ {1, 2}, which are dispatched above) is ln|Γ(x)|,
+    // irrational. The ADR-0065 sweep showed this path already flags
+    // INEXACT everywhere, so the force is a no-op hardening against
+    // regression; its worst-case soundness rests on the irrationality of
+    // ln|Γ| at dyadic arguments, not proven for every dyadic.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
+    auto_raise(status);
+    (result, status)
 }
 
 /// If `x ∈ {1, 2}` then `lgamma(x) = 0` exactly at any target

@@ -265,6 +265,18 @@ fn beta_kernel(
         mode,
         BETA_ERROR_GUARD,
     );
+    // Defensive INEXACT guard (pf-umlm, ADR-0066). The positive-integer
+    // (dyadic-possible) inputs are dispatched above by the exact
+    // construct-and-check, so this fall-through carries only non-integer
+    // arguments, where β is irrational (it composes Γ). The ADR-0065
+    // sweep found this path flags INEXACT everywhere, so the force is a
+    // no-op hardening against regression; its worst-case soundness rests
+    // on the irrationality of Γ at the non-integer arguments.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }
@@ -488,6 +500,15 @@ fn beta_case4(
         mode,
         BETA_ERROR_GUARD,
     );
+    // Defensive INEXACT guard (pf-umlm, ADR-0066). Reached only when the
+    // exact case-4 build overflowed (a huge order), whose output is a
+    // non-dyadic, far-sub-ULP rational, so a finite-normal result is
+    // INEXACT. A no-op hardening against regression (ADR-0065 sweep).
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

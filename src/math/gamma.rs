@@ -170,6 +170,17 @@ fn gamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         mode,
         GAMMA_ERROR_GUARD,
     );
+    // Defensive INEXACT guard (pf-umlm, ADR-0066): a finite-normal
+    // fall-through (a non-integer x; the integer points are dispatched
+    // above) is irrational. The ADR-0065 sweep showed this path already
+    // flags INEXACT everywhere, so the force is a no-op hardening against
+    // regression; its worst-case soundness rests on the irrationality of
+    // Γ at dyadic non-integers, which is not proven for every dyadic.
+    let status = if matches!(result.class, Class::Normal { .. }) {
+        status | Status::INEXACT
+    } else {
+        status
+    };
     auto_raise(status);
     (result, status)
 }

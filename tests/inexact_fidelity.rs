@@ -670,3 +670,111 @@ fn airy_limits_keep_status_every_mode() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// pf-umlm (ADR-0066): the defensive INEXACT guard on the gamma family
+// and zeta. These already report INEXACT correctly (ADR-0065 sweep); the
+// guard hardens the fall-through. The dispatched exact outputs stay
+// clear, the transcendental and rational-non-dyadic results stay set.
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "specials")]
+#[test]
+fn gamma_family_inexact_fidelity_every_mode() {
+    let half = two_pow_neg(1, 53); // 0.5
+    let twenty_four = from_i(24, 53);
+    let seven_twenty = from_i(720, 53);
+    let zero = from_i(0, 53);
+    for m in MODES {
+        // gamma: positive integers are exact factorials (dispatched OK).
+        let (vg5, sg5) = from_i(5, 53).gamma_round(53, m).expect("p>=1");
+        assert!(
+            !sg5.inexact() && eq(&vg5, &twenty_four),
+            "Γ(5)=24 clear (mode {m:?})"
+        );
+        let (vg7, sg7) = from_i(7, 53).gamma_round(53, m).expect("p>=1");
+        assert!(
+            !sg7.inexact() && eq(&vg7, &seven_twenty),
+            "Γ(7)=720 clear (mode {m:?})"
+        );
+        // gamma at a half-integer is rational·√π, irrational.
+        assert!(
+            half.gamma_round(53, m).expect("p>=1").1.inexact(),
+            "Γ(0.5)=√π inexact (mode {m:?})"
+        );
+        // lgamma: exact 0 only at 1, 2; ln((n−1)!) irrational otherwise.
+        let (vl1, sl1) = from_i(1, 53).lgamma_round(53, m).expect("p>=1");
+        assert!(
+            !sl1.inexact() && eq(&vl1, &zero),
+            "lgamma(1)=0 clear (mode {m:?})"
+        );
+        let (vl2, sl2) = from_i(2, 53).lgamma_round(53, m).expect("p>=1");
+        assert!(
+            !sl2.inexact() && eq(&vl2, &zero),
+            "lgamma(2)=0 clear (mode {m:?})"
+        );
+        assert!(
+            from_i(5, 53).lgamma_round(53, m).expect("p>=1").1.inexact(),
+            "lgamma(5)=ln24 inexact (mode {m:?})"
+        );
+        // digamma has no dyadic outputs (ψ(n) = −γ + H_{n−1}, irrational).
+        assert!(
+            from_i(1, 53)
+                .digamma_round(53, m)
+                .expect("p>=1")
+                .1
+                .inexact(),
+            "ψ(1)=−γ inexact (mode {m:?})"
+        );
+        assert!(
+            from_i(2, 53)
+                .digamma_round(53, m)
+                .expect("p>=1")
+                .1
+                .inexact(),
+            "ψ(2)=1−γ inexact (mode {m:?})"
+        );
+    }
+}
+
+#[cfg(feature = "zeta")]
+#[test]
+fn zeta_inexact_fidelity_every_mode() {
+    let zero = from_i(0, 53);
+    let neg_half = from_i(-1, 53)
+        .div(&from_i(2, 53), RoundingMode::NearestEven)
+        .0;
+    let hundred = from_i(100, 53);
+    for m in MODES {
+        // ζ(0) = −1/2 (dyadic), ζ(−2) = 0 (trivial zero): exact, clear.
+        let (v0, s0) = zero.zeta_round(53, m).expect("p>=1");
+        assert!(
+            !s0.inexact() && eq(&v0, &neg_half),
+            "ζ(0)=−1/2 clear (mode {m:?})"
+        );
+        let (vt, st) = from_i(-2, 53).zeta_round(53, m).expect("p>=1");
+        assert!(
+            !st.inexact() && eq(&vt, &zero),
+            "ζ(−2)=0 clear (mode {m:?})"
+        );
+        // ζ(2)=π²/6 and ζ(3) irrational; ζ(−1)=−1/12 rational non-dyadic.
+        assert!(
+            from_i(2, 53).zeta_round(53, m).expect("p>=1").1.inexact(),
+            "ζ(2) inexact (mode {m:?})"
+        );
+        assert!(
+            from_i(-1, 53).zeta_round(53, m).expect("p>=1").1.inexact(),
+            "ζ(−1)=−1/12 inexact (mode {m:?})"
+        );
+        assert!(
+            from_i(3, 53).zeta_round(53, m).expect("p>=1").1.inexact(),
+            "ζ(3) inexact (mode {m:?})"
+        );
+        // Large s: ζ(100) collapses onto 1.0, but ζ(s) > 1 for s > 1, so
+        // the result is INEXACT (the collapse case the guard backs up).
+        assert!(
+            hundred.zeta_round(53, m).expect("p>=1").1.inexact(),
+            "ζ(100)→1 inexact (mode {m:?})"
+        );
+    }
+}
