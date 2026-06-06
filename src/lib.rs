@@ -405,6 +405,10 @@ mod class;
 mod classify;
 #[cfg(feature = "big")]
 mod cmp;
+/// Transcendental constants (π, ln 2, γ, …) at a caller-chosen
+/// precision and rounding mode. Gated behind `exp-log`.
+#[cfg(feature = "exp-log")]
+pub mod constants;
 #[cfg(feature = "big")]
 mod convert;
 #[cfg(all(feature = "big", feature = "fixed"))]
