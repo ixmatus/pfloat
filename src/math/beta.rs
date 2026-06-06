@@ -212,6 +212,26 @@ fn beta_kernel(
         );
     }
 
+    // Positive-integer exact dispatch (pf-umlm). For positive integers
+    // a, b, β(a,b) = (a−1)!(b−1)!/(a+b−1)! is rational, and the
+    // exp(lgamma) Ziv path mis-rounds the exactly-dyadic ones: β(1,2ᵏ)
+    // = 2⁻ᵏ and β(1,1) = 1 came back off by an ULP under directed modes
+    // and with INEXACT over-reported, the exact-value-defeats-Ziv defect
+    // gamma's `try_gamma_pos_integer_exact` already cures. Build the
+    // exact rational and divide at the target precision; the division's
+    // INEXACT flag is the exact dyadicity verdict, so dyadic outputs
+    // return OK and non-dyadic ones the correctly-rounded value with
+    // INEXACT.
+    if is_pos_integer(a) && is_pos_integer(b) {
+        if let Some((value, status)) = try_beta_pos_integer_exact(a, b, target_precision, mode) {
+            auto_raise(status);
+            return (value, status);
+        }
+        // The exact integer build overflowed its precision/factor cap;
+        // fall through to the Ziv path. An output too large to build is
+        // not a small dyadic, so the Ziv rounding is correct there.
+    }
+
     // Cases 1 and 2: a, b, a+b all away from Γ poles. Magnitude via
     // the lgamma composition; sign is the product of the three Γ
     // signs (ADR-0030), reusing the single reflection derivation in
@@ -247,6 +267,126 @@ fn beta_kernel(
     );
     auto_raise(status);
     (result, status)
+}
+
+/// Working precision for the exact-integer build in the beta
+/// construct-and-check dispatch (pf-umlm). Holds the numerator and
+/// denominator products of every dispatched case; a build that would
+/// exceed it bails to the Ziv path (its output is non-dyadic there).
+const BETA_EXACT_BUILD_PREC: u32 = 4096;
+
+/// Factor-count cap for the exact-integer build: a guard against a
+/// caller-supplied huge order spinning the build loop. A `min(a,b)`
+/// past this bails to the Ziv path (a non-dyadic, far-sub-ULP output).
+const BETA_EXACT_BUILD_FACTOR_CAP: u32 = 1024;
+
+/// `(k−1)!` for a positive-integer `BigFloat` `k`, built by exact
+/// multiplication at [`BETA_EXACT_BUILD_PREC`]. `None` if the factorial
+/// overflows that precision or the factor cap (`k = 1` and `k = 2`
+/// return `1` with an empty product).
+fn factorial_below_exact(k: &BigFloat) -> Option<BigFloat> {
+    let w = BETA_EXACT_BUILD_PREC;
+    let one = BigFloat::try_from_i64_exact(1, w).ok()?;
+    let mut acc = one.clone();
+    let mut j = BigFloat::try_from_i64_exact(2, w).ok()?;
+    let mut count = 0u32;
+    while matches!(j.partial_cmp(k).0, Some(core::cmp::Ordering::Less)) {
+        let (next, status) = acc.mul_round(&j, w, RoundingMode::NearestEven).ok()?;
+        if status.inexact() {
+            return None;
+        }
+        acc = next;
+        j = j.add(&one, RoundingMode::NearestEven).0;
+        count += 1;
+        if count > BETA_EXACT_BUILD_FACTOR_CAP {
+            return None;
+        }
+    }
+    Some(acc)
+}
+
+/// The rising product `l · (l+1) · … · (l + s−1)` of `s` consecutive
+/// integers from the exact integer `l`, built at
+/// [`BETA_EXACT_BUILD_PREC`]. The accumulator seeds from the input `l`
+/// itself (full input precision), so `s = 1` returns `l` exactly with
+/// no multiplication — `β(1, 2⁴⁰) = 1/2⁴⁰` never needs a large
+/// factorial. `None` on overflow of the precision or factor cap.
+fn rising_product_exact(l: &BigFloat, s: &BigFloat) -> Option<BigFloat> {
+    let w = BETA_EXACT_BUILD_PREC;
+    let one = BigFloat::try_from_i64_exact(1, w).ok()?;
+    let mut acc = l.clone();
+    let mut j = one.clone();
+    let mut count = 0u32;
+    while matches!(j.partial_cmp(s).0, Some(core::cmp::Ordering::Less)) {
+        let (factor, _) = l.add(&j, RoundingMode::NearestEven); // l + j, exact
+        let (next, status) = acc.mul_round(&factor, w, RoundingMode::NearestEven).ok()?;
+        if status.inexact() {
+            return None;
+        }
+        acc = next;
+        j = j.add(&one, RoundingMode::NearestEven).0;
+        count += 1;
+        if count > BETA_EXACT_BUILD_FACTOR_CAP {
+            return None;
+        }
+    }
+    Some(acc)
+}
+
+/// `β(a,b)` for positive integers `a, b`, correctly rounded to
+/// `target_precision` under `mode`, with `INEXACT` set iff the exact
+/// rational is not representable there. With `(s, l) = (min, max)`,
+/// `β(a,b) = (s−1)! / ∏_{j=0}^{s−1}(l+j)`; the numerator and
+/// denominator are built as exact integers and divided once, so the
+/// division's flag is the exact dyadicity verdict. `None` when the
+/// build overflows (the caller then uses the Ziv path).
+fn try_beta_pos_integer_exact(
+    a: &BigFloat,
+    b: &BigFloat,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> Option<(BigFloat, Status)> {
+    let (s, l) = match a.partial_cmp(b).0 {
+        Some(core::cmp::Ordering::Greater) => (b, a),
+        _ => (a, b),
+    };
+    let num = factorial_below_exact(s)?;
+    let den = rising_product_exact(l, s)?;
+    num.div_round(&den, target_precision, mode).ok()
+}
+
+/// The case-4 closed form `B(−n, m) = (−1)^m (m−1)!(n−m)!/n!` for the
+/// pole-cancellation branch (`n = −neg ≥ 1`, `m = pos`, `1 ≤ m ≤ n`),
+/// built as an exact rational and divided once at `target_precision`.
+/// The sign is applied to the numerator before the division so the
+/// directed-rounding boundary lands on the signed value. `None` when a
+/// factorial overflows the exact build (the caller then uses the Ziv
+/// path, whose O(1) lgamma-factorial form survives a huge `m`).
+fn try_beta_case4_exact(
+    neg: &BigFloat,
+    pos: &BigFloat,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> Option<(BigFloat, Status)> {
+    let ne = RoundingMode::NearestEven;
+    let one = BigFloat::try_from_i64_exact(1, BETA_EXACT_BUILD_PREC).ok()?;
+    let n = neg.negated(); // +n ≥ 1
+    let fm = factorial_below_exact(pos)?; // (m−1)!
+    let (n_minus_m, _) = n.sub(pos, ne); // n − m ≥ 0
+    let (n_minus_m_plus_1, _) = n_minus_m.add(&one, ne);
+    let fnm = factorial_below_exact(&n_minus_m_plus_1)?; // (n−m)!
+    let (n_plus_1, _) = n.add(&one, ne);
+    let fn_fact = factorial_below_exact(&n_plus_1)?; // n!
+    let (num, status) = fm.mul_round(&fnm, BETA_EXACT_BUILD_PREC, ne).ok()?;
+    if status.inexact() {
+        return None;
+    }
+    let signed_num = if matches!(integer_parity(pos), Some(Parity::Odd)) {
+        num.negated()
+    } else {
+        num
+    };
+    signed_num.div_round(&fn_fact, target_precision, mode).ok()
 }
 
 /// `true` iff `x` is a non-positive integer, i.e. sits at a Γ pole
@@ -298,10 +438,21 @@ fn beta_case4(
     target_precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
+    // Exact dispatch (pf-umlm): the case-4 closed form is rational and
+    // sometimes dyadic (e.g. B(−1,1) = −1), so the exp(lgamma) Ziv path
+    // below carries the same exact-value-defeats-Ziv defect as the
+    // positive-integer path. Build the exact rational and divide; the
+    // division's flag is the dyadicity verdict.
+    if let Some((value, status)) = try_beta_case4_exact(neg, pos, target_precision, mode) {
+        auto_raise(status);
+        return (value, status);
+    }
+
     // Sign is (−1)^m, from the parity of m; binary and pinned
     // outside the Ziv envelope (`neg` and `pos` are exact integers
     // so the parity does not depend on the rounding mode or
-    // working precision).
+    // working precision). Reached only when the exact build overflowed
+    // (a huge `n`); the O(1) lgamma-factorial form survives it.
     let negative = matches!(integer_parity(pos), Some(Parity::Odd));
     let (result, status) = ziv_round(
         |w| {
