@@ -321,6 +321,11 @@ path = "tests/differential_agm.rs"
 required-features = ["differential-mpfr"]
 
 [[test]]
+name = "differential_constants"
+path = "tests/differential_constants.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
 name = "differential_ei"
 path = "tests/differential_ei.rs"
 required-features = ["differential-mpfr"]

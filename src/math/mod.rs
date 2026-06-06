@@ -539,6 +539,46 @@ pub(crate) fn pi_over_2_at(prec: u32) -> BigFloat {
     }
 }
 
+/// Returns `π/4` rounded to the requested precision. Composes
+/// `pi_at(prec)` with an exponent shift for the `/4`. The shift is
+/// exact (multiplication by `2^-2`): `π/4` shares `π`'s mantissa, so
+/// rounding to `prec` bits and the exponent decrement commute.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn pi_over_4_at(prec: u32) -> BigFloat {
+    if prec <= 1024 {
+        let stored = BigFloat {
+            class: Class::Normal {
+                sign: Sign::Positive,
+                exponent: -1,
+                mantissa: PI_LIMBS_1024.to_vec(),
+            },
+            precision: 1024,
+        };
+        return stored
+            .round_to_precision(prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+    }
+    let pi = agm_constants::pi_via_agm(prec);
+    // Exact /4 via an exponent decrement of 2 on the Normal variant.
+    match pi.class {
+        Class::Normal {
+            sign,
+            exponent,
+            mantissa,
+        } => BigFloat {
+            class: Class::Normal {
+                sign,
+                exponent: exponent - 2,
+                mantissa,
+            },
+            precision: pi.precision,
+        },
+        _ => unreachable!("pi_via_agm returns a Normal"),
+    }
+}
+
 /// Returns `π` rounded to the requested precision under the
 /// caller's IEEE rounding mode.
 ///

@@ -116,3 +116,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0064: INEXACT flag fidelity for the proven-transcendence special functions](0064-inexact-fidelity-special-functions-proven.md) (accepted)
 - [ADR-0065: Beta exact-input construct-and-check (correctness bugfix)](0065-beta-exact-construct-and-check.md) (accepted)
 - [ADR-0066: Defensive INEXACT guard on the gamma family and zeta](0066-defensive-inexact-guard-gamma-zeta.md) (accepted)
+- [ADR-0067: Public constants-at-precision API](0067-public-constants-at-precision-api.md) (accepted)
