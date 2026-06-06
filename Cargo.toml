@@ -38,6 +38,12 @@ serde = { version = "1", default-features = false, features = [
     "alloc",
 ], optional = true }
 
+# Optional num-traits impls (Zero/One/Num/Signed/NumCast/From+ToPrimitive/
+# Inv) for FixedFloat<PREC>, gated behind the `num-traits` feature.
+# `default-features = false` keeps it no_std. Absent from the default
+# build. ADR-0070.
+num-traits = { version = "0.2", default-features = false, optional = true }
+
 [features]
 # Defaults match the std + dynamic-precision profile most callers
 # expect from an MPFR replacement. Embedded users opt out via
@@ -146,6 +152,12 @@ zeta = ["specials"]
 # posture holds. ADR-0068.
 serde = ["dep:serde"]
 
+# Optional num-traits impls for FixedFloat<PREC> (scoped to the fixed
+# profile because num-traits constructors carry no precision argument).
+# Implies `fixed` (the type) and `ops` (the arithmetic overloads Num's
+# NumOps bound needs). ADR-0070.
+num-traits = ["dep:num-traits", "fixed", "ops"]
+
 # Compile Kani proof harnesses. Off in normal builds.
 kani = []
 
@@ -219,6 +231,11 @@ rug = { version = "1", default-features = false, features = ["float", "integer"]
 name = "serde_roundtrip"
 path = "tests/serde_roundtrip.rs"
 required-features = ["serde", "fixed", "std"]
+
+[[test]]
+name = "num_traits_integration"
+path = "tests/num_traits_integration.rs"
+required-features = ["num-traits"]
 
 [[test]]
 name = "differential_add"
