@@ -356,6 +356,11 @@ path = "tests/differential_constants.rs"
 required-features = ["differential-mpfr"]
 
 [[test]]
+name = "differential_remainder"
+path = "tests/differential_remainder.rs"
+required-features = ["differential-mpfr"]
+
+[[test]]
 name = "differential_ei"
 path = "tests/differential_ei.rs"
 required-features = ["differential-mpfr"]

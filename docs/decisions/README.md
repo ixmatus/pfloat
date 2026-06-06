@@ -118,3 +118,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0066: Defensive INEXACT guard on the gamma family and zeta](0066-defensive-inexact-guard-gamma-zeta.md) (accepted)
 - [ADR-0067: Public constants-at-precision API](0067-public-constants-at-precision-api.md) (accepted)
 - [ADR-0068: Optional serde serialization behind a feature](0068-serde-serialization-behind-a-feature.md) (accepted)
+- [ADR-0069: IEEE 754-2019 remainder kernel](0069-ieee-remainder-kernel.md) (accepted)
