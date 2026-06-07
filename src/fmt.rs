@@ -153,6 +153,55 @@ impl BigFloat {
         let approx = (u64::from(precision) * 30103).div_ceil(100_000);
         (approx as u32) + 1
     }
+
+    /// Returns the shortest decimal string that round-trips to `self`
+    /// at its precision under round to nearest, ties to even.
+    ///
+    /// "Shortest" means the fewest significant digits such that
+    /// [`parse_str`](Self::parse_str) at this value's precision recovers
+    /// it exactly. This is the Steele-White / Burger-Dybvig free-format
+    /// algorithm (ADR-0071). [`Display`] emits the round-trip-safe digit
+    /// count from [`round_trip_digit_count`](Self::round_trip_digit_count),
+    /// which is always correct but not always minimal; this method is
+    /// the minimal form. A finite value past the magnitude cap saturates
+    /// to `inf` / `0`, as elsewhere in the formatter (ADR-0051).
+    ///
+    /// Special values render as for
+    /// [`to_decimal_string`](Self::to_decimal_string).
+    ///
+    /// # Resource use
+    ///
+    /// The shortest form carries about `precision × log10(2)` significant
+    /// digits, and the algorithm builds working integers whose size grows
+    /// with the precision. A very large precision (hundreds of millions
+    /// of bits) therefore makes the output and the working storage
+    /// astronomically large and can exhaust memory; this is the inherent
+    /// cost of an arbitrary-precision value, not a magnitude the `inf` /
+    /// `0` cap covers. Precision in the realistic range renders without
+    /// issue.
+    #[must_use]
+    pub fn to_shortest_decimal_string(&self) -> String {
+        match &self.class {
+            Class::Nan { sign, .. } => special_string(*sign, "nan"),
+            Class::Infinity { sign } => special_string(*sign, "inf"),
+            Class::Zero { sign } => special_string(*sign, "0"),
+            Class::Normal {
+                sign,
+                exponent,
+                mantissa,
+            } => format_shortest(mantissa, self.precision, *exponent, *sign),
+        }
+    }
+}
+
+/// Render a special value (`nan`/`inf`/`0`) with its sign.
+fn special_string(sign: Sign, body: &str) -> String {
+    let mut s = String::new();
+    if matches!(sign, Sign::Negative) {
+        s.push('-');
+    }
+    s.push_str(body);
+    s
 }
 
 impl Display for BigFloat {
@@ -173,6 +222,13 @@ where
     #[must_use]
     pub fn to_decimal_string(&self, digits: u32, mode: RoundingMode) -> String {
         self.to_big().to_decimal_string(digits, mode)
+    }
+
+    /// Returns the shortest round-trip decimal string. Delegates to
+    /// [`BigFloat::to_shortest_decimal_string`].
+    #[must_use]
+    pub fn to_shortest_decimal_string(&self) -> String {
+        self.to_big().to_shortest_decimal_string()
     }
 }
 
@@ -391,6 +447,239 @@ fn increment_owned(mut v: Vec<u64>) -> Vec<u64> {
         v.push(1);
     }
     v
+}
+
+/// Shortest round-trip rendering of a finite nonzero value via the
+/// Steele-White / Burger-Dybvig free-format algorithm (ADR-0071).
+fn format_shortest(mantissa: &[u64], precision: u32, exponent: i64, sign: Sign) -> String {
+    let m_int = extract_as_integer(mantissa, precision);
+    let scale = exponent
+        .saturating_sub(i64::from(precision))
+        .saturating_add(1);
+
+    // Magnitude cap (ADR-0051), mirroring format_normal: the scale step
+    // multiplies by 10^|k| with k near the decimal exponent, so an
+    // uncapped huge magnitude would build an unbounded bignum.
+    let log2_value = top_set_bit(&m_int)
+        .map_or(0, |t| t as i64)
+        .saturating_add(scale);
+    let decimal_exp_estimate = approximate_log10_floor(log2_value);
+    if decimal_exp_estimate > MAX_FORMAT_DECIMAL_EXPONENT {
+        return saturated_string(sign, Saturation::Infinite);
+    }
+    if decimal_exp_estimate < -MAX_FORMAT_DECIMAL_EXPONENT {
+        return saturated_string(sign, Saturation::Zero);
+    }
+
+    let (digits, decimal_exp) = dragon4(&m_int, precision, scale);
+    compose(&digits, decimal_exp, sign)
+}
+
+/// Free-format shortest digit generation. Returns `(digits, decimal_exp)`
+/// where `digits[0]` has place value `10^decimal_exp`, the convention
+/// [`compose`] expects. Round to nearest, ties to even, matching how
+/// [`BigFloat::parse_str`] rounds the string back to the value.
+fn dragon4(m_int: &[u64], precision: u32, e: i64) -> (Vec<u8>, i64) {
+    let f_even = (m_int.first().copied().unwrap_or(0) & 1) == 0;
+    // Unequal-gap case: the value is a power of two (only the mantissa's
+    // top bit set), so the gap to the next lower float is half the gap
+    // above.
+    let unequal = is_single_bit(m_int);
+
+    // R/S/M+/M- as nonnegative integers with value = R/S and M+ / M- the
+    // half-ulp gaps to the upper / lower neighbour, all on one scale
+    // (Burger-Dybvig).
+    // The binary shifts saturate at u32::MAX rather than truncating: a
+    // bare `as u32` on a scale past u32::MAX silently drops the high
+    // bits, building an r/s pair off by a 2^32 factor and sending the
+    // scale fixup into a runaway loop. A shift that large needs a
+    // precision near u32::MAX (a ~500 MB mantissa), so it is past the
+    // feasible-rendering regime in any case (see the method's resource
+    // note); saturating keeps the path panic- and runaway-free without
+    // affecting any feasible precision, where the cast is exact.
+    let (mut r, mut s, mut m_plus, mut m_minus) = if e >= 0 {
+        let shift = u32::try_from(e).unwrap_or(u32::MAX);
+        let f_be = shl_limbs(m_int, shift); // f · 2^e
+        let be = shl_limbs(&[1], shift); // 2^e
+        if unequal {
+            (shl_limbs(&f_be, 2), vec![4u64], shl_limbs(&be, 1), be)
+        } else {
+            (shl_limbs(&f_be, 1), vec![2u64], be.clone(), be)
+        }
+    } else {
+        let neg_e = u32::try_from(e.unsigned_abs()).unwrap_or(u32::MAX);
+        if unequal {
+            (
+                shl_limbs(m_int, 2),
+                shl_limbs(&[1], neg_e.saturating_add(2)),
+                vec![2u64],
+                vec![1u64],
+            )
+        } else {
+            (
+                shl_limbs(m_int, 1),
+                shl_limbs(&[1], neg_e.saturating_add(1)),
+                vec![1u64],
+                vec![1u64],
+            )
+        }
+    };
+
+    // Estimate the decimal exponent k with value ∈ [10^(k-1), 10^k),
+    // then fix up. log2(value) = (precision - 1) + e.
+    let log2_value = (i64::from(precision) - 1) + e;
+    let mut k = approximate_log10_floor(log2_value) + 1;
+    if k >= 0 {
+        s = mul_pow10(&s, k as u32);
+    } else {
+        let p = pow10((-k) as u32);
+        r = multiply_limbs(&r, &p);
+        m_plus = multiply_limbs(&m_plus, &p);
+        m_minus = multiply_limbs(&m_minus, &p);
+    }
+
+    // Scale fixup: bring value/S into [1/10, 1) using the value itself,
+    // so the first generated digit lands in 1..=9. The rounding
+    // tolerances (R ± M vs S) belong to digit generation, not to the
+    // magnitude estimate. Folding M+ into the scale decision over-scales
+    // when the upper half-ulp straddles a power of ten: it emits a
+    // spurious leading 0 that the boundary then rounds up to the farther
+    // neighbour (9.478e65 at precision 4 rendered as "1e66" instead of
+    // "9e65"). The genuine round-up-to-a-power-of-ten case is handled by
+    // the digit loop's carry-out below, not here.
+    //
+    // High: value >= 10^k, so the estimate was one too low.
+    while cmp_limbs(&r, &s) != Ordering::Less {
+        s = mul_pow10(&s, 1);
+        k += 1;
+    }
+    // Low: value < 10^(k-1), so the estimate was one too high.
+    while cmp_limbs(&mul_pow10(&r, 1), &s) == Ordering::Less {
+        r = mul_pow10(&r, 1);
+        m_plus = mul_pow10(&m_plus, 1);
+        m_minus = mul_pow10(&m_minus, 1);
+        k -= 1;
+    }
+
+    // Digit generation. value/S ∈ [0.1, 1); each step pulls one digit
+    // and tests the rounding boundaries.
+    let mut digits: Vec<u8> = Vec::new();
+    loop {
+        r = mul_pow10(&r, 1);
+        m_plus = mul_pow10(&m_plus, 1);
+        m_minus = mul_pow10(&m_minus, 1);
+        let (q, rem) = divmod_limbs(&r, &s);
+        let d = q.first().copied().unwrap_or(0) as u8;
+        r = rem;
+
+        let low = if f_even {
+            cmp_limbs(&r, &m_minus) != Ordering::Greater
+        } else {
+            cmp_limbs(&r, &m_minus) == Ordering::Less
+        };
+        let rp = add_limbs(&r, &m_plus);
+        let high = if f_even {
+            cmp_limbs(&rp, &s) != Ordering::Less
+        } else {
+            cmp_limbs(&rp, &s) == Ordering::Greater
+        };
+
+        if !low && !high {
+            digits.push(d);
+            continue;
+        }
+
+        let round_up = if high && !low {
+            true
+        } else if low && !high {
+            false
+        } else {
+            // Both boundaries reached: round to nearest by 2·R vs S,
+            // ties to even on the last digit.
+            match cmp_limbs(&mul2(&r), &s) {
+                Ordering::Greater => true,
+                Ordering::Less => false,
+                Ordering::Equal => d & 1 == 1,
+            }
+        };
+        digits.push(d);
+        if round_up && increment_digits(&mut digits) {
+            // Carried out of the most significant digit (all nines):
+            // value is a power of ten — one digit, exponent up one.
+            digits.clear();
+            digits.push(1);
+            k += 1;
+        }
+        break;
+    }
+
+    // Strip trailing zeros from a rounding carry; not significant for
+    // the shortest form. Keep at least one digit.
+    while digits.len() > 1 && *digits.last().expect("non-empty") == 0 {
+        digits.pop();
+    }
+
+    // `compose` wants the place value of digits[0], which is 10^(k-1).
+    (digits, k - 1)
+}
+
+/// `true` when exactly one bit of the little-endian integer is set.
+fn is_single_bit(v: &[u64]) -> bool {
+    v.iter().map(|l| l.count_ones()).sum::<u32>() == 1
+}
+
+/// `v << bits` as a fresh little-endian integer.
+fn shl_limbs(v: &[u64], bits: u32) -> Vec<u64> {
+    let value_bits = top_set_bit(v).map_or(0u32, |t| (t + 1) as u32);
+    if value_bits == 0 {
+        return vec![0u64];
+    }
+    let total = value_bits.saturating_add(bits);
+    let mut out = vec![0u64; limbs_for(total)];
+    or_left_shifted_into(&mut out, v, value_bits, bits);
+    out
+}
+
+/// `10^k` as a little-endian integer (`5^k << k`).
+fn pow10(k: u32) -> Vec<u64> {
+    shl_limbs(&pow5(k), k)
+}
+
+/// `v × 10^k`.
+fn mul_pow10(v: &[u64], k: u32) -> Vec<u64> {
+    if k == 0 {
+        return v.to_vec();
+    }
+    multiply_limbs(v, &pow10(k))
+}
+
+/// `2 × v`.
+fn mul2(v: &[u64]) -> Vec<u64> {
+    multiply_limbs(v, &[2])
+}
+
+/// `a + b` as a fresh little-endian integer.
+fn add_limbs(a: &[u64], b: &[u64]) -> Vec<u64> {
+    let n = a.len().max(b.len()) + 1;
+    let mut out = vec![0u64; n];
+    out[..a.len()].copy_from_slice(a);
+    let _ = limbs_add_assign(&mut out, b);
+    out
+}
+
+/// Increment a decimal digit string by one, carrying. Returns `true`
+/// when the carry propagated out of the most significant digit (the
+/// string was all nines).
+fn increment_digits(digits: &mut [u8]) -> bool {
+    for d in digits.iter_mut().rev() {
+        if *d == 9 {
+            *d = 0;
+        } else {
+            *d += 1;
+            return false;
+        }
+    }
+    true
 }
 
 /// Number of decimal digits per base-case group. `10^19` is the largest
