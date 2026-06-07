@@ -658,6 +658,47 @@ pub(crate) fn signed_constant_at_round(
     }
 }
 
+/// Smallest binary exponent `e` for which `|x| >= 2^e` puts a function
+/// decaying at least as fast as `2^-|x|` within half a `target`-ULP of
+/// its asymptotic limit.
+///
+/// The saturating kernels (`tanh`, `erf`, `erfc` toward `2`, `expm1`
+/// toward `-1`, `zeta` toward `1`) approach a nonzero, on-grid limit
+/// `L` but never reach it. Past this threshold the residual `|f(x) - L|`
+/// underflows every Ziv working precision before the guard cap, so the
+/// interval test can never resolve which side of `L` the true value lies
+/// on; the loop caps and the fallback returns `L` itself, which is wrong
+/// under `TowardZero` and the inward directed mode (the correctly-rounded
+/// result is the interior neighbour `L -/+ ulp`). A kernel that reaches
+/// this threshold instead rounds `L` with an infinitesimal of the
+/// residual's sign via [`crate::rounding::round_with_infinitesimal`].
+///
+/// `2^e >= target + 2` drives the residual below half a `target`-ULP for
+/// the kernels whose residual decays like `2^-|x|` (`zeta`), `e^-|x|`
+/// (`expm1`), or `e^-2|x|` (`tanh`): for those the gap between where the
+/// residual first drops below half a ULP and where it underflows the Ziv
+/// guard cap is wide, so this threshold lands safely inside it across the
+/// supported precision range. The Gaussian-decay kernels (`erf`, `erfc`,
+/// whose residual is `e^-x^2`) saturate at a much smaller `|x|`, so they
+/// use [`saturation_threshold_exponent_gaussian`] instead.
+#[allow(dead_code)]
+pub(crate) fn saturation_threshold_exponent(target: u32) -> i64 {
+    i64::from(u32::BITS - target.saturating_add(1).leading_zeros())
+}
+
+/// The [`saturation_threshold_exponent`] analogue for a residual decaying
+/// like `e^-x^2` (`erf`, `erfc`). Because the residual falls off in `x^2`
+/// rather than `x`, the threshold exponent is halved: `2^(2e) >= target`
+/// makes `e^-x^2 < 2^-target`, i.e. `e >= ceil(log2(target+2) / 2)`. This
+/// fires for the `erf`/`erfc` saturation tail (which begins near
+/// `|x| ~ sqrt(target)`), where the wider-decay threshold would miss it
+/// (e.g. `erfc(-30)` at `target = 24` has exponent 4 but the wide
+/// threshold is 5).
+#[allow(dead_code)]
+pub(crate) fn saturation_threshold_exponent_gaussian(target: u32) -> i64 {
+    (saturation_threshold_exponent(target) + 1) / 2
+}
+
 /// Returns `2/π` rounded to the requested precision.
 ///
 /// For `prec <= 4096` the rounded value comes from the 4096-bit

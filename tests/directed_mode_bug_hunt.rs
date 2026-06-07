@@ -118,8 +118,8 @@ fn near_pow2(state: &mut u64, p: u32) -> BigFloat {
 /// A positive `BigFloat` at precision `p` with `|x|` bounded to roughly
 /// `[2^-max_abs_exp, 2^(max_abs_exp+1))`. Used by the asymptote-function
 /// controls (`tanh`, `erf`, …) to stay in the Ziv-converging regime,
-/// well short of the saturation tail the `#[ignore]`d reproducers
-/// document. A mantissa in `[1, 2)` times a bounded power of two.
+/// well short of the saturation tail that
+/// `saturation_directed_sweep` and `saturation_limit_reproducers` cover. A mantissa in `[1, 2)` times a bounded power of two.
 fn rand_bounded(state: &mut u64, p: u32, max_abs_exp: i64) -> BigFloat {
     let bits = p.min(53).saturating_sub(1).max(1);
     let a = (next_u64(state) % (1u64 << bits)) as i64;
@@ -234,7 +234,7 @@ fn tanh_directed_modes_match_mpfr_control() {
         for _ in 0..n {
             // tanh over the whole real line, bounded to |x| < 16 (the
             // Ziv-converging regime; the saturation tail is in the
-            // ignored reproducers below).
+            // dedicated saturation tests below).
             let mut x = rand_bounded(&mut state, p, 3);
             if next_u64(&mut state) & 1 == 1 {
                 x = x.negated();
@@ -260,7 +260,7 @@ fn odd_functions_negative_domain_directed() {
     for &p in PRECISIONS {
         for _ in 0..n {
             // Bounded to |x| < 16 so erf stays in the converging regime
-            // (its saturation tail is an ignored reproducer below).
+            // (its saturation tail is covered by the saturation tests below).
             let neg = rand_bounded(&mut state, p, 3).negated();
             // sin / tan / sinh / cbrt / erf accept any negative input.
             check_unary(
@@ -447,25 +447,24 @@ fn bf24(v: f64) -> BigFloat {
         .0
 }
 
-/// CONFIRMED directed-mode saturation bug (Slice 1 finding, pf-3rtr.2).
+/// Regression pin for the directed-mode saturation bug (Slice 1 finding,
+/// pf-3rtr.2; fixed in pf-3rtr.11).
 ///
 /// Five kernels approach a nonzero, on-grid asymptotic limit (`tanh`,
 /// `erf` → ±1; `erfc` → 2 as x→−∞; `expm1` → −1 as x→−∞; `zeta` → 1
 /// from above). For `|x|` past where the residual underflows the maximum
-/// Ziv working precision (`target + ZIV_GUARD_CAP`), the kernel evaluates
-/// to the exact limit at every iteration, the interval test never
-/// converges, the loop caps at `ZIV_MAX_ITERS`, and the cap-fallback
-/// returns the limit. That is correct under `NearestEven` / `NearestAway`
-/// and the outward directed mode, but wrong under `TowardZero` and the
-/// inward directed mode, where the correctly-rounded result is the
-/// interior neighbour. Affects an unbounded input tail, not a measure
-/// -zero set. (`atan` → π/2 and `log2`/`log10` are NOT affected: their
+/// Ziv working precision (`target + ZIV_GUARD_CAP`), the kernel used to
+/// evaluate to the exact limit at every iteration, the interval test never
+/// converged, the loop capped at `ZIV_MAX_ITERS`, and the cap-fallback
+/// returned the limit — correct under `NearestEven` / `NearestAway` and
+/// the outward directed mode, but wrong under `TowardZero` and the inward
+/// directed mode, where the correctly-rounded result is the interior
+/// neighbour, over an unbounded input tail. The fix short-circuits each
+/// kernel to the mode-aware rounding of the limit with the residual's
+/// infinitesimal. (`atan` → π/2 and `log2`/`log10` are NOT affected: their
 /// limits are off-grid, so the final directed round moves off them
 /// correctly.)
-///
-/// `#[ignore]`d until the asymptote-family fix lands; un-ignore then.
 #[test]
-#[ignore = "documents the confirmed saturation directed-rounding bug; un-ignore when the asymptote-family fix (pf-3rtr) lands"]
 fn saturation_limit_reproducers() {
     // tanh → ±1.
     check_unary(
@@ -522,4 +521,62 @@ fn saturation_limit_reproducers() {
         one24,
         "zeta(5000) TowardZero should be 1.0"
     );
+}
+
+/// Sweep the saturation boundary and tail for the rug-orable kernels
+/// (`tanh`, `erf`, `erfc`, `expm1`), all five modes, vs MPFR. Guards both
+/// failure shapes of the fix: a *missed* saturation (the short-circuit
+/// fires too late, so the Ziv loop caps and returns the on-grid limit) and
+/// an *over-eager* one (it fires before the residual is within half a ULP,
+/// so the infinitesimal model is invalid). The exponent sweep crosses from
+/// the Ziv-converging regime, through the short-circuit threshold, into the
+/// deep tail. `zeta` has no rug oracle: its tail is pinned in
+/// `saturation_limit_reproducers` and its interior covered by
+/// `differential_zeta` and the kernel unit tests.
+#[test]
+fn saturation_directed_sweep() {
+    let mut state = u64::from_le_bytes(*b"satsweep");
+    let n = if std::env::var("PFLOAT_DEEP").is_ok() {
+        200
+    } else {
+        8
+    };
+    for &p in PRECISIONS {
+        for e in 2..=28i64 {
+            for _ in 0..n {
+                // A magnitude in [2^e, 2^(e+1)): mantissa in [1, 2) scaled.
+                let mag = scale2(&rand_bounded(&mut state, p, 0), e);
+                // tanh and erf are odd: exercise both signs (each side has
+                // its own inward directed mode).
+                for x in [mag.clone(), mag.negated()] {
+                    check_unary(
+                        "tanh-tail",
+                        &x,
+                        |b, m| b.tanh(m).0,
+                        |rx, pr, r| Float::with_val_round(pr, rx.tanh_ref(), r).0,
+                    );
+                    check_unary(
+                        "erf-tail",
+                        &x,
+                        |b, m| b.erf(m).0,
+                        |rx, pr, r| Float::with_val_round(pr, rx.erf_ref(), r).0,
+                    );
+                }
+                // erfc saturates to 2 only on the negative side; expm1 to
+                // −1 only on the negative side.
+                check_unary(
+                    "erfc-tail",
+                    &mag.negated(),
+                    |b, m| b.erfc(m).0,
+                    |rx, pr, r| Float::with_val_round(pr, rx.erfc_ref(), r).0,
+                );
+                check_unary(
+                    "expm1-tail",
+                    &mag.negated(),
+                    |b, m| b.expm1(m).0,
+                    |rx, pr, r| Float::with_val_round(pr, rx.exp_m1_ref(), r).0,
+                );
+            }
+        }
+    }
 }

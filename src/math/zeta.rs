@@ -191,6 +191,30 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
                 return (zero, Status::OK);
             }
 
+            // Large s: ζ(s) = 1 + Σ_{k≥2} k^{−s} approaches 1 from above
+            // (the 2^{−s} term dominates the positive residual), never
+            // reaching it. Past the Ziv guard cap the residual underflows
+            // every working precision, the interval test never converges,
+            // and the fallback returns the on-grid limit — correct under
+            // nearest and TowardNegative, but wrong under TowardPositive
+            // (which must round up to 1 + ulp) and TowardZero (the capped
+            // composition lands a hair the wrong side of 1). Short-circuit
+            // to the mode-aware rounding of 1 with a magnitude-growing
+            // infinitesimal (the saturation analogue of the constant
+            // special cases; see `super::saturation_threshold_exponent`).
+            if matches!(x.sign(), Sign::Positive)
+                && exponent_of(x) >= super::saturation_threshold_exponent(target_precision)
+            {
+                let one = ci(1, target_precision);
+                return crate::rounding::round_with_infinitesimal(
+                    &one,
+                    Sign::Positive,
+                    false,
+                    target_precision,
+                    mode,
+                );
+            }
+
             // Ziv-driven correct rounding under every IEEE mode. The
             // eval closure dispatches on sign(s) (binary, mode- and
             // precision-independent) to zeta_borwein (s > 0) or
