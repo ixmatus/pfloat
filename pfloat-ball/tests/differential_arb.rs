@@ -18,7 +18,8 @@
 mod common;
 
 use common::arb_bracket::{
-    arb_lane_available, bigfloat_to_dyadic, encode_decode, venv_available, ArbBracketWorker, Bracket,
+    arb_lane_available, bigfloat_to_dyadic, encode_decode, venv_available, ArbBracketWorker,
+    Bracket,
 };
 use common::bf;
 use pfloat::{BigFloat, RoundingMode};
@@ -439,13 +440,13 @@ fn edge_ball(rng: &mut Rng, p: u32, fn_id: &str) -> Ball<BigFloat> {
     // 2^-20 grid with a <= 2^-10 radius straddles a boundary with
     // probability ~1/1000, so at the default sample count it never did --
     // the pre-merge review's D5 finding.)
-    let mid = if rng.next() % 2 == 0 {
+    let mid = if rng.next().is_multiple_of(2) {
         // Snap to a boundary plus a sub-radius offset (|offset| <= 0.75*rad
         // < rad), so the boundary lies strictly inside [mid - rad, mid + rad]
         // and the ball provably straddles it.
         let b = match fn_id {
             "acosh" => bf(1, p), // domain [1, inf): 1 is the only boundary
-            _ if rng.next() % 2 == 0 => bf(1, p), // asin / acos / atanh: +-1
+            _ if rng.next().is_multiple_of(2) => bf(1, p), // asin / acos / atanh: +-1
             _ => bf(-1, p),
         };
         let (offset, _) = bf(rng.int(3), p).scale_by_pow2(radexp - 2);
