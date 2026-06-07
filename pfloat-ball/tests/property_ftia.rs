@@ -21,73 +21,11 @@ use core::cmp::Ordering;
 use pfloat::{BigFloat, RoundingMode, Status};
 use pfloat_ball::{Ball, Mag};
 
-const NE: RoundingMode = RoundingMode::NearestEven;
+mod common;
+use common::{bf, contains, random_ball, witnesses, Rng};
+
 const TN: RoundingMode = RoundingMode::TowardNegative;
 const TP: RoundingMode = RoundingMode::TowardPositive;
-
-/// Deterministic xorshift64 PRNG (no `rand` dependency; fixed seeds keep
-/// the lane reproducible).
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    /// A signed integer in `[-range, range]`.
-    fn int(&mut self, range: i64) -> i64 {
-        (self.next() % (2 * range as u64 + 1)) as i64 - range
-    }
-}
-
-fn bf(n: i64, p: u32) -> BigFloat {
-    BigFloat::try_from_i64_exact(n, p).unwrap()
-}
-
-/// `lower <= x <= upper`.
-fn contains(b: &Ball<BigFloat>, x: &BigFloat) -> bool {
-    b.lower().partial_cmp(x).0 != Some(Ordering::Greater)
-        && b.upper().partial_cmp(x).0 != Some(Ordering::Less)
-}
-
-/// A random ball at precision `p`: integer midpoint in `[-range, range]`
-/// scaled by `2^scale`, radius `2^radexp` (or exact / entire).
-fn random_ball(rng: &mut Rng, p: u32) -> Ball<BigFloat> {
-    let m = rng.int(1 << 20);
-    let scale = rng.int(40);
-    let (mid, _) = bf(m, p).scale_by_pow2(scale);
-    let rad = match rng.next() % 8 {
-        0 => Mag::ZERO,
-        _ => Mag::from_pow2(scale + rng.int(8) - 30),
-    };
-    Ball::new(mid, rad).unwrap()
-}
-
-/// Witnesses inside `[mid - rad, mid + rad]`, reconstructed EXACTLY (not
-/// the outward-rounded `lower()`/`upper()`): `mid` and `mid ± rad·t` for
-/// dyadic `t ∈ {0, ±1/2, ±1}` at high precision.
-fn witnesses(b: &Ball<BigFloat>, work: u32) -> Vec<BigFloat> {
-    let mid = b.midpoint().round_to_precision(work, NE).unwrap().0;
-    let mut out = vec![mid.clone()];
-    if let Mag::Finite { .. } = b.radius() {
-        let rad = b
-            .radius()
-            .to_bigfloat()
-            .round_to_precision(work, NE)
-            .unwrap()
-            .0;
-        for &(num, den_pow) in &[(1i64, 0u32), (1, 1)] {
-            let (scaled, _) = rad.scale_by_pow2(-(den_pow as i64));
-            let (scaled, _) = scaled.mul(&bf(num, work), NE);
-            out.push(mid.add(&scaled, NE).0);
-            out.push(mid.sub(&scaled, NE).0);
-        }
-    }
-    out
-}
 
 /// Assert FTIA for a unary op: `f(w) ∈ result` for every witness `w`.
 fn check_unary(
