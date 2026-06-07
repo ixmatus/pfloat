@@ -67,13 +67,28 @@ high-precision FTIA point-containment checks for the arithmetic and
 elementary surface), so the committed lanes are regression guards over an
 already-reviewed surface.
 
-- **Independent Arb containment backstop (per-release).** The
-  self-consistency lane is not independent; the independent soundness
-  check is a `differential-arb` lane that compares ball results against
-  Arb (via pfloat's python-flint subprocess oracle, no FFI in the link
-  graph) and logs tightness per function, per-bucket regression-guarded.
-  Not wired this slice because it pulls `rug`/gmp-mpfr-sys; the feature is
-  the documented home and the implementation is the first follow-up.
+- **Independent Arb containment backstop (per-release). LANDED (pf-fe5f,
+  this ADR's follow-up).** The self-consistency lane is not independent;
+  the independent soundness check is the `differential-arb` lane
+  (`pfloat-ball/tests/differential_arb.rs`), which brackets each ball op's
+  witnesses with Arb's rigorous interval (the worker's new `BRACKET` verb,
+  which emits the exact rational enclosure rather than the rounded f32 that
+  `CERTIFY` collapses to) and asserts the result ball is not provably
+  disjoint from it. That is the same overlap predicate the self-consistency
+  lane uses, so the two test the identical FTIA claim with different
+  oracles. The sound direction is the ball admitting Arb's enclosure of the
+  true value, never the reverse: a check that the ball lies *inside* Arb's
+  interval would pass a too-narrow (unsound) ball, a false backstop. A
+  negative control (a quarter-radius ball) confirms the check has teeth.
+  **Correction to the original deferral rationale:** the lane reaches Arb
+  purely through pfloat's python-flint subprocess and so pulls NO
+  `rug`/gmp-mpfr-sys; FLINT/Arb (LGPL) never enter the link graph at rest
+  or under test. It is per-release / env-gated (it needs the worker venv).
+  The remaining piece is tightness (per-function, per-bucket
+  regression-guarded), deferred to pf-fe5f.7: a meaningful slack needs
+  Arb's enclosure of f over the input INTERVAL (the witness-image span is
+  rounding-dominated for near-exact inputs), a `BRACKET` interval-input
+  extension.
 - **Lefèvre–Muller hardest-to-round seeding.** Seed the property
   generators with the hard-to-round corpus (hard-to-round scalars produce
   hard-to-enclose balls).
@@ -88,13 +103,15 @@ already-reviewed surface.
   invariants. The soundness-critical radius round-up has the most
   verification weight, across types, proofs, properties, and (one-time)
   an independent exact oracle.
-- The honest framing is load-bearing: the committed lane is
-  self-consistency, the independent backstop is named and deferred, and
-  the Kani claim is scoped to the `Vec`-free primitive. A reader is told
-  exactly what each lane does and does not establish.
+- The honest framing is load-bearing: the every-push lane is
+  self-consistency, the independent Arb backstop is now wired as a
+  per-release lane (pf-fe5f), and the Kani claim is scoped to the
+  `Vec`-free primitive. A reader is told exactly what each lane does and
+  does not establish.
 - `pfloat-ball` is itself the rigorous self-oracle for Phase 1 (pfloat
-  verifies pfloat), with the independent Arb backstop keeping the loop
-  from being purely self-referential once it lands.
+  verifies pfloat); the independent Arb backstop now keeps that loop from
+  being purely self-referential, checking ball enclosures against a second
+  library rather than against pfloat alone.
 
 ## Related
 

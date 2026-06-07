@@ -380,3 +380,132 @@ fn div_by_zero_straddling_ball_is_entire() {
         "div by a zero-straddling ball must be entire"
     );
 }
+
+// ---------- S5: the domain-edge lane (pf-fe5f.6) ----------
+//
+// The inverse-trig functions S3 deferred (asin/acos near ±1, acosh near 1,
+// atanh near ±1), plus the reconciliation the BRACKET verb surfaced: Arb
+// returns a NaN ball at a point outside the domain, while pfloat-ball uses
+// a Status::INVALID + (entire | sound-over-the-in-domain-part) convention.
+// The lane checks both: over the in-domain witnesses the ball still
+// contains Arb's bracket (soundness holds on the defined part), and at an
+// out-of-domain point Arb's NaN lines up with the ball's INVALID flag.
+
+use pfloat::Status;
+
+fn ball_unary_status(a: &Ball<BigFloat>, fn_id: &str) -> (Ball<BigFloat>, Status) {
+    match fn_id {
+        "asin" => a.asin(),
+        "acos" => a.acos(),
+        "acosh" => a.acosh(),
+        "atanh" => a.atanh(),
+        other => panic!("unknown edge fn {other}"),
+    }
+}
+
+/// A ball near the domain boundary of `fn_id`: some entirely in domain,
+/// some straddling the edge (so the INVALID / entire convention is
+/// exercised). Midpoints are exact dyadics `m * 2^-20`.
+fn edge_ball(rng: &mut Rng, p: u32, fn_id: &str) -> Ball<BigFloat> {
+    let radexp = -(10 + (rng.next() % 24) as i64);
+    let rad = Mag::from_pow2(radexp);
+    let mid = match fn_id {
+        "acosh" => {
+            // [0.8, 4): below 1 is out of domain, at/above 1 in domain.
+            let lo = (8i64 << 20) / 10;
+            let span = (4u64 << 20) - lo as u64;
+            bf(lo + (rng.next() % span) as i64, p).scale_by_pow2(-20).0
+        }
+        _ => {
+            // asin / acos / atanh around [-1, 1]: span to ±1.2 so balls
+            // straddle ±1.
+            let span = (12i64 << 20) / 10;
+            bf(rng.int(span), p).scale_by_pow2(-20).0
+        }
+    };
+    Ball::new(mid, rad).unwrap()
+}
+
+#[test]
+fn arb_containment_edge() {
+    if !venv_available() {
+        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let deep = std::env::var("PFLOAT_DEEP").is_ok();
+    let n = if deep { 200 } else { 30 };
+
+    for &fn_id in &["asin", "acos", "acosh", "atanh"] {
+        let seed = fn_id.bytes().fold(0xED6E_0000u64, |a, b| {
+            a.wrapping_mul(139).wrapping_add(b as u64)
+        });
+        let mut rng = Rng(seed);
+        let mut usable = 0u32;
+        let mut invalid = 0u32;
+        for _ in 0..n {
+            let p = [24u32, 53, 113][(rng.next() % 3) as usize];
+            let a = edge_ball(&mut rng, p, fn_id);
+            let (result, status) = ball_unary_status(&a, fn_id);
+            if status.invalid() {
+                invalid += 1; // the boundary was exercised
+            }
+            if result.is_entire() {
+                continue;
+            }
+            let mut any = false;
+            for wit in witnesses(&a, 400) {
+                // An out-of-domain witness yields a NaN bracket (Arb agrees
+                // the function is undefined there) and is skipped; over the
+                // in-domain witnesses the ball must still be sound.
+                if let Bracket::Finite { lo, hi } = w.bracket(fn_id, p + 128, &wit, None) {
+                    assert!(
+                        contains_bracket(&result, &lo, &hi),
+                        "{fn_id} edge p={p}: ball [{}, {}] disjoint from Arb's [{}, {}] over the in-domain part -- UNSOUND",
+                        result.lower(), result.upper(), lo, hi
+                    );
+                    any = true;
+                }
+            }
+            if any {
+                usable += 1;
+            }
+        }
+        assert!(
+            usable >= 3,
+            "{fn_id}: only {usable} edge balls had in-domain witnesses"
+        );
+        assert!(
+            invalid >= 1,
+            "{fn_id}: never exercised the domain boundary (no INVALID raised)"
+        );
+    }
+}
+
+#[test]
+fn domain_edge_invalid_matches_arb_nan() {
+    // Reconciliation: at a point outside the domain, pfloat-ball raises
+    // INVALID and Arb returns a NaN ball. Pin a few.
+    let p = 53;
+    let cases: [(&str, BigFloat); 3] = [
+        ("asin", ratio(3, 2, p)),  // 1.5 > 1
+        ("atanh", ratio(3, 2, p)), // 1.5 > 1
+        ("acosh", ratio(1, 2, p)), // 0.5 < 1
+    ];
+    let mut worker = if venv_available() {
+        Some(ArbBracketWorker::spawn())
+    } else {
+        None
+    };
+    for (fn_id, x) in cases {
+        let a = Ball::point(x.clone()).unwrap();
+        let (_, status) = ball_unary_status(&a, fn_id);
+        assert!(status.invalid(), "{fn_id} out of domain must raise INVALID");
+        if let Some(w) = worker.as_mut() {
+            assert!(
+                matches!(w.bracket(fn_id, p + 128, &x, None), Bracket::Nan),
+                "{fn_id} out of domain: Arb should return a NaN ball"
+            );
+        }
+    }
+}
