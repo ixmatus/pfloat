@@ -53,6 +53,8 @@ pub mod arith;
 pub mod ball;
 #[cfg(feature = "exp-log")]
 pub mod elem;
+#[cfg(feature = "big")]
+pub mod io;
 pub mod mag;
 #[cfg(feature = "big")]
 pub mod scalar;
@@ -63,6 +65,8 @@ pub mod spec;
 pub use accuracy::refine_to_accuracy;
 #[cfg(feature = "big")]
 pub use ball::{Ball, BallError};
+#[cfg(feature = "big")]
+pub use io::BallParseError;
 pub use mag::Mag;
 #[cfg(feature = "big")]
 pub use scalar::RealScalar;
