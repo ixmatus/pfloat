@@ -27,6 +27,28 @@
 //! `ζ(3)` are not provided as dedicated entries yet. `e` is reachable
 //! today as `BigFloat::try_from_i64_exact(1, p)?.exp(mode)`.
 //!
+//! # Panics
+//!
+//! Every function requires `precision >= 1`, the same precondition the
+//! crate's other precision-taking compute methods carry. Passing
+//! `precision == 0` panics. Callers holding a value whose precision came
+//! from untrusted input should reject zero before calling, the way
+//! [`BigFloat::round_to_precision`](crate::BigFloat::round_to_precision)
+//! and the constructors return [`BuildError::PrecisionZero`] rather than
+//! accepting it.
+//!
+//! [`BuildError::PrecisionZero`]: crate::BuildError::PrecisionZero
+//!
+//! # Resource use
+//!
+//! Working storage grows as `O(precision)`: roughly `precision / 64`
+//! `u64` limbs per intermediate, with several intermediates live at once
+//! during the arithmetic-geometric mean and series evaluation. A very
+//! large `precision` (hundreds of millions of bits) can therefore
+//! exhaust memory and abort the process. There is no built-in ceiling;
+//! treat `precision` derived from untrusted input as a resource budget
+//! and bound it before calling.
+//!
 //! # Examples
 //!
 //! ```
