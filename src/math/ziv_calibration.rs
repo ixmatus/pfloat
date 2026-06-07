@@ -82,6 +82,15 @@ pub const LN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 /// eval closure (slice p1.24's tiny-x boost).
 pub const LOG1P_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
+/// `log2`: composition `ln(x) / ln(2)`, both at working precision under
+/// `NearestEven`, then the directed round (pf-3rtr.3, ADR-0081). The op
+/// count is `ln`'s plus one constant materialisation and one divide, so
+/// the bound is the `ln` template plus a constant, well under `2^24`.
+pub const LOG2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
+/// `log10`: composition `ln(x) / ln(10)`, the same structure as `log2`.
+pub const LOG10_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
+
 // --- Forward trig ----------------------------------------------------
 
 /// `sin`: Payne-Hanek range reduction plus quadrant-dispatched
@@ -293,6 +302,8 @@ mod tests {
             EXPM1_ERROR_GUARD,
             LN_ERROR_GUARD,
             LOG1P_ERROR_GUARD,
+            LOG2_ERROR_GUARD,
+            LOG10_ERROR_GUARD,
             SIN_ERROR_GUARD,
             COS_ERROR_GUARD,
             TAN_ERROR_GUARD,
@@ -374,12 +385,13 @@ mod tests {
     /// than rely on `DEFAULT_ERROR_GUARD` implicitly.
     #[test]
     fn calibration_table_enumerates_expected_kernel_count() {
-        // 27 always-present: 6 elementary + 3 forward trig + 3 reciprocal
-        // trig + 4 inverse trig + 6 hyperbolic + 2 power + 1 agm + 2 libm
-        // roots (rootn, hypot). The specials family is feature-gated;
-        // `cbrt` is exact-integer with no Ziv path (ADR-0056). Full union
-        // = 27 + 6 + 4 + 1 + 4 + 1 = 43.
-        let expected: usize = 27
+        // 29 always-present: 8 elementary (exp, exp2, exp10, expm1, ln,
+        // log1p, log2, log10) + 3 forward trig + 3 reciprocal trig + 4
+        // inverse trig + 6 hyperbolic + 2 power + 1 agm + 2 libm roots
+        // (rootn, hypot). The specials family is feature-gated; `cbrt` is
+        // exact-integer with no Ziv path (ADR-0056). Full union = 29 + 6 +
+        // 4 + 1 + 4 + 1 = 45.
+        let expected: usize = 29
             + 6 * usize::from(cfg!(feature = "specials"))
             + 4 * usize::from(cfg!(feature = "integrals"))
             + usize::from(cfg!(feature = "airy"))

@@ -46,9 +46,9 @@ a primitive for the function, Arb otherwise.
 | csc | Arb | CR | CR | CR | CR | CR |
 | digamma | MPFR | CR | CR | CR | CR | CR |
 | Ei | MPFR | CR | CR | CR | CR | CR |
-| erf | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| erf | MPFR | CR | CR | CR | CR | CR |
 | erfc | MPFR | CR | CR | CR | CR | CR |
-| exp | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| exp | MPFR | CR | CR | CR | CR | CR |
 | exp10 | MPFR | CR | CR | CR | CR | CR |
 | exp2 | MPFR | CR | CR | CR | CR | CR |
 | expm1 | MPFR | CR | CR | CR | CR | CR |
@@ -60,10 +60,10 @@ a primitive for the function, Arb otherwise.
 | In (n=10) | Arb | CR | CR | CR | CR | CR |
 | In (n=25) | Arb | CR | CR | CR | CR | CR |
 | In (n=100) | Arb | CR | CR | CR | CR | CR |
-| J0 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
-| J1 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| J0 | MPFR | CR | CR | CR | CR | CR |
+| J1 | MPFR | CR | CR | CR | CR | CR |
 | Jn (n=2) | MPFR | CR | CR | CR | CR | CR |
-| Jn (n=5) | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| Jn (n=5) | MPFR | CR | CR | CR | CR | CR |
 | Jn (n=10) | MPFR | CR | CR | CR | CR | CR |
 | Jn (n=25) | MPFR | CR | CR | CR | CR | CR |
 | Jn (n=100) | MPFR | CR | CR | CR | CR | CR |
@@ -74,19 +74,19 @@ a primitive for the function, Arb otherwise.
 | Kn (n=10) | Arb | CR | CR | CR | CR | CR |
 | Kn (n=25) | Arb | CR | CR | CR | CR | CR |
 | Kn (n=100) | Arb | CR | CR | CR | CR | CR |
-| lgamma | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| lgamma | MPFR | CR | CR | CR | CR | CR |
 | li | Arb | CR | CR | CR | CR | CR |
-| ln | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
-| log10 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| ln | MPFR | CR | CR | CR | CR | CR |
+| log10 | MPFR | CR | CR | CR | CR | CR |
 | log1p | MPFR | CR | CR | CR | CR | CR |
-| log2 | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| log2 | MPFR | CR | CR | CR | CR | CR |
 | sec | Arb | CR | CR | CR | CR | CR |
 | Si | Arb | CR | CR | CR | CR | CR |
 | sin | MPFR | CR | CR | CR | CR | CR |
 | sinh | MPFR | CR | CR | CR | CR | CR |
-| sqrt | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| sqrt | MPFR | CR | CR | CR | CR | CR |
 | tan | MPFR | CR | CR | CR | CR | CR |
-| tanh | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| tanh | MPFR | CR | CR | CR | CR | CR |
 | Y0 | MPFR | CR | CR | CR | CR | CR |
 | Y1 | MPFR | CR | CR | CR | CR | CR |
 | Yn (n=2) | MPFR | CR | CR | CR | CR | CR |
@@ -94,4 +94,4 @@ a primitive for the function, Arb otherwise.
 | Yn (n=10) | MPFR | CR | CR | CR | CR | CR |
 | Yn (n=25) | MPFR | CR | CR | CR | CR | CR |
 | Yn (n=100) | MPFR | CR | CR | CR | CR | CR |
-| zeta | MPFR | CR | CR(d) | CR(d) | CR(d) | CR(d) |
+| zeta | MPFR | CR | CR | CR | CR | CR |

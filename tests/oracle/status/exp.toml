@@ -13,10 +13,10 @@ lm_seeds_run       = 13
 
 [rounding_status]
 NE = "correctly-rounded"
-NA = "unswept"
-TZ = "unswept"
-TP = "unswept"
-TN = "unswept"
+NA = "correctly-rounded"
+TZ = "correctly-rounded"
+TP = "correctly-rounded"
+TN = "correctly-rounded"
 
 [cross_check]
 # pf-hcz4 cross-check baseline. ADR-0049.

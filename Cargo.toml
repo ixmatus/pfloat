@@ -1,6 +1,6 @@
 [package]
 name = "pfloat"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 # No `rust-version`: pfloat requires nightly Rust for
 # `feature(generic_const_exprs)` per ADR-0011. The toolchain is pinned

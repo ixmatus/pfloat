@@ -134,6 +134,31 @@ fn erfc_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     };
     let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
+    // Large negative x: erfc(x) = 2 − erfc(|x|) approaches 2 from below
+    // (erfc(|x|) → 0⁺), never reaching it. Past the Ziv guard cap the
+    // residual underflows every working precision, the interval test never
+    // converges, and the fallback returns the exact on-grid 2 — correct
+    // under nearest and the outward directed mode, wrong under TowardZero
+    // and TowardNegative. Short-circuit to the mode-aware rounding of 2
+    // minus an infinitesimal. (The x → +∞ tail decays to 0⁺, a genuine
+    // value the normal path rounds; it does not saturate to a nonzero
+    // on-grid limit.)
+    if matches!(sign, Sign::Negative)
+        && e_x >= super::saturation_threshold_exponent_gaussian(target_precision)
+    {
+        let two = BigFloat::try_from_i64_exact(2, target_precision).expect("precision >= 1");
+        let (result, status) = crate::rounding::round_with_infinitesimal(
+            &two,
+            Sign::Positive,
+            true,
+            target_precision,
+            mode,
+        );
+        let status = status | Status::INEXACT;
+        auto_raise(status);
+        return (result, status);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure carries the regime dispatch on |x| and the negative-x
     // reflection (`2 − erfc(|x|)` loses at most one bit because

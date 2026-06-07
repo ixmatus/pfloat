@@ -143,6 +143,24 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         );
     }
 
+    // Large |x|: tanh(x) = sign·(1 − 2e^{−2|x|}) approaches ±1 from
+    // inside (magnitude strictly < 1, never reaching the limit). Once
+    // 2^e ≥ target + 2 the residual 2e^{−2|x|} is far below half a target
+    // ULP, so the value is ±1 minus an infinitesimal; for |x| past the
+    // Ziv guard cap the residual underflows every working precision, the
+    // interval test never converges, and the cap-fallback returns the
+    // exact on-grid ±1 — correct under nearest and the outward directed
+    // mode, but wrong under TowardZero and the inward one. Short-circuit
+    // to the mode-aware rounding of ±1 with the residual's (magnitude-
+    // shrinking) sign, mirroring the tiny-x path above.
+    if e >= super::saturation_threshold_exponent(target_precision) {
+        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
+        let (result, status) =
+            crate::rounding::round_with_infinitesimal(&one, x.sign(), true, target_precision, mode);
+        auto_raise(status);
+        return (result, status);
+    }
+
     let sign = x.sign();
     let abs_x = x.abs();
     let (result, status) = ziv_round(

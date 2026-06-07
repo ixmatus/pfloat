@@ -273,9 +273,15 @@ fn round_ties_to_away_f32(value: &Float) -> f32 {
         return lo;
     }
     if hi.is_infinite() {
-        // value's magnitude exceeds max_finite. Under NA, IEEE 754
-        // §4.3 rounds to ±∞.
-        return hi;
+        // |value| ∈ (max_finite, ∞): nearest rounds to ±∞ only past the
+        // overflow tie `max_finite + ulp_max/2` (ulp at f32::MAX is
+        // 2^104, so the half-ulp is 2^103); below the tie it rounds back
+        // to ±max_finite. NA ties to ±∞. An earlier unconditional
+        // `return hi` sent the whole (max, max+ulp/2) band to ∞, which is
+        // wrong (pf-3rtr.8; the convert boundary corpus surfaced it).
+        let prec = value.prec();
+        let tie = Float::with_val(prec, f32::MAX) + Float::with_val(prec, 2f64.powi(103));
+        return if value.clone().abs() >= tie { hi } else { lo };
     }
     // Distances at the value's working precision, computed without
     // further rounding.
@@ -286,6 +292,53 @@ fn round_ties_to_away_f32(value: &Float) -> f32 {
         Some(Ordering::Less) => lo,
         Some(Ordering::Greater) => hi,
         // Exact tie: away from zero wins.
+        Some(Ordering::Equal) | None => hi,
+    }
+}
+
+/// Round a `rug::Float` to `f64` under the requested rounding mode. The
+/// f64 companion to [`round_f32`]; `None` for NaN. The four MPFR-native
+/// modes go direct; `NearestAway` is synthesized (MPFR has no
+/// roundTiesToAway) so the f64 lane covers all five modes directly rather
+/// than leaning on the width-generic f32 lane.
+pub fn round_f64(value: &Float, mode: RoundingMode) -> Option<f64> {
+    if value.is_nan() {
+        return None;
+    }
+    match mode {
+        RoundingMode::NearestEven => Some(value.to_f64_round(Round::Nearest)),
+        RoundingMode::TowardZero => Some(value.to_f64_round(Round::Zero)),
+        RoundingMode::TowardPositive => Some(value.to_f64_round(Round::Up)),
+        RoundingMode::TowardNegative => Some(value.to_f64_round(Round::Down)),
+        RoundingMode::NearestAway => Some(round_ties_to_away_f64(value)),
+    }
+}
+
+/// IEEE 754 roundTiesToAway to `f64`, synthesized; the f64 companion to
+/// [`round_ties_to_away_f32`] with the same overflow handling.
+fn round_ties_to_away_f64(value: &Float) -> f64 {
+    if value.is_infinite() {
+        return value.to_f64_round(Round::Nearest);
+    }
+    let lo = value.to_f64_round(Round::Zero);
+    let hi = value.to_f64_round(Round::AwayZero);
+    if lo == hi {
+        return lo;
+    }
+    if hi.is_infinite() {
+        // The f64 companion to the f32 overflow tie: ulp at f64::MAX is
+        // 2^(1023-52) = 2^971, so the half-ulp is 2^970. Below the tie,
+        // round to ±max_finite; at or above it, NA goes to ±∞.
+        let prec = value.prec();
+        let tie = Float::with_val(prec, f64::MAX) + Float::with_val(prec, 2f64.powi(970));
+        return if value.clone().abs() >= tie { hi } else { lo };
+    }
+    let g = value.prec();
+    let d_lo = Float::with_val(g, value - &Float::with_val(g, lo)).abs();
+    let d_hi = Float::with_val(g, &Float::with_val(g, hi) - value).abs();
+    match d_lo.partial_cmp(&d_hi) {
+        Some(Ordering::Less) => lo,
+        Some(Ordering::Greater) => hi,
         Some(Ordering::Equal) | None => hi,
     }
 }

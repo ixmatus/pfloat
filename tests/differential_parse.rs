@@ -3,12 +3,19 @@
 //!
 //! Both pfloat and rug round to the requested precision under
 //! `NearestEven`; the bit-for-bit comparison is the standard test.
+//!
+//! This lane is `NearestEven`-only by design: it pins the canonical
+//! decimal round-trip bit-for-bit. It is one of the three deliberate
+//! `NearestEven`-only differential lanes named in ADR-0079 (with
+//! `beta`, a loose two-ULP oracle, and `zeta` at p = 1024 for cost);
+//! directed-mode decimal parsing is a separate concern from the
+//! correct-rounding sweep this phase verifies.
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 
 mod differential;
 
-use differential::{bigfloat_to_rug, mpfr_round_of, ALL_ROUNDING_MODES, SWEEP_PRECISIONS};
+use differential::{bigfloat_to_rug, mpfr_round_of, NEAREST_EVEN_ROUNDING_MODES, SWEEP_PRECISIONS};
 
 use pfloat::{BigFloat, RoundingMode};
 
@@ -57,7 +64,7 @@ const BOUNDARY_STRINGS: &[&str] = &["1e100000", "1e-100000"];
 fn parse_matches_mpfr_on_canonical_strings() {
     for &p in SWEEP_PRECISIONS {
         for &s in STRINGS {
-            for &mode in ALL_ROUNDING_MODES {
+            for &mode in NEAREST_EVEN_ROUNDING_MODES {
                 let bf_r = {
                     let (parsed, _status) = BigFloat::parse_str(s, p, mode)
                         .unwrap_or_else(|e| panic!("pfloat parse failed for {s:?}: {e:?}"));

@@ -131,6 +131,23 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     };
     let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
 
+    // Large |x|: erf(x) = sign·(1 − e^{−x²}/(x√π)·…) approaches ±1 from
+    // inside (magnitude strictly < 1). Past the Ziv guard cap the residual
+    // to ±1 underflows every working precision, the interval test never
+    // converges, and the fallback returns the exact on-grid ±1 — correct
+    // under nearest and the outward directed mode, wrong under TowardZero
+    // and the inward one. Short-circuit to the mode-aware rounding of ±1
+    // minus an infinitesimal (the saturation analogue of the tanh tiny-x
+    // path; see `super::saturation_threshold_exponent`).
+    if e_x >= super::saturation_threshold_exponent_gaussian(target_precision) {
+        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
+        let (result, status) =
+            crate::rounding::round_with_infinitesimal(&one, sign, true, target_precision, mode);
+        let status = status | Status::INEXACT;
+        auto_raise(status);
+        return (result, status);
+    }
+
     let (result, status) = ziv_round(
         |working_prec| {
             let v = erf_at_w(&abs_x, working_prec, use_asymptotic);

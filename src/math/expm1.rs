@@ -136,6 +136,25 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         );
     }
 
+    // Large negative x: expm1(x) = −1 + e^x approaches −1 from above
+    // (e^x → 0⁺), magnitude strictly < 1. Past the Ziv guard cap the
+    // residual e^x underflows every working precision, the interval test
+    // never converges, and the fallback returns the exact on-grid −1 —
+    // correct under nearest and TowardNegative, but wrong under TowardZero
+    // and TowardPositive (the modes rounding toward zero). Short-circuit
+    // to the mode-aware rounding of −1 with a magnitude-shrinking
+    // infinitesimal. (x → +∞ grows without bound; no saturation there.)
+    if x.is_sign_negative() && e >= super::saturation_threshold_exponent(target_precision) {
+        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
+        return crate::rounding::round_with_infinitesimal(
+            &one,
+            Sign::Negative,
+            true,
+            target_precision,
+            mode,
+        );
+    }
+
     // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.
