@@ -49,6 +49,108 @@ fn assert_shortest_ok(s: &str, x: f64) {
     );
 }
 
+/// Value equality (precision/sign tolerant) via `partial_cmp`.
+fn veq(a: &BigFloat, b: &BigFloat) -> bool {
+    matches!(a.partial_cmp(b).0, Some(core::cmp::Ordering::Equal))
+}
+
+/// The shortest output for `v` at precision `p` must be the
+/// correctly-rounded shortest decimal: it round-trips, is the closest
+/// decimal of its own length to `v`, and no shorter decimal round-trips.
+///
+/// The closest-length check compares against `to_decimal_string` (the
+/// independent fixed-precision digit path), because round-trip alone does
+/// not certify correct rounding: at low precision two equal-length
+/// decimals can both round-trip while only one is closest to `v`.
+fn assert_correct_shortest(v: &BigFloat, p: u32) {
+    let s = v.to_shortest_decimal_string();
+    let back = BigFloat::parse_str(&s, p, NE).expect("parse").0;
+    assert!(veq(&back, v), "round-trip p={p}: {s} did not parse back");
+    let l = sig_digit_count(&s) as u32;
+    // Closest among the length-l decimals that round-trip. The
+    // correctly-rounded l-digit decimal (`reference`, the closest l-digit
+    // to v) is the right answer only if it itself round-trips; when it
+    // does not, the shortest output legitimately picks a farther l-digit
+    // decimal that does. So a mismatch is a bug only when `reference`
+    // round-trips (the formatter passed over a closer valid neighbour).
+    let reference = v.to_decimal_string(l, NE);
+    if sig_digits(&s) != sig_digits(&reference) {
+        let ref_back = BigFloat::parse_str(&reference, p, NE).expect("parse").0;
+        assert!(
+            !veq(&ref_back, v),
+            "not closest at p={p}: shortest={s} but closer {l}-digit {reference} also round-trips"
+        );
+    }
+    // Minimality: the closest shorter decimal must not round-trip.
+    if l >= 2 {
+        let shorter = v.to_decimal_string(l - 1, NE);
+        let sb = BigFloat::parse_str(&shorter, p, NE).expect("parse").0;
+        assert!(
+            !veq(&sb, v),
+            "not minimal at p={p}: {shorter} ({} digits) round-trips, shortest gave {s}",
+            l - 1
+        );
+    }
+}
+
+#[test]
+fn correct_shortest_reproducers() {
+    // Adversarial-review reproducers: at low precision two same-length
+    // decimals both round-trip, so the formatter must pick the closest.
+    // The high-fixup over-scaled and emitted the farther neighbor.
+    // 9.478e65 at p=4: the high-fixup emitted "1e66", but "9e65" is
+    // closer to the value and also round-trips, so "9e65" is correct.
+    let r1 = BigFloat::parse_str("904605613767e54", 4, NE)
+        .expect("parse")
+        .0;
+    assert_correct_shortest(&r1, 4);
+    // 1.82497e193 at p=8: "1.83e193" is the shortest round-trip. The
+    // closer 3-digit "1.82e193" does not round-trip, so the formatter
+    // correctly takes the farther 3-digit neighbor (this case exercises
+    // the closest-when-the-nearest-doesn't-round-trip branch of the
+    // oracle).
+    let r2 = BigFloat::parse_str("182453963832357166e176", 8, NE)
+        .expect("parse")
+        .0;
+    assert_correct_shortest(&r2, 8);
+}
+
+#[test]
+fn correct_shortest_low_precision_sweep() {
+    // The high-fixup defect surfaced at low precision and large magnitude
+    // (244/80000 random prec-4 values), where two equal-length decimals
+    // can both round-trip. Sweep diverse magnitudes at several low
+    // precisions against the closest-shortest oracle.
+    let mut s: u64 = 0xdead_beef_0bad_f00d;
+    let mut rng = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
+    };
+    let mut checked = 0usize;
+    for &p in &[4u32, 5, 6, 8, 12, 24, 53] {
+        for _ in 0..15_000 {
+            let sig = rng() % 1_000_000_000_000; // up to 12 digits
+            if sig == 0 {
+                continue;
+            }
+            let exp = (rng() % 661) as i64 - 330; // [-330, 330]
+            let dec = format!("{sig}e{exp}");
+            let v = match BigFloat::parse_str(&dec, p, NE) {
+                Ok((v, _)) => v,
+                Err(_) => continue,
+            };
+            if v.is_zero() || !v.is_finite() {
+                continue;
+            }
+            assert_correct_shortest(&v, p);
+            checked += 1;
+        }
+    }
+    assert!(checked > 50_000, "only {checked} values checked");
+}
+
 #[test]
 fn matches_rust_f64_shortest() {
     let cases = [

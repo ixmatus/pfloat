@@ -168,6 +168,17 @@ impl BigFloat {
     ///
     /// Special values render as for
     /// [`to_decimal_string`](Self::to_decimal_string).
+    ///
+    /// # Resource use
+    ///
+    /// The shortest form carries about `precision × log10(2)` significant
+    /// digits, and the algorithm builds working integers whose size grows
+    /// with the precision. A very large precision (hundreds of millions
+    /// of bits) therefore makes the output and the working storage
+    /// astronomically large and can exhaust memory; this is the inherent
+    /// cost of an arbitrary-precision value, not a magnitude the `inf` /
+    /// `0` cap covers. Precision in the realistic range renders without
+    /// issue.
     #[must_use]
     pub fn to_shortest_decimal_string(&self) -> String {
         match &self.class {
@@ -478,8 +489,16 @@ fn dragon4(m_int: &[u64], precision: u32, e: i64) -> (Vec<u8>, i64) {
     // R/S/M+/M- as nonnegative integers with value = R/S and M+ / M- the
     // half-ulp gaps to the upper / lower neighbour, all on one scale
     // (Burger-Dybvig).
+    // The binary shifts saturate at u32::MAX rather than truncating: a
+    // bare `as u32` on a scale past u32::MAX silently drops the high
+    // bits, building an r/s pair off by a 2^32 factor and sending the
+    // scale fixup into a runaway loop. A shift that large needs a
+    // precision near u32::MAX (a ~500 MB mantissa), so it is past the
+    // feasible-rendering regime in any case (see the method's resource
+    // note); saturating keeps the path panic- and runaway-free without
+    // affecting any feasible precision, where the cast is exact.
     let (mut r, mut s, mut m_plus, mut m_minus) = if e >= 0 {
-        let shift = e as u32;
+        let shift = u32::try_from(e).unwrap_or(u32::MAX);
         let f_be = shl_limbs(m_int, shift); // f · 2^e
         let be = shl_limbs(&[1], shift); // 2^e
         if unequal {
@@ -488,18 +507,18 @@ fn dragon4(m_int: &[u64], precision: u32, e: i64) -> (Vec<u8>, i64) {
             (shl_limbs(&f_be, 1), vec![2u64], be.clone(), be)
         }
     } else {
-        let neg_e = (-e) as u32;
+        let neg_e = u32::try_from(e.unsigned_abs()).unwrap_or(u32::MAX);
         if unequal {
             (
                 shl_limbs(m_int, 2),
-                shl_limbs(&[1], neg_e + 2),
+                shl_limbs(&[1], neg_e.saturating_add(2)),
                 vec![2u64],
                 vec![1u64],
             )
         } else {
             (
                 shl_limbs(m_int, 1),
-                shl_limbs(&[1], neg_e + 1),
+                shl_limbs(&[1], neg_e.saturating_add(1)),
                 vec![1u64],
                 vec![1u64],
             )
@@ -519,38 +538,27 @@ fn dragon4(m_int: &[u64], precision: u32, e: i64) -> (Vec<u8>, i64) {
         m_minus = multiply_limbs(&m_minus, &p);
     }
 
-    // High fixup: value (with upper tolerance) reaches 1 in the scaled
-    // frame, so it carries one more integer digit than estimated.
-    loop {
-        let rp = add_limbs(&r, &m_plus);
-        let high = if f_even {
-            cmp_limbs(&rp, &s) != Ordering::Less
-        } else {
-            cmp_limbs(&rp, &s) == Ordering::Greater
-        };
-        if high {
-            s = mul_pow10(&s, 1);
-            k += 1;
-        } else {
-            break;
-        }
+    // Scale fixup: bring value/S into [1/10, 1) using the value itself,
+    // so the first generated digit lands in 1..=9. The rounding
+    // tolerances (R ± M vs S) belong to digit generation, not to the
+    // magnitude estimate. Folding M+ into the scale decision over-scales
+    // when the upper half-ulp straddles a power of ten: it emits a
+    // spurious leading 0 that the boundary then rounds up to the farther
+    // neighbour (9.478e65 at precision 4 rendered as "1e66" instead of
+    // "9e65"). The genuine round-up-to-a-power-of-ten case is handled by
+    // the digit loop's carry-out below, not here.
+    //
+    // High: value >= 10^k, so the estimate was one too low.
+    while cmp_limbs(&r, &s) != Ordering::Less {
+        s = mul_pow10(&s, 1);
+        k += 1;
     }
-    // Low fixup: value stays below 1/10, so the estimate was one too high.
-    loop {
-        let rp10 = mul_pow10(&add_limbs(&r, &m_plus), 1);
-        let low = if f_even {
-            cmp_limbs(&rp10, &s) != Ordering::Greater
-        } else {
-            cmp_limbs(&rp10, &s) == Ordering::Less
-        };
-        if low {
-            r = mul_pow10(&r, 1);
-            m_plus = mul_pow10(&m_plus, 1);
-            m_minus = mul_pow10(&m_minus, 1);
-            k -= 1;
-        } else {
-            break;
-        }
+    // Low: value < 10^(k-1), so the estimate was one too high.
+    while cmp_limbs(&mul_pow10(&r, 1), &s) == Ordering::Less {
+        r = mul_pow10(&r, 1);
+        m_plus = mul_pow10(&m_plus, 1);
+        m_minus = mul_pow10(&m_minus, 1);
+        k -= 1;
     }
 
     // Digit generation. value/S ∈ [0.1, 1); each step pulls one digit
