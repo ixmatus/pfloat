@@ -146,6 +146,25 @@ pub fn venv_available() -> bool {
     venv.join("bin/python3").exists()
 }
 
+/// Gate an Arb-driven test: `true` to proceed, `false` to skip (venv
+/// absent). When `PFLOAT_ARB_REQUIRED` is set -- the per-release gate -- a
+/// missing venv is a HARD failure instead of a silent skip, so the
+/// independent backstop cannot quietly no-op and still report green. The
+/// release runs `PFLOAT_ARB_REQUIRED=1 cargo test -p pfloat-ball --features
+/// differential-arb` and learns immediately if the worker never ran.
+pub fn arb_lane_available(test_name: &str) -> bool {
+    if venv_available() {
+        return true;
+    }
+    assert!(
+        std::env::var("PFLOAT_ARB_REQUIRED").is_err(),
+        "PFLOAT_ARB_REQUIRED is set but the Arb venv is absent: {test_name} cannot run the \
+         independent containment check (run scripts/setup_arb_oracle.sh)"
+    );
+    eprintln!("skip: Arb venv absent ({test_name}); run scripts/setup_arb_oracle.sh");
+    false
+}
+
 /// The SOUND independent check: the ball's denoted interval must not be
 /// provably DISJOINT from Arb's rigorous enclosure `[lo, hi]` of
 /// `f(witness)`. Since `f(witness) in [lo, hi]` (Arb is rigorous) and FTIA

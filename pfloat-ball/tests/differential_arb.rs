@@ -18,7 +18,7 @@
 mod common;
 
 use common::arb_bracket::{
-    bigfloat_to_dyadic, encode_decode, venv_available, ArbBracketWorker, Bracket,
+    arb_lane_available, bigfloat_to_dyadic, encode_decode, venv_available, ArbBracketWorker, Bracket,
 };
 use common::bf;
 use pfloat::{BigFloat, RoundingMode};
@@ -64,8 +64,7 @@ fn dyadic_codec_round_trips_exactly() {
 
 #[test]
 fn bracket_pipe_brackets_the_reference_value() {
-    if !venv_available() {
-        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+    if !arb_lane_available("bracket_pipe_brackets_the_reference_value") {
         return;
     }
     let mut w = ArbBracketWorker::spawn();
@@ -178,8 +177,7 @@ fn between(lo: &BigFloat, x: &BigFloat, hi: &BigFloat) -> bool {
 
 #[test]
 fn arb_containment_unary() {
-    if !venv_available() {
-        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+    if !arb_lane_available("arb_containment_unary") {
         return;
     }
     let mut w = ArbBracketWorker::spawn();
@@ -192,6 +190,8 @@ fn arb_containment_unary() {
         });
         let mut rng = Rng(seed);
         let mut usable = 0u32;
+        let mut checked = 0u32;
+        let mut skipped = 0u32;
         for _ in 0..balls_per_fn {
             let p = [24u32, 53, 113][(rng.next() % 3) as usize];
             let a = random_ball(&mut rng, p);
@@ -202,25 +202,36 @@ fn arb_containment_unary() {
             let prec = p + 128;
             let mut any = false;
             for wit in witnesses(&a, 400) {
-                if let Bracket::Finite { lo, hi } = w.bracket(fn_id, prec, &wit, None) {
-                    // SOUNDNESS: Arb rigorously brackets f(wit) by [lo, hi];
-                    // FTIA requires f(wit) in result; so result must not lie
-                    // entirely outside [lo, hi].
-                    assert!(
-                        contains_bracket(&result, &lo, &hi),
-                        "{fn_id} p={p}: ball [{}, {}] is disjoint from Arb's [{}, {}] for f(witness) -- UNSOUND",
-                        result.lower(),
-                        result.upper(),
-                        lo,
-                        hi
-                    );
-                    any = true;
+                match w.bracket(fn_id, prec, &wit, None) {
+                    Bracket::Finite { lo, hi } => {
+                        // SOUNDNESS: Arb rigorously brackets f(wit) by [lo, hi];
+                        // FTIA requires f(wit) in result; so result must not lie
+                        // entirely outside [lo, hi].
+                        assert!(
+                            contains_bracket(&result, &lo, &hi),
+                            "{fn_id} p={p}: ball [{}, {}] is disjoint from Arb's [{}, {}] for f(witness) -- UNSOUND",
+                            result.lower(),
+                            result.upper(),
+                            lo,
+                            hi
+                        );
+                        checked += 1;
+                        any = true;
+                    }
+                    // NaN (out-of-domain witness) / INF / INC: no finite
+                    // interval to enclose. Counted, not silently dropped, so a
+                    // function whose witnesses mostly skip (the cbrt-negative
+                    // class) is visible rather than passing on thin coverage.
+                    _ => skipped += 1,
                 }
             }
             if any {
                 usable += 1;
             }
         }
+        eprintln!(
+            "arb_containment_unary {fn_id}: {usable} usable balls, {checked} witness brackets checked, {skipped} skipped (NaN/INF/INC)"
+        );
         assert!(
             usable >= 5,
             "{fn_id}: only {usable} in-domain samples (coverage gap)"
@@ -258,8 +269,7 @@ fn negative_control_too_narrow_ball_is_caught() {
     // the sound direction has teeth (otherwise the backstop is vacuous).
     // Build the correct result, quarter its radius, and assert at least one
     // witness's Arb bracket is provably outside the narrowed ball.
-    if !venv_available() {
-        eprintln!("skip: Arb venv absent");
+    if !arb_lane_available("negative_control_too_narrow_ball_is_caught") {
         return;
     }
     let mut w = ArbBracketWorker::spawn();
@@ -313,8 +323,7 @@ fn ball_binary(a: &Ball<BigFloat>, b: &Ball<BigFloat>, fn_id: &str) -> Ball<BigF
 
 #[test]
 fn arb_containment_binary() {
-    if !venv_available() {
-        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+    if !arb_lane_available("arb_containment_binary") {
         return;
     }
     let mut w = ArbBracketWorker::spawn();
@@ -327,6 +336,8 @@ fn arb_containment_binary() {
         });
         let mut rng = Rng(seed);
         let mut usable = 0u32;
+        let mut checked = 0u32;
+        let mut skipped = 0u32;
         for _ in 0..pairs_per_fn {
             let p = [24u32, 53, 113][(rng.next() % 3) as usize];
             let a = random_ball(&mut rng, p);
@@ -343,14 +354,19 @@ fn arb_containment_binary() {
                         continue; // x/0 is the entire/flag case, not a bracket
                     }
                     // atan2(0,0), div edges, etc. give an Arb NaN / inf
-                    // bracket (no finite interval to enclose) and are skipped.
-                    if let Bracket::Finite { lo, hi } = w.bracket(fn_id, prec, &wx, Some(&wy)) {
-                        assert!(
-                            contains_bracket(&result, &lo, &hi),
-                            "{fn_id} p={p}: ball [{}, {}] disjoint from Arb's [{}, {}] for f(wx,wy) -- UNSOUND",
-                            result.lower(), result.upper(), lo, hi
-                        );
-                        any = true;
+                    // bracket (no finite interval to enclose); counted, not
+                    // silently dropped.
+                    match w.bracket(fn_id, prec, &wx, Some(&wy)) {
+                        Bracket::Finite { lo, hi } => {
+                            assert!(
+                                contains_bracket(&result, &lo, &hi),
+                                "{fn_id} p={p}: ball [{}, {}] disjoint from Arb's [{}, {}] for f(wx,wy) -- UNSOUND",
+                                result.lower(), result.upper(), lo, hi
+                            );
+                            checked += 1;
+                            any = true;
+                        }
+                        _ => skipped += 1,
                     }
                 }
             }
@@ -358,6 +374,9 @@ fn arb_containment_binary() {
                 usable += 1;
             }
         }
+        eprintln!(
+            "arb_containment_binary {fn_id}: {usable} usable pairs, {checked} brackets checked, {skipped} skipped (NaN/INF/INC)"
+        );
         assert!(
             usable >= 5,
             "{fn_id}: only {usable} usable pairs (coverage gap)"
@@ -454,8 +473,7 @@ fn straddles(a: &Ball<BigFloat>, b: &BigFloat) -> bool {
 
 #[test]
 fn arb_containment_edge() {
-    if !venv_available() {
-        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+    if !arb_lane_available("arb_containment_edge") {
         return;
     }
     let mut w = ArbBracketWorker::spawn();
