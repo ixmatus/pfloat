@@ -204,8 +204,11 @@ fn validate_normal(mantissa: &[u64], precision: u32) -> Result<(), &'static str>
         return Err("pfloat: Normal mantissa is not normalized (top bit clear)");
     }
     // Bits below the precision live in the least-significant limb; the
-    // padding width is `limbs * 64 - precision`, always in `0..64`.
-    let pad = (limbs as u32) * 64 - precision;
+    // padding width is `limbs * 64 - precision`, always in `0..64`. The
+    // product is computed in u64 so a near-`u32::MAX` precision (where
+    // `limbs * 64` reaches 2^32) cannot overflow before the subtraction
+    // brings it back into range; this site takes attacker bytes.
+    let pad = ((limbs as u64) * 64 - u64::from(precision)) as u32;
     if pad > 0 && mantissa[0] & ((1u64 << pad) - 1) != 0 {
         return Err("pfloat: Normal mantissa has nonzero bits below the precision");
     }
