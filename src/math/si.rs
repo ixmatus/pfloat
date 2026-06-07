@@ -38,9 +38,9 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::pi_over_2_at;
-use super::pi_over_2_at_round;
 use super::ziv::ziv_round;
 use super::ziv_calibration::SI_ERROR_GUARD;
+use super::{pi_over_2_at_round, signed_constant_at_round};
 
 impl BigFloat {
     /// `Si(self)` rounded under `mode` to `self.precision`.
@@ -106,16 +106,12 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
             return (z, Status::OK);
         }
         Class::Infinity { sign } => {
-            // Si(±∞) = ±π/2. The irrational-constant special case
-            // is mode-aware via pi_over_2_at_round (slice p1.25
-            // discipline; see feedback_irrational_constant_special_
-            // case_mode_aware).
-            let (half_pi, status) = pi_over_2_at_round(target_precision, mode);
-            let result = if matches!(sign, Sign::Negative) {
-                half_pi.negated()
-            } else {
-                half_pi
-            };
+            // Si(±∞) = ±π/2 (odd). Mode-aware: the negative case rounds
+            // π/2 under the mirrored mode before negating (Phase 4
+            // directed-mode constant audit; Si(−∞, TowardNegative) used to
+            // land above −π/2). See signed_constant_at_round.
+            let (result, status) =
+                signed_constant_at_round(pi_over_2_at_round, *sign, target_precision, mode);
             auto_raise(status);
             return (result, status);
         }
@@ -365,5 +361,45 @@ fn negligible(term: &BigFloat, sum: &BigFloat, working_prec: u32) -> bool {
             *exponent < acc_exponent(sum) - i64::from(working_prec) - 8
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::big::BigFloat;
+    use crate::rounding::RoundingMode;
+    use crate::sign::Sign;
+    use core::cmp::Ordering;
+
+    #[test]
+    fn si_inf_directed_rounding_is_sound() {
+        // Regression (Phase 4 directed-mode constant audit): Si(−∞) = −π/2
+        // (Si is odd) used to round on the wrong side of −π/2.
+        let hp = crate::math::pi_over_2_at(600);
+        let nhp = hp.negated();
+        for &p in &[24u32, 53, 113, 200] {
+            let pi = BigFloat::try_new_infinity(Sign::Positive, p).unwrap();
+            let ni = BigFloat::try_new_infinity(Sign::Negative, p).unwrap();
+            assert_ne!(
+                pi.si(RoundingMode::TowardNegative).0.partial_cmp(&hp).0,
+                Some(Ordering::Greater),
+                "Si(+inf, TN) ≤ π/2 at p={p}"
+            );
+            assert_ne!(
+                pi.si(RoundingMode::TowardPositive).0.partial_cmp(&hp).0,
+                Some(Ordering::Less),
+                "Si(+inf, TP) ≥ π/2 at p={p}"
+            );
+            assert_ne!(
+                ni.si(RoundingMode::TowardNegative).0.partial_cmp(&nhp).0,
+                Some(Ordering::Greater),
+                "Si(-inf, TN) ≤ −π/2 at p={p}"
+            );
+            assert_ne!(
+                ni.si(RoundingMode::TowardPositive).0.partial_cmp(&nhp).0,
+                Some(Ordering::Less),
+                "Si(-inf, TP) ≥ −π/2 at p={p}"
+            );
+        }
     }
 }

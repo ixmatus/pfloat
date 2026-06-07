@@ -32,9 +32,9 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::atan::atan_finite_unsigned;
-use super::pi_over_2_at_round;
 use super::ziv::ziv_round;
 use super::ziv_calibration::ASIN_ERROR_GUARD;
+use super::{pi_over_2_at_round, signed_constant_at_round};
 
 impl BigFloat {
     /// `asin(self)` rounded under `mode` to `self.precision`.
@@ -117,27 +117,12 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (nan, Status::INVALID);
         }
         Some(Ordering::Equal) => {
-            // asin(±1) = ±π/2. Mode-aware to keep directed-mode rounding
-            // correct (slice p1.25). For negative x the result is −(π/2),
-            // and negating mirrors the rounding direction: rounding π/2
-            // under `mode` then negating gives the *wrong* side of −π/2
-            // (it rounds −π/2 toward the opposite infinity). Round π/2
-            // under the mirrored mode (TowardNegative ↔ TowardPositive;
-            // the nearest / toward-zero modes are symmetric under
-            // negation) so the final −π/2 lands on the side `mode` asks
-            // for. Phase 4 FTIA review caught asin(−1, TowardNegative)
-            // > −π/2, an unsound lower bound for the ball `asin`.
-            let effective_mode = match (sign, mode) {
-                (Sign::Negative, RoundingMode::TowardNegative) => RoundingMode::TowardPositive,
-                (Sign::Negative, RoundingMode::TowardPositive) => RoundingMode::TowardNegative,
-                _ => mode,
-            };
-            let (pi_2, status) = pi_over_2_at_round(target_precision, effective_mode);
-            let signed = if matches!(sign, Sign::Negative) {
-                pi_2.negated()
-            } else {
-                pi_2
-            };
+            // asin(±1) = ±π/2, mode-aware. The negative case rounds π/2
+            // under the mirrored mode before negating (slice p1.25 and
+            // the Phase 4 directed-mode constant audit; see
+            // signed_constant_at_round).
+            let (signed, status) =
+                signed_constant_at_round(pi_over_2_at_round, sign, target_precision, mode);
             crate::status::auto_raise(status);
             return (signed, status);
         }
