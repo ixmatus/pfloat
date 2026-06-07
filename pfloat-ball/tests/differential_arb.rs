@@ -107,3 +107,190 @@ fn bracket_pipe_brackets_the_reference_value() {
         other => panic!("add: expected Finite bracket, got {other:?}"),
     }
 }
+
+// ---------- S3: the unary containment lane (pf-fe5f.4) ----------
+//
+// The independent soundness backstop: for each ball op and each witness
+// inside the input ball, the result ball must not be provably disjoint
+// from Arb's rigorous bracket of f(witness). This is what lifts the crate
+// from self-consistency to independently-verified soundness.
+//
+// Tightness (ADR-0078's secondary "logs tightness per bucket") is NOT in
+// this slice: a meaningful slack needs Arb's enclosure of f over the whole
+// input INTERVAL (the witness-image span is rounding-dominated for
+// near-exact inputs and so measures nothing), which is a BRACKET
+// interval-input extension. Filed as a follow-up; the soundness backstop,
+// the load-bearing claim, lands here.
+
+use common::arb_bracket::contains_bracket;
+use common::{random_ball, witnesses, Rng};
+use pfloat::Parts;
+use pfloat_ball::{Ball, Mag};
+
+/// Always-defined or simple-domain unary functions. The inverse-trig
+/// domain edges (asin/acos/acosh/atanh near their boundaries) are the S5
+/// edge lane's job; here a witness that lands out of domain yields a `Nan`
+/// bracket and is skipped.
+const UNARY: &[&str] = &[
+    "exp", "expm1", "exp2", "exp10", "sinh", "cosh", "tanh", "atan", "asinh", "cbrt", "sin", "cos",
+    "tan", "sqrt", "ln", "log2", "log10", "log1p",
+];
+
+/// Dispatch a ball unary op by name.
+fn ball_unary(a: &Ball<BigFloat>, fn_id: &str) -> Ball<BigFloat> {
+    match fn_id {
+        "exp" => a.exp().0,
+        "expm1" => a.expm1().0,
+        "exp2" => a.exp2().0,
+        "exp10" => a.exp10().0,
+        "sinh" => a.sinh().0,
+        "cosh" => a.cosh().0,
+        "tanh" => a.tanh().0,
+        "atan" => a.atan().0,
+        "asinh" => a.asinh().0,
+        "cbrt" => a.cbrt().0,
+        "sin" => a.sin().0,
+        "cos" => a.cos().0,
+        "tan" => a.tan().0,
+        "sqrt" => a.sqrt().0,
+        "ln" => a.ln().0,
+        "log2" => a.log2().0,
+        "log10" => a.log10().0,
+        "log1p" => a.log1p().0,
+        other => panic!("unknown ball unary {other}"),
+    }
+}
+
+/// Binary exponent (floor(log2|v|)) of a finite non-zero `BigFloat`,
+/// `i64::MIN` for zero / non-finite.
+fn exponent_of(v: &BigFloat) -> i64 {
+    match v.parts() {
+        Parts::Normal { exponent, .. } => exponent,
+        _ => i64::MIN,
+    }
+}
+
+/// `lo <= x <= hi`.
+fn between(lo: &BigFloat, x: &BigFloat, hi: &BigFloat) -> bool {
+    lo.partial_cmp(x).0 != Some(core::cmp::Ordering::Greater)
+        && hi.partial_cmp(x).0 != Some(core::cmp::Ordering::Less)
+}
+
+#[test]
+fn arb_containment_unary() {
+    if !venv_available() {
+        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let deep = std::env::var("PFLOAT_DEEP").is_ok();
+    let balls_per_fn = if deep { 400 } else { 40 };
+
+    for &fn_id in UNARY {
+        let seed = fn_id.bytes().fold(0xA5B6_C7D8u64, |a, b| {
+            a.wrapping_mul(131).wrapping_add(b as u64)
+        });
+        let mut rng = Rng(seed);
+        let mut usable = 0u32;
+        for _ in 0..balls_per_fn {
+            let p = [24u32, 53, 113][(rng.next() % 3) as usize];
+            let a = random_ball(&mut rng, p);
+            let result = ball_unary(&a, fn_id);
+            if result.is_entire() {
+                continue; // pole-straddling / overflow: encloses everything
+            }
+            let prec = p + 128;
+            let mut any = false;
+            for wit in witnesses(&a, 400) {
+                if let Bracket::Finite { lo, hi } = w.bracket(fn_id, prec, &wit, None) {
+                    // SOUNDNESS: Arb rigorously brackets f(wit) by [lo, hi];
+                    // FTIA requires f(wit) in result; so result must not lie
+                    // entirely outside [lo, hi].
+                    assert!(
+                        contains_bracket(&result, &lo, &hi),
+                        "{fn_id} p={p}: ball [{}, {}] is disjoint from Arb's [{}, {}] for f(witness) -- UNSOUND",
+                        result.lower(),
+                        result.upper(),
+                        lo,
+                        hi
+                    );
+                    any = true;
+                }
+            }
+            if any {
+                usable += 1;
+            }
+        }
+        assert!(
+            usable >= 5,
+            "{fn_id}: only {usable} in-domain samples (coverage gap)"
+        );
+    }
+}
+
+#[test]
+fn witness_inside_invariant() {
+    // The exact witness reconstruction must keep every witness inside the
+    // input ball's denoted interval; otherwise a real soundness bug could
+    // hide behind a witness that was never in the ball, turning a violation
+    // into a vacuous pass.
+    let mut rng = Rng(0x1357_9bdf_2468_ace0);
+    for _ in 0..2000 {
+        let p = [24u32, 53, 113][(rng.next() % 3) as usize];
+        let a = random_ball(&mut rng, p);
+        if a.is_entire() {
+            continue;
+        }
+        let lo = a.lower();
+        let hi = a.upper();
+        for wit in witnesses(&a, 400) {
+            assert!(
+                between(&lo, &wit, &hi),
+                "witness {wit} outside ball [{lo}, {hi}]"
+            );
+        }
+    }
+}
+
+#[test]
+fn negative_control_too_narrow_ball_is_caught() {
+    // A deliberately too-narrow ball MUST be detected as unsound, proving
+    // the sound direction has teeth (otherwise the backstop is vacuous).
+    // Build the correct result, quarter its radius, and assert at least one
+    // witness's Arb bracket is provably outside the narrowed ball.
+    if !venv_available() {
+        eprintln!("skip: Arb venv absent");
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let mut rng = Rng(0x0fed_cba9_8765_4321);
+    let mut proved = 0u32;
+    for _ in 0..200 {
+        let p = [53u32, 113][(rng.next() % 2) as usize];
+        let a = random_ball(&mut rng, p);
+        let result = a.exp().0;
+        let rad = match result.radius() {
+            Mag::Finite { .. } => result.radius(),
+            _ => continue, // exact result: nothing to narrow
+        };
+        // Quarter the radius -> the narrowed ball excludes the image near
+        // the original edges.
+        let narrow_rad = Mag::from_pow2(exponent_of(&rad.to_bigfloat()).saturating_sub(2));
+        let bad = match Ball::new(result.midpoint().clone(), narrow_rad) {
+            Ok(b) if !b.is_entire() => b,
+            _ => continue,
+        };
+        for wit in witnesses(&a, 400) {
+            if let Bracket::Finite { lo, hi } = w.bracket("exp", p + 128, &wit, None) {
+                if !contains_bracket(&bad, &lo, &hi) {
+                    proved += 1;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        proved >= 10,
+        "negative control proved unsoundness on only {proved} narrowed balls; the check may lack teeth"
+    );
+}

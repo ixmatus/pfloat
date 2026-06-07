@@ -146,14 +146,28 @@ pub fn venv_available() -> bool {
     venv.join("bin/python3").exists()
 }
 
-/// SOUND containment: the ball's denoted interval contains Arb's rigorous
-/// enclosure `[lo, hi]` of f(x). Then `f(x) in [lo, hi] subset of ball`,
-/// so `f(x) in ball` follows whatever f(x) is inside `[lo, hi]`. The
-/// reverse check (`ball subset of [lo, hi]`) would PASS exactly when the
-/// ball is too narrow to be sound, so it is never the assertion.
-pub fn ball_contains(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> bool {
-    ball.lower().partial_cmp(lo).0 != Some(Ordering::Greater)
-        && ball.upper().partial_cmp(hi).0 != Some(Ordering::Less)
+/// The SOUND independent check: the ball's denoted interval must not be
+/// provably DISJOINT from Arb's rigorous enclosure `[lo, hi]` of
+/// `f(witness)`. Since `f(witness) in [lo, hi]` (Arb is rigorous) and FTIA
+/// requires `f(witness) in ball`, a ball whose interval lies entirely
+/// outside `[lo, hi]` excludes `f(witness)` and is unsound. Returns false
+/// exactly in that provable-exclusion case:
+///
+/// ```text
+/// ball.lower() <= hi   AND   ball.upper() >= lo
+/// ```
+///
+/// This is the robust form (it never false-fails a sound ball: a tighter
+/// `ball superset of [lo, hi]` would, when `f(witness)` sits within Arb's
+/// sub-ULP half-width of a ball edge), and it is the same predicate the
+/// self-consistency lane uses (`property_ftia::contains_bracket`), so the
+/// two lanes test the identical FTIA claim with different oracles. The
+/// REVERSE direction (`ball subset of [lo, hi]`) is the false backstop: it
+/// would pass exactly when the ball is too narrow to be sound, so it is
+/// never the assertion.
+pub fn contains_bracket(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> bool {
+    ball.lower().partial_cmp(hi).0 != Some(Ordering::Greater)
+        && ball.upper().partial_cmp(lo).0 != Some(Ordering::Less)
 }
 
 /// `(sign_str, abs_mantissa_hex, exp)` of an exact finite `BigFloat`
