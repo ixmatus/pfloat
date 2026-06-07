@@ -116,10 +116,13 @@ where
     #[inline]
     fn abs_sub(&self, other: &Self) -> Self {
         // `max(self - other, 0)`, the (deprecated) positive difference.
-        if matches!(self.partial_cmp(other).0, Some(Ordering::Greater)) {
-            *self - *other
-        } else {
-            Self::zero()
+        // A NaN operand propagates (the subtraction yields NaN), matching
+        // the num-traits f32/f64 reference and pfloat's NaN discipline;
+        // only an ordered `<=` returns zero.
+        match self.partial_cmp(other).0 {
+            Some(Ordering::Greater) => *self - *other,
+            Some(_) => Self::zero(),
+            None => *self - *other,
         }
     }
 
@@ -150,17 +153,19 @@ where
 
     fn from_u64(n: u64) -> Option<Self> {
         if let Ok(i) = i64::try_from(n) {
-            Some(FixedFloat::try_from_i64_round(i, NE).0)
-        } else {
-            // n >= 2^63: split as (n - 2^63) + 2^63 so both pieces are
-            // i64-constructible. Exact when PREC >= 64, rounded to PREC
-            // otherwise — the same rounding `from_i64` would apply.
-            let low = (n - (1u64 << 63)) as i64;
-            let a = FixedFloat::try_from_i64_round(low, NE).0;
-            let half = FixedFloat::try_from_i64_round(1i64 << 62, NE).0;
-            let two = FixedFloat::try_from_i64_round(2, NE).0;
-            Some(a + half * two)
+            return Some(FixedFloat::try_from_i64_round(i, NE).0);
         }
+        // n >= 2^63 does not fit i64. Construct n EXACTLY at 64-bit
+        // precision, then round once to PREC. Splitting into two 32-bit
+        // halves keeps each piece and their exact combination within 64
+        // significant bits, so nothing rounds before the single final
+        // round. (The prior code rounded the low part to PREC first and
+        // then added 2^63, a double rounding that lands 1 ULP off.)
+        let hi = BigFloat::try_from_i64_exact((n >> 32) as i64, 64).expect("32 bits fit");
+        let lo = BigFloat::try_from_i64_exact((n & 0xFFFF_FFFF) as i64, 64).expect("32 bits fit");
+        let two32 = BigFloat::try_from_i64_exact(1i64 << 32, 64).expect("2^32 fits");
+        let exact = hi.mul(&two32, NE).0.add(&lo, NE).0;
+        Some(FixedFloat::try_from_big_round(&exact, NE).0)
     }
 
     #[inline]
