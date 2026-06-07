@@ -438,6 +438,13 @@ mod verify;
 pub use sign::Sign;
 pub use status::Status;
 
+/// Number of `u64` limbs in a `precision`-bit mantissa: `ceil(precision / 64)`.
+///
+/// Exposed so downstream crates can spell the `where [(); limbs_for(PREC)]:`
+/// bound that `FixedFloat<PREC>` carries (ADR-0011), which is required to
+/// write a generic `impl ... for FixedFloat<PREC>` outside this crate.
+pub use mantissa::limbs_for;
+
 #[cfg(feature = "std")]
 pub use status::flags;
 

@@ -615,6 +615,48 @@ pub(crate) fn pi_over_2_at_round(target: u32, mode: RoundingMode) -> (BigFloat, 
         .expect("target precision >= 1")
 }
 
+/// Mirror a rounding mode for negation. Since
+/// `round(−v, mode) = −round(v, mirror(mode))`, a kernel that returns
+/// `−(constant)` must round the constant under the *mirrored* mode:
+/// `TowardNegative` and `TowardPositive` swap, while the nearest and
+/// toward-zero modes are symmetric under negation and pass through.
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn mirror_mode_for_negation(mode: RoundingMode) -> RoundingMode {
+    match mode {
+        RoundingMode::TowardNegative => RoundingMode::TowardPositive,
+        RoundingMode::TowardPositive => RoundingMode::TowardNegative,
+        other => other,
+    }
+}
+
+/// `sign · constant(target)`, correctly rounded under `mode`.
+///
+/// The positive case rounds the constant directly; the negative case
+/// rounds it under [`mirror_mode_for_negation`] before negating, so a
+/// directed result lands on the side `mode` asks for. This is the single
+/// home for the `±(irrational constant)` special-case returns
+/// (`asin(±1)`, `atan(±∞)`, `Si(±∞)`, the `atan2` axis angles): rounding
+/// the constant under `mode` and then negating would put the directed
+/// result on the *wrong* side of `−constant` (the Phase 4 directed-mode
+/// constant audit; the original `asin(±1)` instance was slice p1.25).
+#[cfg(feature = "trig")]
+#[allow(dead_code)]
+pub(crate) fn signed_constant_at_round(
+    constant: fn(u32, RoundingMode) -> (BigFloat, Status),
+    sign: Sign,
+    target: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
+    match sign {
+        Sign::Positive => constant(target, mode),
+        Sign::Negative => {
+            let (value, status) = constant(target, mirror_mode_for_negation(mode));
+            (value.negated(), status)
+        }
+    }
+}
+
 /// Returns `2/π` rounded to the requested precision.
 ///
 /// For `prec <= 4096` the rounded value comes from the 4096-bit

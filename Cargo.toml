@@ -1,6 +1,6 @@
 [package]
 name = "pfloat"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 # No `rust-version`: pfloat requires nightly Rust for
 # `feature(generic_const_exprs)` per ADR-0011. The toolchain is pinned
@@ -22,7 +22,7 @@ categories = ["mathematics", "no-std", "no-std::no-alloc"]
 # workspace when it's not" until `fuzz` was named here. `default-members`
 # scopes bare cargo commands to pfloat, so the member builds only in its
 # own explicit lane and the v1.0 CI matrix is unaffected.
-members = ["pfloat-libm"]
+members = ["pfloat-libm", "pfloat-ball"]
 default-members = ["."]
 exclude = ["tools/alloc-profile", "fuzz"]
 

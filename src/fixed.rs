@@ -409,6 +409,48 @@ where
         (Self::from_big_at_same_precision(r), s)
     }
 
+    /// Returns `self × 2^k`, exact whenever the shifted exponent stays
+    /// within the `i64` range.
+    ///
+    /// See [`BigFloat::scale_by_pow2`] for the full contract: only the
+    /// unbiased binary exponent shifts; the mantissa, sign, and
+    /// precision are unchanged; saturation raises
+    /// [`Status::OVERFLOW`]/[`Status::UNDERFLOW`] and a signaling NaN
+    /// raises [`Status::INVALID`].
+    #[must_use]
+    pub fn scale_by_pow2(&self, k: i64) -> (Self, Status) {
+        let (b, s) = self.to_big().scale_by_pow2(k);
+        (Self::from_big_at_same_precision(b), s)
+    }
+
+    /// IEEE 754-2019 §5.3.1 `nextUp(self)`: the least value of this
+    /// type that compares greater than `self`. See
+    /// [`BigFloat::next_up`] for the saturating-exponent boundary
+    /// contract.
+    #[must_use]
+    pub fn next_up(&self) -> (Self, Status) {
+        let (b, s) = self.to_big().next_up();
+        (Self::from_big_at_same_precision(b), s)
+    }
+
+    /// IEEE 754-2019 §5.3.1 `nextDown(self)`: the greatest value of
+    /// this type that compares less than `self`. See
+    /// [`BigFloat::next_down`].
+    #[must_use]
+    pub fn next_down(&self) -> (Self, Status) {
+        let (b, s) = self.to_big().next_down();
+        (Self::from_big_at_same_precision(b), s)
+    }
+
+    /// Unit in the last place: the positive distance from `self` to its
+    /// larger-magnitude neighbour. See [`BigFloat::ulp`] for the
+    /// special-value and saturation contract.
+    #[must_use]
+    pub fn ulp(&self) -> (Self, Status) {
+        let (b, s) = self.to_big().ulp();
+        (Self::from_big_at_same_precision(b), s)
+    }
+
     // -------- BigFloat conversion --------
 
     /// Converts to [`BigFloat`] at the same precision (exact, infallible).
@@ -738,6 +780,38 @@ mod tests {
         assert!(status.inexact());
         let eight = FixedFloat::<2>::try_from_i64_exact(8).unwrap();
         assert_eq!(fixed.partial_cmp(&eight).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn scale_by_pow2_delegates() {
+        let three = FixedFloat::<53>::try_from_i64_exact(3).unwrap();
+        let (twelve, s) = three.scale_by_pow2(2);
+        assert!(s.is_ok());
+        let expected = FixedFloat::<53>::try_from_i64_exact(12).unwrap();
+        assert_eq!(twelve.partial_cmp(&expected).0, Some(Ordering::Equal));
+        assert_eq!(twelve.precision(), 53);
+
+        // Saturation flag threads through the delegate.
+        let (_, sat) = three.scale_by_pow2(i64::MAX);
+        assert!(sat.overflow());
+    }
+
+    #[test]
+    fn next_up_down_ulp_delegate() {
+        let x = FixedFloat::<53>::try_from_i64_exact(5).unwrap();
+        let (up, su) = x.next_up();
+        let (down, sd) = x.next_down();
+        assert!(su.is_ok() && sd.is_ok());
+        assert_eq!(down.partial_cmp(&x).0, Some(Ordering::Less));
+        assert_eq!(x.partial_cmp(&up).0, Some(Ordering::Less));
+        assert_eq!(up.precision(), 53);
+
+        // next_up(x) == x + ulp(x) for an interior value.
+        let (u, _) = x.ulp();
+        assert!(u.is_sign_positive());
+        let (sum, ss) = x.add(&u, RoundingMode::NearestEven);
+        assert!(ss.is_ok());
+        assert_eq!(sum.partial_cmp(&up).0, Some(Ordering::Equal));
     }
 
     #[test]

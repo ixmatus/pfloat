@@ -31,3 +31,18 @@ jobs:
       - uses: model-checking/kani-github-action@v1.1
         with:
           args: --features=${{ inputs.features }}
+
+  # The Vec-free `Mag` round-up invariants (ADR-0078) discharge cleanly
+  # under CBMC, unlike the BigFloat-backed ball surface (ADR-0062).
+  kani-ball:
+    name: kani harnesses (pfloat-ball Mag)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+      - uses: model-checking/kani-github-action@v1.1
+        with:
+          working-directory: pfloat-ball
+          args: --features=big

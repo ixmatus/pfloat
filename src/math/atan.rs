@@ -31,7 +31,7 @@ use crate::mantissa::limbs_for;
 
 use super::ziv::ziv_round;
 use super::ziv_calibration::ATAN_ERROR_GUARD;
-use super::{pi_over_2_at, pi_over_2_at_round};
+use super::{pi_over_2_at, pi_over_2_at_round, signed_constant_at_round};
 
 impl BigFloat {
     /// `atan(self)` rounded under `mode` to `self.precision`.
@@ -93,13 +93,12 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (z, Status::OK);
         }
         Class::Infinity { sign } => {
-            // atan(±∞) = ±π/2. Mode-aware (slice p1.25).
-            let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
-            let signed = if matches!(sign, Sign::Negative) {
-                pi_2.negated()
-            } else {
-                pi_2
-            };
+            // atan(±∞) = ±π/2, mode-aware. The negative case rounds π/2
+            // under the mirrored mode before negating (Phase 4
+            // directed-mode constant audit; atan(−∞, TowardNegative) used
+            // to land above −π/2).
+            let (signed, status) =
+                signed_constant_at_round(pi_over_2_at_round, *sign, target_precision, mode);
             crate::status::auto_raise(status);
             return (signed, status);
         }
@@ -245,6 +244,39 @@ fn atan_taylor(y: &BigFloat, working_prec: u32) -> BigFloat {
 mod tests {
     use super::*;
     use core::cmp::Ordering;
+
+    #[test]
+    fn atan_inf_directed_rounding_is_sound() {
+        // Regression (Phase 4 directed-mode constant audit): atan(−∞) used
+        // to round on the wrong side of −π/2 (constant rounded under
+        // `mode` then negated without mirroring TN↔TP).
+        let hp = crate::math::pi_over_2_at(600);
+        let nhp = hp.negated();
+        for &p in &[24u32, 53, 113, 200] {
+            let pi = BigFloat::try_new_infinity(Sign::Positive, p).unwrap();
+            let ni = BigFloat::try_new_infinity(Sign::Negative, p).unwrap();
+            assert_ne!(
+                pi.atan(RoundingMode::TowardNegative).0.partial_cmp(&hp).0,
+                Some(Ordering::Greater),
+                "atan(+inf, TN) ≤ π/2 at p={p}"
+            );
+            assert_ne!(
+                pi.atan(RoundingMode::TowardPositive).0.partial_cmp(&hp).0,
+                Some(Ordering::Less),
+                "atan(+inf, TP) ≥ π/2 at p={p}"
+            );
+            assert_ne!(
+                ni.atan(RoundingMode::TowardNegative).0.partial_cmp(&nhp).0,
+                Some(Ordering::Greater),
+                "atan(-inf, TN) ≤ −π/2 at p={p}"
+            );
+            assert_ne!(
+                ni.atan(RoundingMode::TowardPositive).0.partial_cmp(&nhp).0,
+                Some(Ordering::Less),
+                "atan(-inf, TP) ≥ −π/2 at p={p}"
+            );
+        }
+    }
 
     fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
         let (diff, _) = v.sub(expected, RoundingMode::NearestEven);

@@ -1,0 +1,75 @@
+[package]
+name = "pfloat-ball"
+version = "0.1.0"
+edition = "2021"
+# No `rust-version`: pfloat-ball builds pfloat, which requires nightly
+# Rust for `feature(generic_const_exprs)` (pfloat ADR-0011). The
+# workspace `rust-toolchain.toml` pins the channel.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ixmatus/pfloat"
+description = "Rigorous arbitrary-precision real ball (midpoint-radius) arithmetic in pure Rust, built on pfloat"
+authors = ["Parnell Springmeyer <parnell@digitalmentat.com>"]
+keywords = ["interval", "ball", "rigorous", "arbitrary-precision", "no_std"]
+categories = ["mathematics", "no-std", "science"]
+readme = "README.md"
+
+[features]
+# `Ball<BigFloat>` is the headline type and needs `alloc` exactly as
+# `BigFloat` does, so the default profile carries `std` + `big`. The
+# `Mag` radius primitive is alloc-free; a bare `--no-default-features`
+# build exposes `Mag` alone (no `Ball`), which is the minimal embedded
+# surface and the Kani target.
+default = ["std", "big"]
+
+# Standard library: pfloat's thread-local sticky flags + std error
+# impls. Pulls `alloc`.
+std = ["alloc", "pfloat/std"]
+
+# Heap-allocated multi-limb buffers (required by `BigFloat`).
+alloc = ["pfloat/alloc"]
+
+# `Ball<BigFloat>`: dynamic-precision real balls. Requires `alloc`.
+big = ["alloc", "pfloat/big"]
+
+# `Ball<FixedFloat<PREC>>`: compile-time-precision real balls. Pulls
+# `big` because pfloat's `fixed` delegates through `big` today.
+fixed = ["big", "pfloat/fixed"]
+
+# Elementary-function pass-through gates (slice 8). Each enables the
+# matching pfloat kernel family so the ball wrapper has a scalar kernel
+# to bound.
+exp-log = ["big", "pfloat/exp-log"]
+trig = ["exp-log", "pfloat/trig"]
+
+# Optional serde Serialize/Deserialize for `Mag` and `Ball`. Off by
+# default so the zero-runtime-dependency posture holds.
+serde = ["alloc", "dep:serde", "pfloat/serde"]
+
+# Compile Kani proof harnesses over the `Vec`-free `Mag` invariants.
+# Off in normal builds.
+kani = []
+
+# The independent Arb containment + tightness backstop (per-release
+# lane, reusing pfloat's python-flint subprocess oracle) lands with the
+# verification slice; it pulls `rug`/gmp-mpfr-sys, so it is not wired
+# until then to keep the member build dependency-light.
+
+[dependencies]
+# pfloat is the verified scalar engine the ball wraps. Default-features
+# off; the ball crate's features forward the exact pfloat features it
+# needs, mirroring the pfloat-libm member.
+pfloat = { path = "..", default-features = false }
+
+# Optional serialization, gated behind `serde`.
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+# The blocking FTIA self-consistency lane exercises the elementary
+# surface, so it builds only when `trig` is on.
+[[test]]
+name = "property_ftia"
+required-features = ["trig"]
+
+[lints.rust]
+# `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it
+# so the unexpected-cfgs lint stays quiet under -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

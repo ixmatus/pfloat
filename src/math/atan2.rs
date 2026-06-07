@@ -36,7 +36,7 @@ use crate::mantissa::limbs_for;
 
 use super::ziv::ziv_round;
 use super::ziv_calibration::ATAN2_ERROR_GUARD;
-use super::{pi_at, pi_at_round, pi_over_2_at_round};
+use super::{pi_at, pi_at_round, pi_over_2_at_round, signed_constant_at_round};
 
 impl BigFloat {
     /// `atan2(self, x)` returns the polar angle of `(x, self)`.
@@ -137,14 +137,11 @@ fn atan2_kernel(
         return (rounded, status);
     }
 
-    // y is ±∞, x finite: ±π/2.
+    // y is ±∞, x finite: ±π/2 (mode-aware, mirrored on the negative
+    // branch; Phase 4 directed-mode constant audit).
     if y.is_infinite() {
-        let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
-        let signed = if matches!(y_sign, Sign::Negative) {
-            pi_2.negated()
-        } else {
-            pi_2
-        };
+        let (signed, status) =
+            signed_constant_at_round(pi_over_2_at_round, y_sign, target_precision, mode);
         auto_raise(status);
         return (signed, status);
     }
@@ -158,13 +155,9 @@ fn atan2_kernel(
                 Status::OK,
             )
         } else {
-            // −∞: angle = ±π with sign of y. Mode-aware.
-            let (pi, status) = pi_at_round(target_precision, mode);
-            if matches!(y_sign, Sign::Negative) {
-                (pi.negated(), status)
-            } else {
-                (pi, status)
-            }
+            // −∞: angle = ±π with sign of y. Mode-aware, mirrored on the
+            // negative branch.
+            signed_constant_at_round(pi_at_round, y_sign, target_precision, mode)
         };
         auto_raise(result.1);
         return result;
@@ -202,36 +195,24 @@ fn atan2_kernel(
                 Class::Zero {
                     sign: Sign::Negative,
                 },
-            ) => {
-                let (pi, status) = pi_at_round(target_precision, mode);
-                (pi.negated(), status)
-            }
+            ) => signed_constant_at_round(pi_at_round, Sign::Negative, target_precision, mode),
             // x finite normal (sign-only dispatch).
             (s, _) if matches!(x_sign, Sign::Positive) => (
                 BigFloat::try_new_zero(s, target_precision).expect("precision >= 1"),
                 Status::OK,
             ),
-            (s, _) => {
-                let (pi, status) = pi_at_round(target_precision, mode);
-                if matches!(s, Sign::Negative) {
-                    (pi.negated(), status)
-                } else {
-                    (pi, status)
-                }
-            }
+            // x negative normal: ±π with the sign of y, mode-aware.
+            (s, _) => signed_constant_at_round(pi_at_round, s, target_precision, mode),
         };
         auto_raise(status);
         return (result, status);
     }
 
-    // x = ±0, y finite non-zero: ±π/2 with sign of y.
+    // x = ±0, y finite non-zero: ±π/2 with sign of y (mode-aware,
+    // mirrored on the negative branch).
     if x.is_zero() {
-        let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
-        let signed = if matches!(y_sign, Sign::Negative) {
-            pi_2.negated()
-        } else {
-            pi_2
-        };
+        let (signed, status) =
+            signed_constant_at_round(pi_over_2_at_round, y_sign, target_precision, mode);
         auto_raise(status);
         return (signed, status);
     }
@@ -291,6 +272,45 @@ fn atan2_kernel(
 mod tests {
     use super::*;
     use core::cmp::Ordering;
+
+    #[test]
+    fn atan2_axis_constants_directed_rounding_are_sound() {
+        // Regression (Phase 4 directed-mode constant audit): the negative
+        // axis angles (−π/2 for y=−∞ or x=−0 with y<0; −π for x=−∞ or
+        // x<0 with y=−0) used to round on the wrong side of the constant.
+        // For each, assert TowardNegative ≤ truth ≤ TowardPositive.
+        let neg = |s| BigFloat::try_new_zero(Sign::Negative, s);
+        let p = 53u32;
+        let nhp = crate::math::pi_over_2_at(600).negated(); // −π/2
+        let np = crate::math::pi_at(600).negated(); //          −π
+        let one = BigFloat::try_from_i64_exact(1, p).unwrap();
+        let neg_one = BigFloat::try_from_i64_exact(-1, p).unwrap();
+        let ninf = BigFloat::try_new_infinity(Sign::Negative, p).unwrap();
+        let nz = neg(p).unwrap();
+
+        let bracket = |y: &BigFloat, x: &BigFloat, truth: &BigFloat, label: &str| {
+            let lo = y.atan2(x, RoundingMode::TowardNegative).0;
+            let hi = y.atan2(x, RoundingMode::TowardPositive).0;
+            assert_ne!(
+                lo.partial_cmp(truth).0,
+                Some(Ordering::Greater),
+                "{label}: TowardNegative must be ≤ truth"
+            );
+            assert_ne!(
+                hi.partial_cmp(truth).0,
+                Some(Ordering::Less),
+                "{label}: TowardPositive must be ≥ truth"
+            );
+        };
+        // y = −∞, x finite → −π/2.
+        bracket(&ninf, &one, &nhp, "atan2(-inf, 1)");
+        // x = −0, y < 0 → −π/2.
+        bracket(&neg_one, &nz, &nhp, "atan2(-1, -0)");
+        // x = −∞, y < 0 → −π.
+        bracket(&neg_one, &ninf, &np, "atan2(-1, -inf)");
+        // x < 0 normal, y = −0 → −π.
+        bracket(&nz, &neg_one, &np, "atan2(-0, -1)");
+    }
 
     fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
         let (diff, _) = v.sub(expected, RoundingMode::NearestEven);

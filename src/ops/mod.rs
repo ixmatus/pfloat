@@ -12,6 +12,8 @@
 #[cfg(feature = "big")]
 pub(crate) mod addsub;
 #[cfg(feature = "big")]
+pub(crate) mod adjacent;
+#[cfg(feature = "big")]
 pub(crate) mod cbrt;
 #[cfg(feature = "big")]
 pub(crate) mod div;
@@ -30,6 +32,8 @@ pub(crate) mod remainder;
 // bare `big`; `cbrt` (exact-integer, no Ziv) does. ADR-0056.
 #[cfg(feature = "exp-log")]
 pub(crate) mod rootn;
+#[cfg(feature = "big")]
+pub(crate) mod scale;
 #[cfg(feature = "big")]
 pub(crate) mod sqrt;
 
