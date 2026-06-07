@@ -65,6 +65,25 @@ impl<T: RealScalar> Ball<T> {
         Self::new(value, Mag::ZERO)
     }
 
+    /// Internal: assemble from parts when the midpoint is already known
+    /// finite (the arithmetic kernels guarantee it).
+    #[inline]
+    pub(crate) fn from_parts(mid: T, rad: Mag) -> Self {
+        debug_assert!(mid.is_finite(), "from_parts midpoint must be finite");
+        Self { mid, rad }
+    }
+
+    /// Internal: the entire real line `[0 ± ∞]`, the sound result of an
+    /// operation that leaves the reals (division by a zero-containing
+    /// ball, sqrt of a wholly-negative ball).
+    #[inline]
+    pub(crate) fn entire(precision: u32) -> Self {
+        Self {
+            mid: T::zero(precision),
+            rad: Mag::INFINITY,
+        }
+    }
+
     /// The midpoint.
     #[inline]
     pub fn midpoint(&self) -> &T {

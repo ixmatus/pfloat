@@ -46,6 +46,8 @@
 extern crate alloc;
 
 #[cfg(feature = "big")]
+pub mod arith;
+#[cfg(feature = "big")]
 pub mod ball;
 pub mod mag;
 #[cfg(feature = "big")]

@@ -41,6 +41,11 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     /// Precision in bits.
     fn precision(&self) -> u32;
 
+    /// `+0` at the given precision (for `FixedFloat<PREC>` the argument
+    /// is ignored and `PREC` is used). The finite placeholder midpoint of
+    /// an entire-result ball.
+    fn zero(precision: u32) -> Self;
+
     /// `true` for a finite value (zero or normal).
     fn is_finite(&self) -> bool;
     /// `true` for NaN.
@@ -99,6 +104,10 @@ impl RealScalar for BigFloat {
     #[inline]
     fn precision(&self) -> u32 {
         BigFloat::precision(self)
+    }
+    #[inline]
+    fn zero(precision: u32) -> Self {
+        BigFloat::try_new_zero(pfloat::Sign::Positive, precision).expect("precision ≥ 1")
     }
     #[inline]
     fn is_finite(&self) -> bool {
@@ -194,6 +203,10 @@ mod fixed_impl {
         #[inline]
         fn precision(&self) -> u32 {
             PREC
+        }
+        #[inline]
+        fn zero(_precision: u32) -> Self {
+            FixedFloat::zero()
         }
         #[inline]
         fn is_finite(&self) -> bool {
