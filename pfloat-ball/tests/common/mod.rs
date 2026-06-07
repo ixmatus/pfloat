@@ -15,6 +15,13 @@ use core::cmp::Ordering;
 use pfloat::{BigFloat, RoundingMode};
 use pfloat_ball::{Ball, Mag};
 
+/// The Arb `BRACKET` subprocess driver + exact dyadic codec, gated to the
+/// independent containment lane (it drives a python subprocess and needs
+/// `std`). property_ftia does not pull `differential-arb`, so it never
+/// compiles this submodule.
+#[cfg(feature = "differential-arb")]
+pub mod arb_bracket;
+
 pub const NE: RoundingMode = RoundingMode::NearestEven;
 
 /// Deterministic xorshift64 PRNG (no `rand` dependency; fixed seeds keep
