@@ -45,10 +45,16 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "big")]
+pub mod ball;
 pub mod mag;
 #[cfg(feature = "big")]
 pub mod scalar;
+#[cfg(feature = "big")]
+pub mod spec;
 
+#[cfg(feature = "big")]
+pub use ball::{Ball, BallError};
 pub use mag::Mag;
 #[cfg(feature = "big")]
 pub use scalar::RealScalar;

@@ -125,3 +125,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0073: Adjacent-representable primitives (`next_up`/`next_down`/`ulp`)](0073-adjacent-representable.md) (accepted)
 - [ADR-0074: `pfloat-ball` crate and the `Mag` radius primitive](0074-pfloat-ball-crate-and-mag.md) (accepted)
 - [ADR-0075: the sealed `RealScalar` trait](0075-realscalar-sealed-trait.md) (accepted)
+- [ADR-0076: `Ball<T>`, the in-tree spec, and the conversion boundary](0076-ball-type-and-conversion-boundary.md) (accepted)
