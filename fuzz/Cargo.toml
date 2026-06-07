@@ -16,10 +16,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dependencies.pfloat]
 path = ".."
-features = ["std", "fmt", "big", "ops", "exp-log", "trig", "specials", "agm", "integrals", "airy", "bessel", "zeta"]
+features = ["std", "fmt", "big", "ops", "exp-log", "trig", "specials", "agm", "integrals", "airy", "bessel", "zeta", "serde"]
 
 # Each fuzz target is a separate binary. cargo-fuzz expects them
 # under `fuzz_targets/`; explicit `[[bin]]` entries pin
@@ -72,6 +73,13 @@ bench = false
 [[bin]]
 name = "fmt"
 path = "fuzz_targets/fmt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serde_roundtrip"
+path = "fuzz_targets/serde_roundtrip.rs"
 test = false
 doc = false
 bench = false

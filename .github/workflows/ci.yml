@@ -137,6 +137,8 @@ jobs:
         run: cargo fuzz build
       - working-directory: fuzz
         run: cargo fuzz run parse -- -max_total_time=60
+      - working-directory: fuzz
+        run: cargo fuzz run serde_roundtrip -- -max_total_time=60
 
   # ---------- MPFR full-union integration (Linux-only) ----------
   # ADR-0014 records the gating: 10⁴ inputs / (op × precision × mode)

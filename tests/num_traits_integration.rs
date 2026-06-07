@@ -11,9 +11,11 @@
 use core::cmp::Ordering;
 
 use num_traits::{FromPrimitive, Inv, Num, NumCast, One, Signed, ToPrimitive, Zero};
-use pfloat::{FixedFloat, RadixParseError};
+use pfloat::{FixedFloat, RadixParseError, RoundingMode};
 
 type F = FixedFloat<53>;
+
+const NE: RoundingMode = RoundingMode::NearestEven;
 
 /// Value equality via pfloat's `partial_cmp`; expands where `PREC` is
 /// concrete so no const-generic bound is needed.
@@ -101,6 +103,70 @@ fn from_str_radix_decimal_and_radix_error() {
         F::from_str_radix("11", 2),
         Err(RadixParseError::UnsupportedRadix(2))
     );
+}
+
+#[test]
+fn from_u64_rounds_once() {
+    // Regression (adversarial review): the `n >= 2^63` path must round
+    // the full magnitude once. The prior split rounded the low part to
+    // PREC and then added 2^63, a double rounding that lands 1 ULP off
+    // (16.7% of top-bit-set u64 at PREC=53). The independent reference
+    // is the exact decimal parsed once, which the parser rounds correctly.
+    let cases = [
+        0xfe80_0d65_69fa_1bff_u64, // the reported 1-ULP trigger at PREC=53
+        u64::MAX,
+        0x8000_0000_0000_0001,
+        0xffff_ffff_ffff_fc00,
+        0xc000_0000_0000_07ff,
+        0x9249_2492_4924_9249,
+    ];
+    for &n in &cases {
+        let got = F::from_u64(n).expect("from_u64");
+        let want = F::parse_str(&n.to_string(), NE).expect("parse").0;
+        assert!(
+            val_eq!(got, want),
+            "from_u64({n}): got {:?}, want {:?}",
+            got.to_f64(),
+            want.to_f64()
+        );
+    }
+    // Deterministic xorshift sweep over top-bit-set values, where the
+    // double rounding used to bite.
+    let mut s: u64 = 0x1234_5678_9abc_def0;
+    for _ in 0..20_000 {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        let n = s | (1 << 63);
+        let got = F::from_u64(n).expect("from_u64");
+        let want = F::parse_str(&n.to_string(), NE).expect("parse").0;
+        assert!(val_eq!(got, want), "from_u64({n}) mismatch");
+    }
+    // PREC=1 made the double rounding a 2x error (3*2^62 rounds to 2^64
+    // instead of 2^63). One round gives 2^63.
+    type H = FixedFloat<1>;
+    let n = 0xbfff_ffff_ffff_ffff_u64;
+    let got = H::from_u64(n).expect("from_u64");
+    let want = H::parse_str(&n.to_string(), NE).expect("parse").0;
+    assert!(
+        matches!(got.partial_cmp(&want).0, Some(Ordering::Equal)),
+        "PREC=1 from_u64 double rounding: got {:?}, want {:?}",
+        got.to_f64(),
+        want.to_f64()
+    );
+}
+
+#[test]
+fn abs_sub_propagates_nan() {
+    // Regression (adversarial review): a NaN operand must propagate, not
+    // collapse to +0. This matches the num-traits f32/f64 reference and
+    // pfloat's own NaN discipline.
+    let nan = F::from_f64(f64::NAN).expect("nan");
+    assert!(nan.abs_sub(&fi(3)).is_nan());
+    assert!(fi(3).abs_sub(&nan).is_nan());
+    // The ordered branches are unchanged.
+    assert!(val_eq!(fi(7).abs_sub(&fi(3)), fi(4)));
+    assert!(fi(3).abs_sub(&fi(7)).is_zero());
 }
 
 #[test]

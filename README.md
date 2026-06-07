@@ -237,7 +237,7 @@ under an aggregate floor.
 - **Differential lanes:** 41 `tests/differential_*.rs`
   files. CI sweep 10⁴ inputs per (op × precision × rounding
   mode); `PFLOAT_DEEP=1` escalates to 10⁶ (ADR-0014).
-- **Fuzz targets:** 7 targets under `fuzz/fuzz_targets/`.
+- **Fuzz targets:** 8 targets under `fuzz/fuzz_targets/`.
 - **Property tests:** 33 `tests/property_*.rs` files
   (addsub agm ai bi ci classify digamma_beta div ei erf exp exp_family fma fmt gamma hyperbolic ik jn li ln log_family mul parse partial_cmp pow rounding si sqrt total_cmp trig trig_inverse yn zeta).
 
