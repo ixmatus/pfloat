@@ -28,6 +28,39 @@ mod sealed {
     pub trait Sealed {}
 }
 
+/// Generate `BigFloat`-delegating unary kernel impls (the kernel is an
+/// inherent `BigFloat` method of the same name).
+#[cfg(any(feature = "exp-log", feature = "trig"))]
+macro_rules! big_unary {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[inline]
+            fn $name(&self, mode: RoundingMode) -> (Self, Status) {
+                BigFloat::$name(self, mode)
+            }
+        )*
+    };
+}
+
+/// Generate `FixedFloat` unary kernel impls by round-tripping through
+/// `BigFloat` at `PREC` (the elementary kernels are `BigFloat`-only; the
+/// `to_big` result is already at `PREC`, so the conversion back is exact).
+#[cfg(all(feature = "fixed", any(feature = "exp-log", feature = "trig")))]
+macro_rules! fixed_unary {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[inline]
+            fn $name(&self, mode: RoundingMode) -> (Self, Status) {
+                let (b, s) = self.to_big().$name(mode);
+                (
+                    FixedFloat::try_from_big_exact(b).expect("kernel result is at PREC"),
+                    s,
+                )
+            }
+        )*
+    };
+}
+
 /// The scalar types a [`Ball`](crate::Ball) can use as its midpoint.
 ///
 /// Sealed — implemented only for [`pfloat::BigFloat`] and
@@ -82,6 +115,78 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     fn div(&self, other: &Self, mode: RoundingMode) -> (Self, Status);
     /// `√self`, correctly rounded under `mode`.
     fn sqrt(&self, mode: RoundingMode) -> (Self, Status);
+    /// `∛self`, correctly rounded under `mode`.
+    fn cbrt(&self, mode: RoundingMode) -> (Self, Status);
+
+    // Elementary kernels, gated to the pfloat families. These extend the
+    // sealed trait (no external implementor exists), so adding them is not
+    // a breaking change. Each delegates to the inherent pfloat kernel.
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn exp(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn expm1(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn exp2(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn exp10(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn ln(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn log1p(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn log2(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn log10(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn sinh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn cosh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn tanh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn asinh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn acosh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn atanh(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "exp-log")]
+    #[doc(hidden)]
+    fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn sin(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn cos(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn tan(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn asin(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn acos(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn atan(&self, mode: RoundingMode) -> (Self, Status);
+    #[cfg(feature = "trig")]
+    #[doc(hidden)]
+    fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status);
 
     /// `self · 2^k`, exact (saturating at the `i64` exponent range).
     fn scale_by_pow2(&self, k: i64) -> (Self, Status);
@@ -172,6 +277,28 @@ impl RealScalar for BigFloat {
     fn sqrt(&self, mode: RoundingMode) -> (Self, Status) {
         BigFloat::sqrt(self, mode)
     }
+    #[inline]
+    fn cbrt(&self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::cbrt(self, mode)
+    }
+
+    #[cfg(feature = "exp-log")]
+    big_unary!(
+        exp, expm1, exp2, exp10, ln, log1p, log2, log10, sinh, cosh, tanh, asinh, acosh, atanh
+    );
+    #[cfg(feature = "exp-log")]
+    #[inline]
+    fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::hypot(self, other, mode)
+    }
+    #[cfg(feature = "trig")]
+    big_unary!(sin, cos, tan, asin, acos, atan);
+    #[cfg(feature = "trig")]
+    #[inline]
+    fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::atan2(self, x, mode)
+    }
+
     #[inline]
     fn scale_by_pow2(&self, k: i64) -> (Self, Status) {
         BigFloat::scale_by_pow2(self, k)
@@ -278,6 +405,30 @@ mod fixed_impl {
         fn sqrt(&self, mode: RoundingMode) -> (Self, Status) {
             FixedFloat::sqrt(self, mode)
         }
+        #[inline]
+        fn cbrt(&self, mode: RoundingMode) -> (Self, Status) {
+            FixedFloat::cbrt(self, mode)
+        }
+
+        #[cfg(feature = "exp-log")]
+        fixed_unary!(
+            exp, expm1, exp2, exp10, ln, log1p, log2, log10, sinh, cosh, tanh, asinh, acosh, atanh
+        );
+        #[cfg(feature = "exp-log")]
+        #[inline]
+        fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+            let (b, s) = self.to_big().hypot(&other.to_big(), mode);
+            (FixedFloat::try_from_big_exact(b).expect("at PREC"), s)
+        }
+        #[cfg(feature = "trig")]
+        fixed_unary!(sin, cos, tan, asin, acos, atan);
+        #[cfg(feature = "trig")]
+        #[inline]
+        fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status) {
+            let (b, s) = self.to_big().atan2(&x.to_big(), mode);
+            (FixedFloat::try_from_big_exact(b).expect("at PREC"), s)
+        }
+
         #[inline]
         fn scale_by_pow2(&self, k: i64) -> (Self, Status) {
             FixedFloat::scale_by_pow2(self, k)

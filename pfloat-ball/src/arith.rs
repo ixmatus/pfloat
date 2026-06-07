@@ -42,7 +42,7 @@ const TN: RoundingMode = RoundingMode::TowardNegative;
 /// `|mid − exact|`, where `lo`/`hi` are the directed pair bracketing the
 /// exact result. `hi − lo` is a small exact multiple of the ulp, so the
 /// halving is exact and the only over-estimate is at most one ulp.
-fn half_spread<T: RealScalar>(lo: &T, hi: &T) -> T {
+pub(crate) fn half_spread<T: RealScalar>(lo: &T, hi: &T) -> T {
     let spread = hi.sub(lo, TP).0; // ≥ hi − lo ≥ 0
     spread.scale_by_pow2(-1).0 // exact ÷2
 }
@@ -188,6 +188,24 @@ impl<T: RealScalar> Ball<T> {
             Self::from_interval(&lo_out, &hi_out).expect("√ endpoints are finite and ordered");
         (ball, status)
     }
+
+    /// `∛self`. Total and increasing (defined for negatives too), so
+    /// enclosed by its outward-rounded input-interval endpoints. An
+    /// entire ball maps to entire; an overflowing endpoint collapses to
+    /// entire rather than panicking.
+    #[must_use]
+    pub fn cbrt(&self) -> (Self, Status) {
+        let prec = self.precision();
+        if self.is_entire() {
+            return (Self::entire(prec), Status::OK);
+        }
+        let a = self.midpoint();
+        let ra = T::radius_to_scalar(self.radius());
+        let lo = a.sub(&ra, TN).0.cbrt(TN).0;
+        let hi = a.add(&ra, TP).0.cbrt(TP).0;
+        let ball = Self::from_interval(&lo, &hi).unwrap_or_else(|_| Self::entire(prec));
+        (ball, Status::OK)
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +332,19 @@ mod tests {
         let b = ball(-5, Mag::from_pow2(0), 53); // [-6, -4]
         let (r, st) = b.sqrt();
         assert!(st.invalid() && r.is_entire());
+    }
+
+    #[test]
+    fn cbrt_encloses_and_handles_negatives() {
+        let (r, st) = pt(27, 53).cbrt();
+        assert!(st.is_ok() && r.midpoint().partial_cmp(&bf(3, 53)).0 == Some(Ordering::Equal));
+        // Negative input (cbrt is total): cbrt(-8) = -2.
+        let (r2, _) = pt(-8, 53).cbrt();
+        assert!(r2.midpoint().partial_cmp(&bf(-2, 53)).0 == Some(Ordering::Equal));
+        // Non-cube encloses the true value.
+        let (r3, _) = pt(10, 53).cbrt();
+        let true_cbrt = bf(10, 400).cbrt(NE).0;
+        assert!(contains(&r3, &true_cbrt));
     }
 
     #[test]

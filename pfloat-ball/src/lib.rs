@@ -51,6 +51,8 @@ pub mod accuracy;
 pub mod arith;
 #[cfg(feature = "big")]
 pub mod ball;
+#[cfg(feature = "exp-log")]
+pub mod elem;
 pub mod mag;
 #[cfg(feature = "big")]
 pub mod scalar;

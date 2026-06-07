@@ -130,9 +130,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p pfloat-ball --no-default-features --all-targets -- -D warnings
-      - run: cargo clippy -p pfloat-ball --features=big --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-ball --no-default-features --features=fixed --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-ball --no-default-features --features=trig --all-targets -- -D warnings
       - run: cargo test -p pfloat-ball --no-default-features --verbose
-      - run: cargo test -p pfloat-ball --features=big --verbose
+      - run: cargo test -p pfloat-ball --no-default-features --features=fixed --verbose
+      - run: cargo test -p pfloat-ball --no-default-features --features=trig --verbose
       - run: cargo build -p pfloat-ball --no-default-features --target thumbv6m-none-eabi --verbose
 
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
