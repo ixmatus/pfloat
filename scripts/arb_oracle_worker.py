@@ -276,6 +276,8 @@ def handle_request(line: str) -> str:
         return handle_midpoint(parts[1:])
     if parts and parts[0] == "BRACKET":
         return handle_bracket(parts[1:])
+    if parts and parts[0] == "BRACKETI":
+        return handle_bracket_interval(parts[1:])
     if len(parts) != 4:
         return f"ERR malformed request: expected 4 tokens, got {len(parts)}"
     fn_id, order, input_hex, mode = parts
@@ -499,13 +501,33 @@ def dispatch_elementary(fn_id: str, x: arb, y: Optional[arb]) -> arb:
         # the PRINCIPAL root: NaN for negatives and NaN at 0. pfloat-ball's
         # cbrt is the real root (cbrt(-x) = -cbrt(x), cbrt(0) = 0), so the
         # bracket must extend by sign or the lane silently skips cbrt's
-        # entire negative half-domain (a NaN bracket is dropped). BRACKET
-        # inputs are exact dyadic points, so the sign test is exact.
+        # entire negative half-domain (a NaN bracket is dropped).
+        #
+        # A point or a ball lying entirely on one side of 0: take the
+        # principal root of |x| and restore the sign (`x < 0` / `x > 0` are
+        # whole-ball comparisons, True only when every point shares the
+        # sign). A ball that straddles 0 (only reachable through BRACKETI's
+        # interval input) needs the real odd root, which is monotone
+        # increasing through 0, so its rigorous image is
+        # [cbrt(lower), cbrt(upper)]: evaluate per endpoint (each endpoint
+        # is comfortably signed for a 0-containing ball) and union. For an
+        # exact 0 point both comparisons are False and the ball is exact,
+        # giving cbrt(0) = 0 (the unchanged point behaviour).
         if x < 0:
             return -((-x).root(3))
         if x > 0:
             return x.root(3)
-        return arb(0)
+        if x.is_exact():
+            return arb(0)
+
+        def _real_cbrt(v: arb) -> arb:
+            if v < 0:
+                return -((-v).root(3))
+            if v > 0:
+                return v.root(3)
+            return arb(0)
+
+        return _real_cbrt(x.lower()).union(_real_cbrt(x.upper()))
     if fn_id == "sin":
         return x.sin()
     if fn_id == "cos":
@@ -617,6 +639,14 @@ def handle_bracket(args: list) -> str:
     except Exception as e:
         return f"ERR BRACKET {type(e).__name__}: {e}"
 
+    return _bracket_response(ball)
+
+
+def _bracket_response(ball: arb) -> str:
+    """Encode a finished result ball as a BRACKET / BRACKETI response line:
+    the exact dyadic lower and upper bounds, or a non-finite verdict. Shared
+    by the point (BRACKET) and interval (BRACKETI) handlers so the two emit
+    byte-identical replies for the same enclosure."""
     if ball.is_nan():
         return "NAN"
     if not ball.is_finite():
@@ -630,8 +660,77 @@ def handle_bracket(args: list) -> str:
         lo_s, lo_m, lo_e = _arb_bound_to_dyadic(ball.lower())
         hi_s, hi_m, hi_e = _arb_bound_to_dyadic(ball.upper())
     except Exception as e:
-        return f"ERR BRACKET bound extraction: {type(e).__name__}: {e}"
+        return f"ERR bracket bound extraction: {type(e).__name__}: {e}"
     return f"OK {lo_s} {lo_m} {lo_e} {hi_s} {hi_m} {hi_e}"
+
+
+def _interval_ball(
+    ms: str, mm: str, me: str, rs: str, rm: str, re: str
+) -> arb:
+    """Rigorous Arb enclosure of the input interval ``[mid - rad, mid + rad]``
+    from exact dyadic midpoint and (non-negative) radius triples.
+
+    The construction is the union of the two exact endpoints: the resulting
+    interval ball contains both, hence the whole true interval, and it stays
+    rigorous even if an endpoint is inexact at ``ctx.prec`` (the union of two
+    balls contains each ball, so it contains both true endpoints and the
+    convex span between them). A zero radius collapses to the exact midpoint
+    (``union(p, p) = p`` for an exact ``p``), so a degenerate BRACKETI reduces
+    bit-for-bit to the point BRACKET."""
+    mid = arb_from_dyadic(ms, mm, me)
+    rad = arb_from_dyadic(rs, rm, re)
+    return (mid - rad).union(mid + rad)
+
+
+def handle_bracket_interval(args: list) -> str:
+    """Process a BRACKETI request: the rigorous enclosure of a pfloat-ball
+    elementary function over an input INTERVAL ``[mid - rad, mid + rad]`` per
+    operand, rather than at a single point.
+
+    This is what *range soundness* for the non-monotonic functions needs.
+    Five witnesses sampled inside a ball cannot see a result ball that fails
+    to enclose an interior extremum of sin / cos / tan (the every-witness lane
+    is structurally blind to a missed-extremum bug); Arb's image of the whole
+    input interval can, because its ball arithmetic accounts for the extremum
+    even when no sampled point reaches it. pf-fe5f.7, ADR-0078 follow-up.
+
+    Request shape (verb already stripped)::
+
+        <fn_id> <oracle_prec> <xmid_s m e> <xrad_s m e> [<ymid_s m e> <yrad_s m e>]
+
+    where each operand contributes an exact dyadic midpoint triple and a
+    non-negative dyadic radius triple, and the second operand is present iff
+    ``fn_id`` is binary (add/sub/mul/div/atan2/hypot).
+
+    Response shape is identical to BRACKET (``OK lo hi`` / ``NAN`` /
+    ``POS_INF`` / ``NEG_INF`` / ``INC`` / ``ERR <msg>``)."""
+    if not args:
+        return "ERR BRACKETI: missing fn_id"
+    fn_id = args[0]
+    binary = fn_id in _BRACKET_BINARY
+    expected = 8 + (6 if binary else 0)
+    if len(args) != expected:
+        return f"ERR BRACKETI {fn_id}: expected {expected} args, got {len(args)}"
+    try:
+        oracle_prec = int(args[1])
+    except ValueError:
+        return f"ERR BRACKETI malformed oracle_prec: {args[1]}"
+    if not 1 <= oracle_prec <= ZIV_MAX_PREC:
+        return f"ERR BRACKETI oracle_prec out of range [1, {ZIV_MAX_PREC}]: {oracle_prec}"
+
+    ctx.prec = oracle_prec
+    try:
+        x = _interval_ball(args[2], args[3], args[4], args[5], args[6], args[7])
+        y = (
+            _interval_ball(args[8], args[9], args[10], args[11], args[12], args[13])
+            if binary
+            else None
+        )
+        ball = dispatch_elementary(fn_id, x, y)
+    except Exception as e:
+        return f"ERR BRACKETI {type(e).__name__}: {e}"
+
+    return _bracket_response(ball)
 
 
 def main() -> None:

@@ -110,18 +110,58 @@ impl ArbBracketWorker {
             line.push_str(&format!(" {ys} {ym} {ye}"));
         }
         let resp = self.request(&line);
-        let parts: Vec<&str> = resp.split_whitespace().collect();
-        match parts.as_slice() {
-            ["OK", ls, lm, le, hs, hm, he] => Bracket::Finite {
-                lo: dyadic_to_bigfloat(ls, lm, le),
-                hi: dyadic_to_bigfloat(hs, hm, he),
-            },
-            ["NAN"] => Bracket::Nan,
-            ["POS_INF"] => Bracket::PosInf,
-            ["NEG_INF"] => Bracket::NegInf,
-            ["INC"] => Bracket::Inconclusive,
-            _ => panic!("BRACKET {fn_id}: unexpected response `{resp}`"),
+        parse_bracket(fn_id, &resp)
+    }
+
+    /// The rigorous enclosure of `fn_id` over the input INTERVAL(s)
+    /// `[mid - rad, mid + rad]`, via the worker's `BRACKETI` verb. `y` is
+    /// `Some((y_mid, y_rad))` for binary functions (add/sub/mul/div/atan2/
+    /// hypot).
+    ///
+    /// Where [`bracket`](Self::bracket) evaluates `f` at a single point, this
+    /// brackets `f` over the whole input ball, so it can witness a result ball
+    /// that fails to enclose an interior extremum of a non-monotonic function
+    /// (the range-soundness check five point witnesses are structurally blind
+    /// to). The radii are passed as `BigFloat`s (a `Mag` lifts via
+    /// `to_bigfloat`); a zero radius makes `BRACKETI` reduce to `bracket`
+    /// bit-for-bit.
+    pub fn bracket_interval(
+        &mut self,
+        fn_id: &str,
+        oracle_prec: u32,
+        x_mid: &BigFloat,
+        x_rad: &BigFloat,
+        y: Option<(&BigFloat, &BigFloat)>,
+    ) -> Bracket {
+        let (xms, xmm, xme) = bigfloat_to_dyadic(x_mid).expect("finite x midpoint");
+        let (xrs, xrm, xre) = bigfloat_to_dyadic(x_rad).expect("finite x radius");
+        let mut line =
+            format!("BRACKETI {fn_id} {oracle_prec} {xms} {xmm} {xme} {xrs} {xrm} {xre}");
+        if let Some((y_mid, y_rad)) = y {
+            let (yms, ymm, yme) = bigfloat_to_dyadic(y_mid).expect("finite y midpoint");
+            let (yrs, yrm, yre) = bigfloat_to_dyadic(y_rad).expect("finite y radius");
+            line.push_str(&format!(" {yms} {ymm} {yme} {yrs} {yrm} {yre}"));
         }
+        let resp = self.request(&line);
+        parse_bracket(fn_id, &resp)
+    }
+}
+
+/// Parse a worker BRACKET / BRACKETI reply into a [`Bracket`]. The point and
+/// interval verbs share the reply grammar (the worker encodes both through one
+/// helper), so they share one parser.
+fn parse_bracket(fn_id: &str, resp: &str) -> Bracket {
+    let parts: Vec<&str> = resp.split_whitespace().collect();
+    match parts.as_slice() {
+        ["OK", ls, lm, le, hs, hm, he] => Bracket::Finite {
+            lo: dyadic_to_bigfloat(ls, lm, le),
+            hi: dyadic_to_bigfloat(hs, hm, he),
+        },
+        ["NAN"] => Bracket::Nan,
+        ["POS_INF"] => Bracket::PosInf,
+        ["NEG_INF"] => Bracket::NegInf,
+        ["INC"] => Bracket::Inconclusive,
+        _ => panic!("bracket {fn_id}: unexpected response `{resp}`"),
     }
 }
 

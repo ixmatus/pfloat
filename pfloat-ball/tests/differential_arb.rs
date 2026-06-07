@@ -108,6 +108,70 @@ fn bracket_pipe_brackets_the_reference_value() {
     }
 }
 
+/// Two brackets denote the same verdict: identical finite endpoints (exact
+/// dyadics, so bit-for-bit), or the same non-finite class.
+fn brackets_equal(a: &Bracket, b: &Bracket) -> bool {
+    use core::cmp::Ordering::Equal;
+    match (a, b) {
+        (Bracket::Finite { lo: la, hi: ha }, Bracket::Finite { lo: lb, hi: hb }) => {
+            la.partial_cmp(lb).0 == Some(Equal) && ha.partial_cmp(hb).0 == Some(Equal)
+        }
+        (Bracket::Nan, Bracket::Nan)
+        | (Bracket::PosInf, Bracket::PosInf)
+        | (Bracket::NegInf, Bracket::NegInf)
+        | (Bracket::Inconclusive, Bracket::Inconclusive) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn degenerate_interval_bracket_equals_point_bracket() {
+    // S1 (pf-fe5f.7): a BRACKETI call with a zero radius denotes the exact
+    // point [mid, mid], so it must reduce to the point BRACKET bit-for-bit.
+    // This pins the interval verb against the established point verb and is
+    // the base case the range-soundness lane builds on -- a degenerate ball
+    // is a point, and its image is f(mid). `union(p, p) = p` for an exact `p`,
+    // so the two requests reach `dispatch_elementary` with the same operand.
+    if !arb_lane_available("degenerate_interval_bracket_equals_point_bracket") {
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let prec = 256;
+    let zero = bf(0, 53);
+
+    // Unary spread: includes cbrt's negative half (the real-odd path, where
+    // Arb's principal root and pfloat-ball's real root diverge) and the
+    // base-changed / hyperbolic surface.
+    let unary: [(&str, BigFloat); 6] = [
+        ("exp", ratio(3, 2, 53)),
+        ("ln", bf(2, 53)),
+        ("sin", ratio(11, 8, 53)),
+        ("cbrt", bf(-8, 53)),
+        ("tanh", ratio(-5, 4, 53)),
+        ("log2", ratio(7, 2, 53)),
+    ];
+    for (fn_id, x) in unary {
+        let point = w.bracket(fn_id, prec, &x, None);
+        let interval = w.bracket_interval(fn_id, prec, &x, &zero, None);
+        assert!(
+            brackets_equal(&point, &interval),
+            "{fn_id}: degenerate interval {interval:?} != point {point:?}"
+        );
+    }
+
+    // Binary: degenerate intervals on both operands.
+    let a = ratio(3, 2, 53);
+    let b = ratio(1, 4, 53);
+    for fn_id in ["add", "sub", "mul", "div", "hypot", "atan2"] {
+        let point = w.bracket(fn_id, prec, &a, Some(&b));
+        let interval = w.bracket_interval(fn_id, prec, &a, &zero, Some((&b, &zero)));
+        assert!(
+            brackets_equal(&point, &interval),
+            "{fn_id}: degenerate interval {interval:?} != point {point:?}"
+        );
+    }
+}
+
 // ---------- S3: the unary containment lane (pf-fe5f.4) ----------
 //
 // The independent soundness backstop: for each ball op and each witness
