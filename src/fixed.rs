@@ -409,6 +409,20 @@ where
         (Self::from_big_at_same_precision(r), s)
     }
 
+    /// Returns `self × 2^k`, exact whenever the shifted exponent stays
+    /// within the `i64` range.
+    ///
+    /// See [`BigFloat::scale_by_pow2`] for the full contract: only the
+    /// unbiased binary exponent shifts; the mantissa, sign, and
+    /// precision are unchanged; saturation raises
+    /// [`Status::OVERFLOW`]/[`Status::UNDERFLOW`] and a signaling NaN
+    /// raises [`Status::INVALID`].
+    #[must_use]
+    pub fn scale_by_pow2(&self, k: i64) -> (Self, Status) {
+        let (b, s) = self.to_big().scale_by_pow2(k);
+        (Self::from_big_at_same_precision(b), s)
+    }
+
     // -------- BigFloat conversion --------
 
     /// Converts to [`BigFloat`] at the same precision (exact, infallible).
@@ -738,6 +752,20 @@ mod tests {
         assert!(status.inexact());
         let eight = FixedFloat::<2>::try_from_i64_exact(8).unwrap();
         assert_eq!(fixed.partial_cmp(&eight).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn scale_by_pow2_delegates() {
+        let three = FixedFloat::<53>::try_from_i64_exact(3).unwrap();
+        let (twelve, s) = three.scale_by_pow2(2);
+        assert!(s.is_ok());
+        let expected = FixedFloat::<53>::try_from_i64_exact(12).unwrap();
+        assert_eq!(twelve.partial_cmp(&expected).0, Some(Ordering::Equal));
+        assert_eq!(twelve.precision(), 53);
+
+        // Saturation flag threads through the delegate.
+        let (_, sat) = three.scale_by_pow2(i64::MAX);
+        assert!(sat.overflow());
     }
 
     #[test]

@@ -31,6 +31,8 @@ pub(crate) mod remainder;
 #[cfg(feature = "exp-log")]
 pub(crate) mod rootn;
 #[cfg(feature = "big")]
+pub(crate) mod scale;
+#[cfg(feature = "big")]
 pub(crate) mod sqrt;
 
 #[cfg(feature = "big")]
