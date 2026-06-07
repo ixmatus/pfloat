@@ -130,3 +130,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0078: `pfloat-ball` verification design](0078-pfloat-ball-verification.md) (accepted)
 - [ADR-0079: directed-mode rounding verification posture](0079-directed-mode-verification-posture.md) (accepted)
 - [ADR-0080: directed-mode rounding for the asymptote-saturating kernels](0080-asymptote-saturation-directed-rounding.md) (accepted)
+- [ADR-0081: Ziv-certify the directed rounding of log2 and log10](0081-log2-log10-ziv-certification.md) (accepted)

@@ -25,6 +25,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::ln_2_at;
+use super::ziv::ziv_round;
+use super::ziv_calibration::LOG2_ERROR_GUARD;
 
 impl BigFloat {
     /// `log2(self)` rounded under `mode` to `self.precision`.
@@ -82,6 +84,50 @@ fn log2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         }
     }
 
+    // Positive finite normal x: certify the directed round with the Ziv
+    // interval test rather than the prior fixed 64-bit guard (pf-3rtr.3,
+    // ADR-0081), bringing log2 onto the same per-input correct-rounding
+    // footing as the rest of the transcendental surface. The eval closure
+    // composes `ln(x) / ln(2)` at the driver's working precision under
+    // NearestEven; the outer interval test settles the caller's directed
+    // mode. The exact x = 2^k case is dispatched above; the remaining
+    // dyadic and irrational inputs converge here (including a
+    // power-of-two k that did not fit at target).
+    if matches!(
+        x.parts(),
+        Parts::Normal {
+            sign: Sign::Positive,
+            ..
+        }
+    ) {
+        let (rounded, mut status) = ziv_round(
+            |w| {
+                let (ln_x, _) = x
+                    .ln_round(w, RoundingMode::NearestEven)
+                    .expect("precision >= 1");
+                ln_x.div(&ln_2_at(w), RoundingMode::NearestEven).0
+            },
+            target_precision,
+            mode,
+            LOG2_ERROR_GUARD,
+        );
+        // A finite normal result for x outside the exact set is an
+        // irrational log2 rounded onto the grid ⟹ INEXACT (for a dyadic
+        // x = m·2^e with odd m > 1, log2 of the odd m > 1 is irrational;
+        // pf-njs5 over-report). The exact x = 2^k case is dispatched above.
+        if matches!(rounded.parts(), Parts::Normal { .. }) {
+            status |= Status::INEXACT;
+        }
+        auto_raise(status);
+        return (rounded, status);
+    }
+
+    // Non-positive / non-finite x: `ln` handles the IEEE 754-2019 §9.2
+    // dispatch (qNaN + INVALID from x < 0, NaN, or −∞; −∞ + DIV_BY_ZERO
+    // from ±0; +∞ from +∞), and the division by the positive ln(2)
+    // preserves sign, infinity, and NaN, so the composition carries the
+    // correct value and status. These results are exact (±∞ / NaN), so no
+    // Ziv certification is needed.
     let working_prec = target_precision.saturating_add(64);
     let (ln_x, ln_status) = x
         .ln_round(working_prec, RoundingMode::NearestEven)
@@ -91,18 +137,7 @@ fn log2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     let (rounded, round_status) = ratio
         .round_to_precision(target_precision, mode)
         .expect("precision >= 1");
-    let mut status = ln_status | div_status | round_status;
-    // A finite normal result for x outside the exact set is an
-    // irrational log2 rounded onto the grid ⟹ INEXACT, even where the
-    // composition lands exactly on an integer (for a dyadic x = m·2^e
-    // with odd m > 1, log2 x = e + log2 m and log2 of an odd m > 1 is
-    // irrational; pf-njs5 over-report). The exact x = 2^k case is
-    // dispatched above. Non-finite or domain results (qNaN + INVALID
-    // from x < 0 or x = NaN, ±∞ / DIV_BY_ZERO from x = ±0 or x = +∞)
-    // flow through the composition and keep their status untouched.
-    if matches!(rounded.parts(), Parts::Normal { .. }) {
-        status |= Status::INEXACT;
-    }
+    let status = ln_status | div_status | round_status;
     auto_raise(status);
     (rounded, status)
 }
