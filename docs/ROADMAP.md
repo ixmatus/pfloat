@@ -138,10 +138,14 @@ The polish that earns 1.x adoption. Sequenced after the v1.0 tag
   choice, so it does not wait for this phase.
 - A constants at precision API (so users can request π or ln 2 at
   any precision without learning the AGM module directly).
-- README catches up to the code. An honest "pfloat vs `rug`,
-  choose this when" section stating the no C toolchain,
-  permissive license, real `no_std` wins, without overclaiming on
-  speed or maturity.
+- README catches up to the code. The earlier plan called for an
+  honest "pfloat vs `rug`, choose this when" section; the lead
+  consumer's later decision (Phase 3, slice C3e) was to drop the
+  named head-to-head comparison entirely and state pfloat's value on
+  its own terms (no C toolchain, permissive license, real `no_std`,
+  the special-function and verification coverage that ships in the
+  box). `rug` remains only as the differential-MPFR test oracle, not
+  a marketing foil.
 
 ## Phase 4 and beyond: the tower
 
