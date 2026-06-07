@@ -74,7 +74,9 @@ fn zeta_matches_mpfr() {
         // NearestEven-only-at-p=1024 posture; they mostly re-exercise the
         // final-round converter already covered by the five-mode tier at
         // p <= 256. Keep all five modes where ties are common (p <= 256);
-        // NearestEven-only at p = 1024.
+        // NearestEven-only at p = 1024 (one of the three deliberate
+        // NearestEven-only differential lanes named in ADR-0079, with
+        // beta and parse).
         let modes: &[RoundingMode] = if p >= 1024 {
             NEAREST_EVEN_ROUNDING_MODES
         } else {

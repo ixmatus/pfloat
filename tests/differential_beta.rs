@@ -18,7 +18,11 @@
 //! `a, b, a+b` all off the Γ poles, finite signed result). Both keep
 //! the 2-ULP slack — the oracle compounds three `lgamma` calls plus
 //! an `exp`, and `beta` is not Ziv-corrected (the NE-only loose
-//! tier, `feedback_differential_lane_cost`).
+//! tier, `feedback_differential_lane_cost`). A loose two-ULP oracle
+//! cannot certify bit-exact agreement, so this lane stays
+//! `NearestEven`-only by design: one of the three deliberate
+//! `NearestEven`-only differential lanes named in ADR-0079 (with
+//! `parse` and `zeta` at p = 1024).
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 
@@ -28,7 +32,7 @@ use core::cmp::Ordering;
 
 use differential::{
     bigfloat_from_i64, bigfloat_to_rug, mpfr_round_of, next_i64_in, rug_from_i64, sweep_size,
-    ALL_ROUNDING_MODES,
+    NEAREST_EVEN_ROUNDING_MODES,
 };
 use pfloat::RoundingMode;
 use rug::Float;
@@ -80,7 +84,7 @@ fn beta_matches_mpfr_lgamma_composition_loosely() {
     for _ in 0..cases {
         let a = next_i64_in(&mut state, 1, 20);
         let b = next_i64_in(&mut state, 1, 20);
-        for &mode in ALL_ROUNDING_MODES {
+        for &mode in NEAREST_EVEN_ROUNDING_MODES {
             let (bf_r, _status) = {
                 let a_bf = bigfloat_from_i64(a, p);
                 let b_bf = bigfloat_from_i64(b, p);
@@ -125,7 +129,7 @@ fn beta_negative_non_integer_matches_signed_lgamma_oracle() {
         let a_num = -(2 * i + 1); // /2  → negative non-integer
         let b_num = if b_negative { -(2 * j + 1) } else { 2 * j + 1 }; // /4
 
-        for &mode in ALL_ROUNDING_MODES {
+        for &mode in NEAREST_EVEN_ROUNDING_MODES {
             let (bf_r, status) = {
                 let two = bigfloat_from_i64(2, p);
                 let four = bigfloat_from_i64(4, p);
