@@ -158,10 +158,12 @@ mod cache {
 }
 
 /// Compute `π` at the requested precision via Brent–Salamin.
+#[allow(dead_code)]
 pub(super) fn pi_via_agm(prec: u32) -> BigFloat {
     cache::memoized(Kind::Pi, prec, || pi_compute(prec))
 }
 
+#[allow(dead_code)]
 fn pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
 
@@ -297,10 +299,12 @@ fn atanh_one_over(n: i64, working_prec: u32) -> BigFloat {
 /// Compute `2/π` at the requested precision. Convenience wrapper:
 /// `pi_via_agm(prec)` then `2/pi`. Returns a fresh `BigFloat` at
 /// `prec` rounded under `NearestEven`.
+#[allow(dead_code)]
 pub(super) fn two_over_pi_via_agm(prec: u32) -> BigFloat {
     cache::memoized(Kind::TwoOverPi, prec, || two_over_pi_compute(prec))
 }
 
+#[allow(dead_code)]
 fn two_over_pi_compute(prec: u32) -> BigFloat {
     let working = prec.saturating_add(GUARD_BITS);
     let pi = pi_via_agm(working);

@@ -67,6 +67,7 @@ use crate::big::BigFloat;
 use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
+#[cfg(feature = "trig")]
 use crate::status::Status;
 
 #[cfg(feature = "exp-log")]

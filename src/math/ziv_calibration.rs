@@ -86,35 +86,45 @@ pub const LOG1P_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `sin`: Payne-Hanek range reduction plus quadrant-dispatched
 /// Taylor at `~w/2` terms.
+#[cfg(feature = "trig")]
 pub const SIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `cos`: same range reduction; sin/cos share the structure.
+#[cfg(feature = "trig")]
 pub const COS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `tan`: `sin/cos` composition after the same reduction.
+#[cfg(feature = "trig")]
 pub const TAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `cot`: `cos/sin` after the same reduction (pfloat 1.1, ADR-0056).
+#[cfg(feature = "trig")]
 pub const COT_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `sec`: `1/cos` after the same reduction (pfloat 1.1, ADR-0056).
+#[cfg(feature = "trig")]
 pub const SEC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `csc`: `1/sin` after the same reduction (pfloat 1.1, ADR-0056).
+#[cfg(feature = "trig")]
 pub const CSC_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Inverse trig ----------------------------------------------------
 
 /// `asin`: `2·atan(|x|/(1+sqrt(1-x²)))` identity (slice p1.25).
+#[cfg(feature = "trig")]
 pub const ASIN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `acos`: `π - 2·atan(sqrt((1+x)/(1-x)))` identity (slice p1.25).
+#[cfg(feature = "trig")]
 pub const ACOS_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `atan`: unsigned composition on `|x|` (slice p1.25).
+#[cfg(feature = "trig")]
 pub const ATAN_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 /// `atan2`: quadrant-shifted `atan(y/x)` (slice p1.25).
+#[cfg(feature = "trig")]
 pub const ATAN2_ERROR_GUARD: u32 = DEFAULT_ERROR_GUARD;
 
 // --- Hyperbolic and inverse hyperbolic -------------------------------
