@@ -75,12 +75,12 @@ matrix_union=$(grep -E '^[[:space:]]*-[[:space:]]*"--features=' "$ci" \
     | sed -E 's/.*--features=([^"]*)".*/\1/')
 
 # Clippy union: the `cargo clippy ... --features=<list> ...` line for the
-# root `pfloat` crate. The `pfloat-libm` member has its own clippy lines
-# carrying its own `differential-mpfr` feature (its only feature); those
-# are a different crate's surface, not the root's kernel-feature union, so
-# exclude them here.
+# root `pfloat` crate. The workspace members (`pfloat-libm`, `pfloat-ball`)
+# have their own clippy lines carrying their own features (`differential-mpfr`,
+# `big`, ...); those are different crates' surfaces, not the root's
+# kernel-feature union, so exclude them here.
 clippy_union=$(grep -E 'cargo clippy .*--features=' "$ci" \
-    | grep -v 'pfloat-libm' \
+    | grep -v -e 'pfloat-libm' -e 'pfloat-ball' \
     | sed -E 's/.*--features=([^ ]*).*/\1/')
 
 if [ -z "$matrix_union" ]; then

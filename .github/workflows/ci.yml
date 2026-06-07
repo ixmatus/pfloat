@@ -110,6 +110,31 @@ jobs:
       - run: cargo clippy -p pfloat-libm --all-targets --features=differential-mpfr -- -D warnings
       - run: cargo test -p pfloat-libm --release --features=differential-mpfr --verbose
 
+  # ---------- pfloat-ball member: rigorous real ball arithmetic ----------
+  # The root test matrix scopes to the `pfloat` package, so the
+  # `pfloat-ball` member has its own lane. It builds and lints the bare
+  # `Mag`-only surface (no_std, alloc-free, the Kani target) and the
+  # `big` headline surface, runs the tests for both, and cross-compiles
+  # the bare surface to the thumbv6m floor. No MPFR: the independent Arb
+  # containment lane lands with the verification slice and is gated
+  # behind its own feature, so this job stays dependency-light.
+  pfloat-ball:
+    name: pfloat-ball (real ball arithmetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+          targets: thumbv6m-none-eabi
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p pfloat-ball --no-default-features --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-ball --features=big --all-targets -- -D warnings
+      - run: cargo test -p pfloat-ball --no-default-features --verbose
+      - run: cargo test -p pfloat-ball --features=big --verbose
+      - run: cargo build -p pfloat-ball --no-default-features --target thumbv6m-none-eabi --verbose
+
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
   # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status
   # update records the shift: every-push runs were costly (~10
