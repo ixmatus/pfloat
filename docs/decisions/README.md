@@ -122,3 +122,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0070: num-traits impls scoped to FixedFloat](0070-num-traits-impls-fixedfloat.md) (accepted)
 - [ADR-0071: Dragon4 shortest-output formatter](0071-dragon4-shortest-formatter.md) (accepted)
 - [ADR-0072: Exact power-of-two scaling (`scale_by_pow2`)](0072-scale-by-pow2.md) (accepted)
+- [ADR-0073: Adjacent-representable primitives (`next_up`/`next_down`/`ulp`)](0073-adjacent-representable.md) (accepted)
