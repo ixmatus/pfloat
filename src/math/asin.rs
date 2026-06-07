@@ -117,11 +117,22 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             return (nan, Status::INVALID);
         }
         Some(Ordering::Equal) => {
-            // asin(±1) = ±π/2. Mode-aware to keep directed-mode
-            // rounding correct (slice p1.25; the NE-only
-            // `pi_over_2_at` return drops the directed-mode info
-            // at the target-precision round).
-            let (pi_2, status) = pi_over_2_at_round(target_precision, mode);
+            // asin(±1) = ±π/2. Mode-aware to keep directed-mode rounding
+            // correct (slice p1.25). For negative x the result is −(π/2),
+            // and negating mirrors the rounding direction: rounding π/2
+            // under `mode` then negating gives the *wrong* side of −π/2
+            // (it rounds −π/2 toward the opposite infinity). Round π/2
+            // under the mirrored mode (TowardNegative ↔ TowardPositive;
+            // the nearest / toward-zero modes are symmetric under
+            // negation) so the final −π/2 lands on the side `mode` asks
+            // for. Phase 4 FTIA review caught asin(−1, TowardNegative)
+            // > −π/2, an unsound lower bound for the ball `asin`.
+            let effective_mode = match (sign, mode) {
+                (Sign::Negative, RoundingMode::TowardNegative) => RoundingMode::TowardPositive,
+                (Sign::Negative, RoundingMode::TowardPositive) => RoundingMode::TowardNegative,
+                _ => mode,
+            };
+            let (pi_2, status) = pi_over_2_at_round(target_precision, effective_mode);
             let signed = if matches!(sign, Sign::Negative) {
                 pi_2.negated()
             } else {
@@ -230,6 +241,46 @@ mod tests {
         let pi_2 = super::super::pi_over_2_at(113);
         let neg = pi_2.negated();
         assert!(close_at(&r, &neg, 100));
+    }
+
+    #[test]
+    fn asin_pm_one_directed_rounding_is_sound() {
+        // Regression (Phase 4 FTIA review): asin(−1, TowardNegative) must
+        // be ≤ −π/2 and asin(−1, TowardPositive) ≥ −π/2 (and symmetrically
+        // for +1). The negative endpoint used to round on the wrong side
+        // of −π/2 because π/2 was rounded under `mode` and then negated
+        // without mirroring the mode.
+        use core::cmp::Ordering;
+        let truth_pos = super::super::pi_over_2_at(600); //  π/2
+        let truth_neg = truth_pos.negated(); // −π/2
+        for &p in &[24u32, 53, 113, 200] {
+            let neg_one = BigFloat::try_from_i64_exact(-1, p).unwrap();
+            let lo = neg_one.asin(RoundingMode::TowardNegative).0;
+            let hi = neg_one.asin(RoundingMode::TowardPositive).0;
+            assert_ne!(
+                lo.partial_cmp(&truth_neg).0,
+                Some(Ordering::Greater),
+                "asin(-1, TN) must be ≤ −π/2 at p={p}"
+            );
+            assert_ne!(
+                hi.partial_cmp(&truth_neg).0,
+                Some(Ordering::Less),
+                "asin(-1, TP) must be ≥ −π/2 at p={p}"
+            );
+            let pos_one = BigFloat::try_from_i64_exact(1, p).unwrap();
+            let plo = pos_one.asin(RoundingMode::TowardNegative).0;
+            let phi = pos_one.asin(RoundingMode::TowardPositive).0;
+            assert_ne!(
+                plo.partial_cmp(&truth_pos).0,
+                Some(Ordering::Greater),
+                "asin(1, TN) must be ≤ π/2 at p={p}"
+            );
+            assert_ne!(
+                phi.partial_cmp(&truth_pos).0,
+                Some(Ordering::Less),
+                "asin(1, TP) must be ≥ π/2 at p={p}"
+            );
+        }
     }
 
     #[test]
