@@ -309,6 +309,70 @@ fn arb_containment_unary() {
     }
 }
 
+/// The unary functions seeded from their own hard-to-round corpus. `cbrt` /
+/// `sqrt` have no corpus, and the inverse-trig edge functions are the edge
+/// lane's job, so neither is seeded here.
+const HTR_UNARY: &[&str] = &[
+    "exp", "expm1", "exp2", "exp10", "sinh", "cosh", "tanh", "atan", "asinh", "sin", "cos", "tan",
+    "ln", "log2", "log10", "log1p",
+];
+
+#[test]
+fn arb_containment_unary_hard_to_round() {
+    // The independent soundness lane, seeded with the Lefevre-Muller /
+    // CORE-MATH hard-to-round corpus: f(mid) is boundary-close, so the ball's
+    // directed endpoints are maximally stressed against Arb's rigorous
+    // bracket. Same point-witness containment claim as arb_containment_unary,
+    // hardest available inputs. pf-vcqh, ADR-0078 deferral.
+    if !arb_lane_available("arb_containment_unary_hard_to_round") {
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let mut rng = Rng(0x4c4d_5345_4544_4152);
+    // seeded_ball's precision is 53 or 113; oracle prec above the larger.
+    let prec = 113 + 128;
+    for &fn_id in HTR_UNARY {
+        let cases = common::lm_cases_for(fn_id).expect("seeded fn has a corpus");
+        let mut usable = 0u32;
+        let mut checked = 0u32;
+        for &(xbits, _) in cases {
+            if !common::is_finite_nonzero_f64(xbits) {
+                continue;
+            }
+            let a = common::seeded_ball(&mut rng, xbits);
+            let result = ball_unary(&a, fn_id);
+            if result.is_entire() {
+                continue;
+            }
+            let mut any = false;
+            for wit in witnesses(&a, 400) {
+                if let Bracket::Finite { lo, hi } = w.bracket(fn_id, prec, &wit, None) {
+                    assert!(
+                        contains_bracket(&result, &lo, &hi),
+                        "{fn_id} HtR: ball [{}, {}] disjoint from Arb's [{}, {}] for f(witness) -- UNSOUND",
+                        result.lower(),
+                        result.upper(),
+                        lo,
+                        hi
+                    );
+                    checked += 1;
+                    any = true;
+                }
+            }
+            if any {
+                usable += 1;
+            }
+        }
+        eprintln!(
+            "arb_containment_unary_hard_to_round {fn_id}: {usable} usable seeded balls, {checked} witness brackets checked"
+        );
+        assert!(
+            usable >= 5,
+            "{fn_id} HtR: only {usable} usable seeded balls (corpus coverage gap)"
+        );
+    }
+}
+
 #[test]
 fn witness_inside_invariant() {
     // The exact witness reconstruction must keep every witness inside the

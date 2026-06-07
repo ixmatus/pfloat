@@ -130,6 +130,77 @@ fn ftia_unary_self_consistency() {
     }
 }
 
+/// Dispatch the ball unary ops the seeded self-consistency lane covers.
+fn ball_unary_ftia(a: &Ball<BigFloat>, fn_id: &str) -> Ball<BigFloat> {
+    match fn_id {
+        "exp" => a.exp().0,
+        "sin" => a.sin().0,
+        "cos" => a.cos().0,
+        "atan" => a.atan().0,
+        "ln" => a.ln().0,
+        other => panic!("seeded ftia: unhandled {other}"),
+    }
+}
+
+#[test]
+fn ftia_unary_self_consistency_hard_to_round() {
+    // Seed the self-consistency lane with the Lefevre-Muller / CORE-MATH
+    // hard-to-round corpus: a midpoint where f(mid) sits near a rounding
+    // boundary stresses the radius far more than a random integer midpoint.
+    // Same bounded claim as ftia_unary_self_consistency (the radius covers the
+    // kernel's residual), with the hardest available inputs. pf-vcqh.
+    let mut rng = Rng(0x4c4d_5345_4544_0001);
+    type ScalarKernel = fn(&BigFloat, RoundingMode) -> (BigFloat, Status);
+    let unary: [(&str, ScalarKernel); 5] = [
+        ("exp", BigFloat::exp),
+        ("sin", BigFloat::sin),
+        ("cos", BigFloat::cos),
+        ("atan", BigFloat::atan),
+        ("ln", BigFloat::ln),
+    ];
+    for (fn_id, kernel) in unary {
+        let cases = common::lm_cases_for(fn_id).expect("seeded fn has a corpus");
+        let mut used = 0u32;
+        for &(xbits, _) in cases {
+            if !common::is_finite_nonzero_f64(xbits) {
+                continue;
+            }
+            let a = common::seeded_ball(&mut rng, xbits);
+            let r = ball_unary_ftia(&a, fn_id);
+            check_unary(&a, &r, kernel, fn_id);
+            used += 1;
+        }
+        assert!(used >= 5, "{fn_id}: only {used} seeded hard-to-round balls");
+    }
+}
+
+#[test]
+fn seeded_midpoint_is_bit_exact() {
+    // The bit-exact builder must reproduce the binary64 value exactly, so a
+    // hard-to-round seed is not softened into a near-miss that would defeat
+    // the point of seeding. Round-trip a spread of corpus inputs through
+    // bf_of_f64_bits(bits, 53) and back to f64: the bits must match.
+    for fn_id in ["exp", "sin", "ln", "tanh", "log2"] {
+        let cases = common::lm_cases_for(fn_id).expect("seeded fn has a corpus");
+        let mut checked = 0u32;
+        for &(xbits, _) in cases.iter().take(8) {
+            if !common::is_finite_nonzero_f64(xbits) {
+                continue;
+            }
+            let mid = common::bf_of_f64_bits(xbits, 53);
+            let (back, _) = mid.to_f64_round(RoundingMode::NearestEven);
+            assert_eq!(
+                back.to_bits(),
+                xbits,
+                "{fn_id}: seed 0x{xbits:016x} not reproduced bit-exact (got 0x{:016x})",
+                back.to_bits()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5, "{fn_id}: only {checked} seeds round-tripped");
+    }
+}
+
 // ---------- edge cases (slice 10 (d)) ----------
 
 #[test]
