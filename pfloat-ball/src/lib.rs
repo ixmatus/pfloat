@@ -46,5 +46,9 @@
 extern crate alloc;
 
 pub mod mag;
+#[cfg(feature = "big")]
+pub mod scalar;
 
 pub use mag::Mag;
+#[cfg(feature = "big")]
+pub use scalar::RealScalar;
