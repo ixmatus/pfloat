@@ -84,11 +84,19 @@ already-reviewed surface.
   purely through pfloat's python-flint subprocess and so pulls NO
   `rug`/gmp-mpfr-sys; FLINT/Arb (LGPL) never enter the link graph at rest
   or under test. It is per-release / env-gated (it needs the worker venv).
-  The remaining piece is tightness (per-function, per-bucket
-  regression-guarded), deferred to pf-fe5f.7: a meaningful slack needs
-  Arb's enclosure of f over the input INTERVAL (the witness-image span is
-  rounding-dominated for near-exact inputs), a `BRACKET` interval-input
-  extension.
+  The remaining piece, deferred to pf-fe5f.7, is a `BRACKET` interval-input
+  extension: Arb's enclosure of f over the input INTERVAL rather than at
+  sampled witnesses. It closes two gaps the point-sampling lane leaves
+  open. First, tightness (per-function, per-bucket regression-guarded): a
+  meaningful slack needs the interval image, since the witness-image span
+  is rounding-dominated for near-exact inputs and so measures nothing.
+  Second, and load-bearing, range soundness for non-monotonic functions:
+  five witnesses cannot see a ball that fails to enclose an interior
+  extremum of sin/cos/tan, so the every-witness lane is structurally blind
+  to a missed-extremum bug (as is the self-consistency lane; Phase 1's
+  exhaustive scalar sweep is the current guard for the scalar kernel, and
+  the README discloses this sampled-corner exposure). The interval-input
+  bracket makes the range case directly checkable.
 - **Lefèvre–Muller hardest-to-round seeding.** Seed the property
   generators with the hard-to-round corpus (hard-to-round scalars produce
   hard-to-enclose balls).

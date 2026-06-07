@@ -114,12 +114,17 @@ fn bracket_pipe_brackets_the_reference_value() {
 // from Arb's rigorous bracket of f(witness). This is what lifts the crate
 // from self-consistency to independently-verified soundness.
 //
-// Tightness (ADR-0078's secondary "logs tightness per bucket") is NOT in
-// this slice: a meaningful slack needs Arb's enclosure of f over the whole
-// input INTERVAL (the witness-image span is rounding-dominated for
-// near-exact inputs and so measures nothing), which is a BRACKET
-// interval-input extension. Filed as a follow-up; the soundness backstop,
-// the load-bearing claim, lands here.
+// Two things need Arb's enclosure of f over the whole input INTERVAL (a
+// BRACKET interval-input extension, deferred to pf-fe5f.7), not just at
+// sampled witnesses. (1) Tightness (ADR-0078's secondary "logs tightness
+// per bucket"): a meaningful slack is rounding-dominated at the witnesses
+// for near-exact inputs and so measures nothing. (2) Range soundness for
+// non-monotonic functions: five witnesses cannot see a ball that excludes
+// an interior extremum of sin/cos/tan, so this lane -- like the
+// self-consistency lane -- is structurally blind to a missed-extremum bug;
+// Phase 1's exhaustive scalar sweep is the current guard for the kernel.
+// The point-sampling soundness backstop -- the load-bearing every-witness
+// containment claim -- lands here.
 
 use common::arb_bracket::contains_bracket;
 use common::{random_ball, witnesses, Rng};
