@@ -409,21 +409,47 @@ fn ball_unary_status(a: &Ball<BigFloat>, fn_id: &str) -> (Ball<BigFloat>, Status
 fn edge_ball(rng: &mut Rng, p: u32, fn_id: &str) -> Ball<BigFloat> {
     let radexp = -(10 + (rng.next() % 24) as i64);
     let rad = Mag::from_pow2(radexp);
-    let mid = match fn_id {
-        "acosh" => {
-            // [0.8, 4): below 1 is out of domain, at/above 1 in domain.
-            let lo = (8i64 << 20) / 10;
-            let span = (4u64 << 20) - lo as u64;
-            bf(lo + (rng.next() % span) as i64, p).scale_by_pow2(-20).0
-        }
-        _ => {
-            // asin / acos / atanh around [-1, 1]: span to ±1.2 so balls
-            // straddle ±1.
-            let span = (12i64 << 20) / 10;
-            bf(rng.int(span), p).scale_by_pow2(-20).0
+    // Half the balls are constructed to STRADDLE a boundary so the INVALID
+    // / clamp reconciliation path is actually exercised; the rest spread
+    // across the in-domain and out-of-domain sides. (A uniform spread on a
+    // 2^-20 grid with a <= 2^-10 radius straddles a boundary with
+    // probability ~1/1000, so at the default sample count it never did --
+    // the pre-merge review's D5 finding.)
+    let mid = if rng.next() % 2 == 0 {
+        // Snap to a boundary plus a sub-radius offset (|offset| <= 0.75*rad
+        // < rad), so the boundary lies strictly inside [mid - rad, mid + rad]
+        // and the ball provably straddles it.
+        let b = match fn_id {
+            "acosh" => bf(1, p), // domain [1, inf): 1 is the only boundary
+            _ if rng.next() % 2 == 0 => bf(1, p), // asin / acos / atanh: +-1
+            _ => bf(-1, p),
+        };
+        let (offset, _) = bf(rng.int(3), p).scale_by_pow2(radexp - 2);
+        b.add(&offset, NE).0
+    } else {
+        match fn_id {
+            "acosh" => {
+                // [0.8, 4): below 1 is out of domain, at/above 1 in domain.
+                let lo = (8i64 << 20) / 10;
+                let span = (4u64 << 20) - lo as u64;
+                bf(lo + (rng.next() % span) as i64, p).scale_by_pow2(-20).0
+            }
+            _ => {
+                // asin / acos / atanh spread over ~[-1.2, 1.2].
+                let span = (12i64 << 20) / 10;
+                bf(rng.int(span), p).scale_by_pow2(-20).0
+            }
         }
     };
     Ball::new(mid, rad).unwrap()
+}
+
+/// Whether the ball's denoted interval has `b` strictly interior -- a
+/// domain-boundary straddle (one side in domain, the other out), the case
+/// that exercises pfloat-ball's clamp + INVALID reconciliation.
+fn straddles(a: &Ball<BigFloat>, b: &BigFloat) -> bool {
+    a.lower().partial_cmp(b).0 == Some(core::cmp::Ordering::Less)
+        && a.upper().partial_cmp(b).0 == Some(core::cmp::Ordering::Greater)
 }
 
 #[test]
@@ -443,12 +469,28 @@ fn arb_containment_edge() {
         let mut rng = Rng(seed);
         let mut usable = 0u32;
         let mut invalid = 0u32;
+        let mut straddled = 0u32;
+        let mut clamp_verified = 0u32;
+        let one = bf(1, 53);
+        let neg_one = bf(-1, 53);
+        let bounds: &[&BigFloat] = if fn_id == "acosh" {
+            &[&one]
+        } else {
+            &[&one, &neg_one]
+        };
         for _ in 0..n {
             let p = [24u32, 53, 113][(rng.next() % 3) as usize];
             let a = edge_ball(&mut rng, p, fn_id);
+            // A ball whose interval contains a boundary exercises the
+            // clamp + INVALID reconciliation; count it as the real measure
+            // (INVALID alone also fires for fully-out-of-domain balls).
+            let is_straddle = bounds.iter().any(|b| straddles(&a, b));
+            if is_straddle {
+                straddled += 1;
+            }
             let (result, status) = ball_unary_status(&a, fn_id);
             if status.invalid() {
-                invalid += 1; // the boundary was exercised
+                invalid += 1;
             }
             if result.is_entire() {
                 continue;
@@ -469,6 +511,12 @@ fn arb_containment_edge() {
             }
             if any {
                 usable += 1;
+                // A straddler with a finite (clamped) result and an
+                // in-domain witness independently confirms the clamp is
+                // SOUND, not merely that INVALID was flagged.
+                if is_straddle {
+                    clamp_verified += 1;
+                }
             }
         }
         assert!(
@@ -476,9 +524,23 @@ fn arb_containment_edge() {
             "{fn_id}: only {usable} edge balls had in-domain witnesses"
         );
         assert!(
-            invalid >= 1,
-            "{fn_id}: never exercised the domain boundary (no INVALID raised)"
+            straddled >= 3,
+            "{fn_id}: only {straddled} boundary-straddling balls; the clamp / INVALID reconciliation path is under-exercised"
         );
+        assert!(
+            invalid >= 1,
+            "{fn_id}: never raised INVALID on a boundary ball"
+        );
+        // asin / acos / acosh clamp the out-of-domain part to the boundary
+        // value and return a finite ball, so the clamp's soundness is
+        // independently checkable; atanh straddles a pole and correctly
+        // goes entire, so it has no finite clamp to verify.
+        if fn_id != "atanh" {
+            assert!(
+                clamp_verified >= 1,
+                "{fn_id}: clamp-to-finite soundness never independently verified on a straddling ball"
+            );
+        }
     }
 }
 
