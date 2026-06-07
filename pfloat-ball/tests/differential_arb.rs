@@ -294,3 +294,89 @@ fn negative_control_too_narrow_ball_is_caught() {
         "negative control proved unsoundness on only {proved} narrowed balls; the check may lack teeth"
     );
 }
+
+// ---------- S4: the binary containment lane (pf-fe5f.5) ----------
+
+const BINARY: &[&str] = &["add", "sub", "mul", "div", "hypot", "atan2"];
+
+fn ball_binary(a: &Ball<BigFloat>, b: &Ball<BigFloat>, fn_id: &str) -> Ball<BigFloat> {
+    match fn_id {
+        "add" => a.add(b).0,
+        "sub" => a.sub(b).0,
+        "mul" => a.mul(b).0,
+        "div" => a.div(b).0,
+        "hypot" => a.hypot(b).0,
+        "atan2" => a.atan2(b).0,
+        other => panic!("unknown ball binary {other}"),
+    }
+}
+
+#[test]
+fn arb_containment_binary() {
+    if !venv_available() {
+        eprintln!("skip: Arb venv absent (run scripts/setup_arb_oracle.sh)");
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let deep = std::env::var("PFLOAT_DEEP").is_ok();
+    let pairs_per_fn = if deep { 200 } else { 25 };
+
+    for &fn_id in BINARY {
+        let seed = fn_id.bytes().fold(0xBE11_2233u64, |a, b| {
+            a.wrapping_mul(137).wrapping_add(b as u64)
+        });
+        let mut rng = Rng(seed);
+        let mut usable = 0u32;
+        for _ in 0..pairs_per_fn {
+            let p = [24u32, 53, 113][(rng.next() % 3) as usize];
+            let a = random_ball(&mut rng, p);
+            let b = random_ball(&mut rng, p);
+            let result = ball_binary(&a, &b, fn_id);
+            if result.is_entire() {
+                continue;
+            }
+            let prec = p + 128;
+            let mut any = false;
+            for wx in witnesses(&a, 400) {
+                for wy in witnesses(&b, 400) {
+                    if fn_id == "div" && wy.is_zero() {
+                        continue; // x/0 is the entire/flag case, not a bracket
+                    }
+                    // atan2(0,0), div edges, etc. give an Arb NaN / inf
+                    // bracket (no finite interval to enclose) and are skipped.
+                    if let Bracket::Finite { lo, hi } = w.bracket(fn_id, prec, &wx, Some(&wy)) {
+                        assert!(
+                            contains_bracket(&result, &lo, &hi),
+                            "{fn_id} p={p}: ball [{}, {}] disjoint from Arb's [{}, {}] for f(wx,wy) -- UNSOUND",
+                            result.lower(), result.upper(), lo, hi
+                        );
+                        any = true;
+                    }
+                }
+            }
+            if any {
+                usable += 1;
+            }
+        }
+        assert!(
+            usable >= 5,
+            "{fn_id}: only {usable} usable pairs (coverage gap)"
+        );
+    }
+}
+
+#[test]
+fn div_by_zero_straddling_ball_is_entire() {
+    // A divisor ball straddling zero makes the quotient unbounded; the ball
+    // div must report `entire` (it encloses everything), so the containment
+    // lane's `result.is_entire()` skip is exercised, not a spurious bracket.
+    let p = 53;
+    let num = random_ball(&mut Rng(7), p);
+    // A ball centered at 0 with positive radius straddles zero.
+    let denom = Ball::new(bf(0, p), Mag::from_pow2(-3)).unwrap();
+    let (q, _) = num.div(&denom);
+    assert!(
+        q.is_entire(),
+        "div by a zero-straddling ball must be entire"
+    );
+}
