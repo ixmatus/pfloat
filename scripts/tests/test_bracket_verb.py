@@ -135,6 +135,31 @@ def check_narrows(fn_id, op1, op2):
     assert width256 <= width64, f"{fn_id}: bracket did not narrow ({width256} > {width64})"
 
 
+def check_worker_codec_roundtrip():
+    """Round-trip multi-limb dyadic values through the WORKER's codec
+    (arb_from_dyadic parse + _arb_bound_to_dyadic emit), the direction the
+    Rust-side dyadic_codec_round_trips_exactly test does not cover (it is
+    Rust->Rust only). add(v, 0) = v exactly at precision >= bits(v), so the
+    BRACKET reply [lo, hi] must be [v, v]: the value survives parse and emit
+    bit-exactly with no truncation. Dense (no trailing zeros) and 200+ bit
+    mantissas, both signs, are the inputs a truncating parser would corrupt."""
+    cases = [
+        (5, 0),
+        (-7, 3),
+        (0xC71C71C71C71C71C71C71C71C71C71C7, -100),  # dense ~128-bit
+        (int("a" * 64, 16), -50),                    # dense 256-bit
+        (-((1 << 200) + 1), -77),                    # 201-bit, odd, negative
+    ]
+    for man, exp in cases:
+        v = value(man, exp)
+        nbits = abs(man).bit_length()
+        br = bracket("add", max(nbits + 64, 256), (man, exp), (0, 0))
+        assert isinstance(br, tuple), f"add({man}*2^{exp}, 0): non-OK {br!r}"
+        lo, hi = br
+        assert lo == v == hi, (
+            f"worker codec round-trip changed {man}*2^{exp}: lo={lo} v={v} hi={hi}")
+
+
 def main():
     n = 0
     for fn_id, mpfn, op1 in UNARY:
@@ -152,6 +177,7 @@ def main():
     # job (the lane skips containment on NAN and asserts the ball flags
     # INVALID / goes entire). The POS_INF / NEG_INF sentinels stay as a
     # defensive path but do not fire for the elementary surface.
+    check_worker_codec_roundtrip()
     assert bracket("ln", 128, (0, 0)) == "NAN", "ln(0): Arb returns a NaN ball"
     assert bracket("atanh", 128, (1, 0)) == "NAN", "atanh(1): Arb returns a NaN ball"
     # cbrt over its full real domain: Arb's principal root(3) is NaN for
@@ -165,7 +191,8 @@ def main():
     nlo, nhi = neg
     assert nlo <= Fraction(-3) <= nhi, (
         f"cbrt(-27) must bracket -3, got [{float(nlo):.17g}, {float(nhi):.17g}]")
-    print(f"BRACKET verb: {n} functions, containment + narrowing OK; pole NaN handling OK")
+    print(f"BRACKET verb: {n} functions, containment + narrowing OK; "
+          f"worker codec round-trip OK; pole NaN handling OK")
 
 
 if __name__ == "__main__":
