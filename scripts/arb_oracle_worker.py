@@ -274,6 +274,8 @@ def handle_request(line: str) -> str:
     # form (fn_id, order, input_hex, mode); backward-compatible.
     if parts and parts[0] == "MIDPOINT":
         return handle_midpoint(parts[1:])
+    if parts and parts[0] == "BRACKET":
+        return handle_bracket(parts[1:])
     if len(parts) != 4:
         return f"ERR malformed request: expected 4 tokens, got {len(parts)}"
     fn_id, order, input_hex, mode = parts
@@ -453,6 +455,183 @@ def handle_midpoint(args: list[str]) -> str:
     sign_str = "-" if man_int < 0 else "+"
     abs_man_hex = format(abs(man_int), "x")
     return f"OK {sign_str} {abs_man_hex} {exp_int}"
+
+
+# pfloat-ball elementary functions taking two operands. All others in
+# `dispatch_elementary` are unary.
+_BRACKET_BINARY = frozenset(("add", "sub", "mul", "div", "atan2", "hypot"))
+
+
+def arb_from_dyadic(sign_str: str, man_hex: str, exp_str: str) -> arb:
+    """Lift an exact dyadic ``sign * mantissa * 2^exp`` to an Arb point
+    at the current ``ctx.prec``. Exact: an integer mantissa times a
+    power-of-two scale, both of which Arb represents without rounding
+    (the input side of the bracket bridge, the dyadic analogue of
+    ``arb_from_f32_bits``)."""
+    man = int(man_hex, 16)
+    if sign_str == "-":
+        man = -man
+    exp = int(exp_str)
+    if exp >= 0:
+        return arb(man) * arb(2) ** exp
+    return arb(man) / arb(2) ** (-exp)
+
+
+def dispatch_elementary(fn_id: str, x: arb, y: Optional[arb]) -> arb:
+    """Compute a pfloat-ball elementary function in Arb's rigorous ball
+    arithmetic. The enclosure stays independent of pfloat's own series /
+    argument-reduction path. Base-changed functions (``exp2`` / ``exp10``
+    / ``log2`` / ``log10``) compose through Arb's own ``ln(2)`` / ``ln(10)``
+    constants, so the result is still a rigorous ball (the constant is
+    itself a ball)."""
+    if fn_id == "exp":
+        return x.exp()
+    if fn_id == "expm1":
+        return x.expm1()
+    if fn_id == "ln":
+        return x.log()
+    if fn_id == "log1p":
+        return x.log1p()
+    if fn_id == "sqrt":
+        return x.sqrt()
+    if fn_id == "cbrt":
+        # Real (odd) cube root over the whole real line. Arb's root(3) is
+        # the PRINCIPAL root: NaN for negatives and NaN at 0. pfloat-ball's
+        # cbrt is the real root (cbrt(-x) = -cbrt(x), cbrt(0) = 0), so the
+        # bracket must extend by sign or the lane silently skips cbrt's
+        # entire negative half-domain (a NaN bracket is dropped). BRACKET
+        # inputs are exact dyadic points, so the sign test is exact.
+        if x < 0:
+            return -((-x).root(3))
+        if x > 0:
+            return x.root(3)
+        return arb(0)
+    if fn_id == "sin":
+        return x.sin()
+    if fn_id == "cos":
+        return x.cos()
+    if fn_id == "tan":
+        return x.tan()
+    if fn_id == "asin":
+        return x.asin()
+    if fn_id == "acos":
+        return x.acos()
+    if fn_id == "atan":
+        return x.atan()
+    if fn_id == "sinh":
+        return x.sinh()
+    if fn_id == "cosh":
+        return x.cosh()
+    if fn_id == "tanh":
+        return x.tanh()
+    if fn_id == "asinh":
+        return x.asinh()
+    if fn_id == "acosh":
+        return x.acosh()
+    if fn_id == "atanh":
+        return x.atanh()
+    if fn_id == "exp2":
+        return (x * arb.const_log2()).exp()
+    if fn_id == "exp10":
+        return (x * arb.const_log10()).exp()
+    if fn_id == "log2":
+        return x.log() / arb.const_log2()
+    if fn_id == "log10":
+        return x.log() / arb.const_log10()
+    # Binary. atan2 follows pfloat's (y, x) convention: atan2(self=y,
+    # other=x). hypot composes in Arb so the radius stays rigorous.
+    if fn_id == "add":
+        return x + y
+    if fn_id == "sub":
+        return x - y
+    if fn_id == "mul":
+        return x * y
+    if fn_id == "div":
+        return x / y
+    if fn_id == "atan2":
+        return arb.atan2(x, y)
+    if fn_id == "hypot":
+        return (x * x + y * y).sqrt()
+    raise ValueError(f"unknown bracket fn_id: {fn_id}")
+
+
+def _arb_bound_to_dyadic(bound) -> tuple:
+    """Exact ``(sign_str, abs_mantissa_hex, exp)`` of a finite Arb ball
+    endpoint, via its ``man_exp`` (mantissa times a power of two). The
+    value is reconstructed bit-exactly on the Rust side, so no decimal
+    crosses the boundary in either direction."""
+    man, exp = bound.man_exp()
+    man_int = int(man)
+    exp_int = int(exp)
+    if man_int == 0:
+        return "+", "0", 0
+    sign = "-" if man_int < 0 else "+"
+    return sign, format(abs(man_int), "x"), exp_int
+
+
+def handle_bracket(args: list) -> str:
+    """Process a BRACKET request: emit the rigorous rational enclosure
+    ``[lo, hi]`` of a pfloat-ball elementary function over exact dyadic
+    input(s), as dyadic triples. Unlike CERTIFY this does NOT collapse
+    the bracket to a rounded f32 -- the *interval* is exactly what the
+    ball-containment check needs (rounding f(x) to an f32 and asking
+    whether the ball contains that f32 is a false backstop). pf-fe5f.2,
+    ADR-0078 follow-up.
+
+    Request shape (verb already stripped)::
+
+        <fn_id> <oracle_prec> <s1> <m1_hex> <e1> [<s2> <m2_hex> <e2>]
+
+    where each operand is the exact dyadic ``sign * mantissa * 2^exp``,
+    and the second operand is present iff ``fn_id`` is binary
+    (add/sub/mul/div/atan2/hypot).
+
+    Response shape::
+
+        OK <lo_s> <lo_m_hex> <lo_e> <hi_s> <hi_m_hex> <hi_e>
+
+    (the exact dyadic lower and upper bounds with ``lo <= f(x) <= hi``),
+    or ``NAN`` (result is NaN), ``POS_INF`` / ``NEG_INF`` (the ball lies
+    entirely at +/-inf, e.g. at a pole), ``INC`` (sign indeterminate at
+    this precision), or ``ERR <msg>``.
+    """
+    if not args:
+        return "ERR BRACKET: missing fn_id"
+    fn_id = args[0]
+    binary = fn_id in _BRACKET_BINARY
+    expected = 5 + (3 if binary else 0)
+    if len(args) != expected:
+        return f"ERR BRACKET {fn_id}: expected {expected} args, got {len(args)}"
+    try:
+        oracle_prec = int(args[1])
+    except ValueError:
+        return f"ERR BRACKET malformed oracle_prec: {args[1]}"
+    if not 1 <= oracle_prec <= ZIV_MAX_PREC:
+        return f"ERR BRACKET oracle_prec out of range [1, {ZIV_MAX_PREC}]: {oracle_prec}"
+
+    ctx.prec = oracle_prec
+    try:
+        x = arb_from_dyadic(args[2], args[3], args[4])
+        y = arb_from_dyadic(args[5], args[6], args[7]) if binary else None
+        ball = dispatch_elementary(fn_id, x, y)
+    except Exception as e:
+        return f"ERR BRACKET {type(e).__name__}: {e}"
+
+    if ball.is_nan():
+        return "NAN"
+    if not ball.is_finite():
+        if ball > 0:
+            return "POS_INF"
+        if ball < 0:
+            return "NEG_INF"
+        return "INC"
+
+    try:
+        lo_s, lo_m, lo_e = _arb_bound_to_dyadic(ball.lower())
+        hi_s, hi_m, hi_e = _arb_bound_to_dyadic(ball.upper())
+    except Exception as e:
+        return f"ERR BRACKET bound extraction: {type(e).__name__}: {e}"
+    return f"OK {lo_s} {lo_m} {lo_e} {hi_s} {hi_m} {hi_e}"
 
 
 def main() -> None:

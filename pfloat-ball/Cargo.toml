@@ -49,10 +49,14 @@ serde = ["alloc", "dep:serde", "pfloat/serde"]
 # Off in normal builds.
 kani = []
 
-# The independent Arb containment + tightness backstop (per-release
-# lane, reusing pfloat's python-flint subprocess oracle) lands with the
-# verification slice; it pulls `rug`/gmp-mpfr-sys, so it is not wired
-# until then to keep the member build dependency-light.
+# The independent Arb containment + tightness backstop (per-release lane).
+# Reaches Arb purely through pfloat's python-flint subprocess worker (out
+# of process), so it pulls NO `rug`/gmp-mpfr-sys -- FLINT/Arb (LGPL) never
+# enter the link graph at rest or under test. It gates only the subprocess
+# driver + dyadic codec in `tests/common/arb_bracket.rs` and the
+# `differential_arb` test; `trig` gives it the full elementary surface to
+# check (pf-fe5f, ADR-0078 follow-up).
+differential-arb = ["std", "trig"]
 
 [dependencies]
 # pfloat is the verified scalar engine the ball wraps. Default-features
@@ -68,6 +72,11 @@ serde = { version = "1", default-features = false, features = ["derive"], option
 [[test]]
 name = "property_ftia"
 required-features = ["trig"]
+
+# The independent Arb containment lane (per-release; needs the worker venv).
+[[test]]
+name = "differential_arb"
+required-features = ["differential-arb"]
 
 [lints.rust]
 # `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it
