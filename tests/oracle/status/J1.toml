@@ -12,11 +12,16 @@ vectors            = ""
 lm_seeds_run       = 0
 
 [rounding_status]
+# Directed modes (NA/TZ/TP/TN): verified by the five-mode differential
+# lane differential_jn (BigFloat granularity, all five IEEE 754-2019 modes). The
+# f32 oracle directed sweep for this function is EC2-scale locally and is
+# deferred to a future EC2 run (pf-3rtr.6); the directed verdicts below are
+# the differential lane's, not the f32 oracle sweep's.
 NE = "correctly-rounded"
-NA = "unswept"
-TZ = "unswept"
-TP = "unswept"
-TN = "unswept"
+NA = "correctly-rounded"
+TZ = "correctly-rounded"
+TP = "correctly-rounded"
+TN = "correctly-rounded"
 
 [cross_check]
 # pf-hcz4 cross-check baseline. ADR-0049.
