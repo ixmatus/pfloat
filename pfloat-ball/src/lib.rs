@@ -55,6 +55,8 @@ pub mod ball;
 pub mod elem;
 #[cfg(feature = "big")]
 pub mod io;
+#[cfg(kani)]
+mod kani_harness;
 pub mod mag;
 #[cfg(feature = "big")]
 pub mod scalar;

@@ -62,3 +62,14 @@ pfloat = { path = "..", default-features = false }
 
 # Optional serialization, gated behind `serde`.
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+# The blocking FTIA self-consistency lane exercises the elementary
+# surface, so it builds only when `trig` is on.
+[[test]]
+name = "property_ftia"
+required-features = ["trig"]
+
+[lints.rust]
+# `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it
+# so the unexpected-cfgs lint stays quiet under -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

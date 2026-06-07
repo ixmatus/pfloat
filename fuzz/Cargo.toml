@@ -83,3 +83,14 @@ path = "fuzz_targets/serde_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[dependencies.pfloat-ball]
+path = "../pfloat-ball"
+features = ["std", "big", "fixed", "exp-log", "trig", "serde"]
+
+[[bin]]
+name = "ball_parse"
+path = "fuzz_targets/ball_parse.rs"
+test = false
+doc = false
+bench = false
