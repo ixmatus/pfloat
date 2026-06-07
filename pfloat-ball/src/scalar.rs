@@ -46,6 +46,10 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     /// an entire-result ball.
     fn zero(precision: u32) -> Self;
 
+    /// The unbiased binary exponent `floor(log2|self|)` of a finite
+    /// non-zero value; `None` for `±0`, `±∞`, and NaN.
+    fn exponent(&self) -> Option<i64>;
+
     /// `true` for a finite value (zero or normal).
     fn is_finite(&self) -> bool;
     /// `true` for NaN.
@@ -108,6 +112,13 @@ impl RealScalar for BigFloat {
     #[inline]
     fn zero(precision: u32) -> Self {
         BigFloat::try_new_zero(pfloat::Sign::Positive, precision).expect("precision ≥ 1")
+    }
+    #[inline]
+    fn exponent(&self) -> Option<i64> {
+        match self.parts() {
+            pfloat::Parts::Normal { exponent, .. } => Some(exponent),
+            _ => None,
+        }
     }
     #[inline]
     fn is_finite(&self) -> bool {
@@ -207,6 +218,13 @@ mod fixed_impl {
         #[inline]
         fn zero(_precision: u32) -> Self {
             FixedFloat::zero()
+        }
+        #[inline]
+        fn exponent(&self) -> Option<i64> {
+            match self.to_big().parts() {
+                pfloat::Parts::Normal { exponent, .. } => Some(exponent),
+                _ => None,
+            }
         }
         #[inline]
         fn is_finite(&self) -> bool {

@@ -46,6 +46,8 @@
 extern crate alloc;
 
 #[cfg(feature = "big")]
+pub mod accuracy;
+#[cfg(feature = "big")]
 pub mod arith;
 #[cfg(feature = "big")]
 pub mod ball;
@@ -55,6 +57,8 @@ pub mod scalar;
 #[cfg(feature = "big")]
 pub mod spec;
 
+#[cfg(feature = "big")]
+pub use accuracy::refine_to_accuracy;
 #[cfg(feature = "big")]
 pub use ball::{Ball, BallError};
 pub use mag::Mag;
