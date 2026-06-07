@@ -120,6 +120,24 @@ is distinct from pfloat's own NearestEven `binary32` audit under Status
 above: pfloat is the arbitrary-precision container, pfloat-libm the
 fixed-width correctly-rounded surface over it.
 
+## pfloat-ball
+
+[`pfloat-ball`](pfloat-ball/README.md) is the rigorous-enclosure
+companion crate: arbitrary-precision real **ball** (midpoint-radius)
+arithmetic over these correctly-rounded scalars. A ball `[m ± r]`
+carries a full-precision pfloat midpoint and a small upward-rounded
+radius; each operation computes the midpoint with pfloat's verified
+kernel and bounds the radius by the rounding error that kernel already
+produces, so the result is a *sound* enclosure of the true mathematical
+value. Soundness is a type fact where it can be: the radius type makes a
+negative or inward-rounded radius unrepresentable, and a sealed scalar
+trait keeps the midpoint a correctly-rounded pfloat value. The crate
+covers real ball arithmetic and the elementary functions; special
+functions and the complex and IEEE 1788 interval faces are planned as
+later work. It is the first cut of pfloat's rigorous-enclosure tower, and
+a rigorous self-oracle for pfloat's own kernels, at an early version and
+not yet published to crates.io.
+
 ## Quickstart
 
 ```rust
