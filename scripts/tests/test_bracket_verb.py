@@ -76,6 +76,9 @@ UNARY = [
     ("log1p", lambda v: mp.log1p(v),     (1, -8)),
     ("sqrt",  mp.sqrt,                    (2, 0)),
     ("cbrt",  mp.cbrt,                    (5, 0)),
+    # negative: the REAL odd root. mp.cbrt(-x) is the principal COMPLEX
+    # root, so the oracle must take the real branch to match pfloat-ball.
+    ("cbrt",  lambda v: mp.sign(v) * mp.cbrt(abs(v)), (-5, 0)),
     ("sin",   mp.sin,                     (1, 0)),
     ("cos",   mp.cos,                     (1, 0)),
     ("tan",   mp.tan,                     (1, 0)),
@@ -151,6 +154,17 @@ def main():
     # defensive path but do not fire for the elementary surface.
     assert bracket("ln", 128, (0, 0)) == "NAN", "ln(0): Arb returns a NaN ball"
     assert bracket("atanh", 128, (1, 0)) == "NAN", "atanh(1): Arb returns a NaN ball"
+    # cbrt over its full real domain: Arb's principal root(3) is NaN for
+    # x <= 0, so the worker extends by the odd identity. Pin the exact-zero
+    # and negative-real-root cases the unary positive sample never reaches;
+    # without the extension the lane would silently skip cbrt's negative
+    # half-domain (the bracket would come back NAN and be dropped).
+    assert bracket("cbrt", 128, (0, 0)) == (Fraction(0), Fraction(0)), "cbrt(0) = exact 0"
+    neg = bracket("cbrt", 256, (-27, 0))
+    assert isinstance(neg, tuple), f"cbrt(-27): expected a finite bracket, got {neg!r}"
+    nlo, nhi = neg
+    assert nlo <= Fraction(-3) <= nhi, (
+        f"cbrt(-27) must bracket -3, got [{float(nlo):.17g}, {float(nhi):.17g}]")
     print(f"BRACKET verb: {n} functions, containment + narrowing OK; pole NaN handling OK")
 
 

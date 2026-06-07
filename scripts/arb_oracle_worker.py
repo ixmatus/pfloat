@@ -495,7 +495,17 @@ def dispatch_elementary(fn_id: str, x: arb, y: Optional[arb]) -> arb:
     if fn_id == "sqrt":
         return x.sqrt()
     if fn_id == "cbrt":
-        return x.root(3)
+        # Real (odd) cube root over the whole real line. Arb's root(3) is
+        # the PRINCIPAL root: NaN for negatives and NaN at 0. pfloat-ball's
+        # cbrt is the real root (cbrt(-x) = -cbrt(x), cbrt(0) = 0), so the
+        # bracket must extend by sign or the lane silently skips cbrt's
+        # entire negative half-domain (a NaN bracket is dropped). BRACKET
+        # inputs are exact dyadic points, so the sign test is exact.
+        if x < 0:
+            return -((-x).root(3))
+        if x > 0:
+            return x.root(3)
+        return arb(0)
     if fn_id == "sin":
         return x.sin()
     if fn_id == "cos":
