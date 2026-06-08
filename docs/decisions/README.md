@@ -135,3 +135,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0083: Lefèvre–Muller hardest-to-round seeding of the ball generators](0083-lefevre-muller-seeding-ball-generators.md) (accepted)
 - [ADR-0084: Creusot containment-composition lemma feasibility spike](0084-creusot-containment-lemma-feasibility-spike.md) (accepted)
 - [ADR-0085: directed f32 EC2 sweep for zeta and Bessel J — feasibility and go/no-go](0085-directed-f32-ec2-sweep-feasibility.md) (accepted)
+- [ADR-0086: pfloat-ball 1.0 public API freeze](0086-pfloat-ball-public-api-freeze.md) (accepted)
