@@ -47,6 +47,12 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+// Advisory Kani proof harnesses over the componentwise `Status` merge (the one
+// Vec-free invariant; the BigFloat kernels are CBMC-hostile, ADR-0062/0092).
+// Compiled only under `cfg(kani)`, which `cargo kani` sets.
+#[cfg(kani)]
+mod kani_harness;
+
 #[cfg(feature = "trig")]
 mod cexp;
 #[cfg(feature = "trig")]
