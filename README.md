@@ -296,6 +296,7 @@ The in-tree documents are the primary reference; the published
 rustdoc is a thin layer on top of them.
 
 - `DESIGN.md` — full architectural design (numeric representation, arithmetic algorithms, transcendental and special-function strategy, verification stack, feature gating, phase plan).
+- `docs/guides/` — task-oriented and learning-oriented guides (tutorials and how-tos) for using the three crates.
 - `docs/algorithms.md` — a reading guide into the headline algorithms across the three crates.
 - `docs/references.md` — the reference catalog: IEEE 754-2019 clauses, the algorithm papers, and the per-function DLMF pointers.
 - `docs/ROADMAP.md` — current direction, Phase 1/2 sequencing, and the post-ADR-0035 follow-up narrative.
