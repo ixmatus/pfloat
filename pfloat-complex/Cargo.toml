@@ -48,6 +48,23 @@ trig = ["exp-log", "pfloat/trig"]
 # pfloat-libm and pfloat-ball members.
 pfloat = { path = "..", default-features = false }
 
+# The enumerated Annex G tables, the dispatch-totality enumeration, and the
+# algebraic identities exercise the elementary surface, so they build only
+# when `trig` is on (the `#![cfg(feature = "trig")]` file guard makes them
+# empty otherwise; the required-features stanza skips the target entirely so
+# `--no-default-features` never compiles them).
+[[test]]
+name = "annex_g_special_values"
+required-features = ["trig"]
+
+[[test]]
+name = "dispatch_totality"
+required-features = ["trig"]
+
+[[test]]
+name = "identities"
+required-features = ["trig"]
+
 [lints.rust]
 # `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it so
 # the unexpected-cfgs lint stays quiet under -D warnings.
