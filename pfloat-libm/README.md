@@ -30,6 +30,29 @@ pfloat-libm is `no_std` + `alloc`. There is no alloc-free profile: correct
 rounding grows the working precision at runtime past any compile-time width, so
 the computation allocates.
 
+## Usage
+
+```rust
+use pfloat_libm::{f32 as lm, RoundingMode};
+
+// Correctly rounded to nearest even: the last bit is always right.
+let r = lm::exp(1.5_f32);
+
+// The directed form picks the rounding mode and returns the sticky flags.
+// exp(1.5) is transcendental, so its upward and downward roundings differ by
+// exactly one ULP.
+let (up, status) = lm::exp_round(1.5, RoundingMode::TowardPositive);
+let (down, _) = lm::exp_round(1.5, RoundingMode::TowardNegative);
+assert_eq!(up.to_bits() - down.to_bits(), 1);
+assert!(status.inexact());
+```
+
+Every unary function has a bare form (`lm::exp(x) -> f32`, rounded to nearest
+even) and a directed form (`lm::exp_round(x, mode) -> (f32, Status)`). The
+`f64` surface mirrors it under `pfloat_libm::f64`. A runnable walk through,
+including the saturation fast path, lives in
+`examples/correctly_rounded_exp.rs`.
+
 For the development process that produced this code, read the disclosure
 immediately below before deciding whether to adopt.
 

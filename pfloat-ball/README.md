@@ -35,6 +35,28 @@ lanes.
 A bare `--no-default-features` build exposes only `Mag` (no_std,
 alloc-free).
 
+## Usage
+
+```rust
+use pfloat::BigFloat;
+use pfloat_ball::{Ball, Mag};
+
+// A tight input interval: 1.0 plus or minus 2^-20.
+let mid = BigFloat::try_from_i64_exact(1, 128).unwrap();
+let x = Ball::new(mid, Mag::from_pow2(-20)).unwrap();
+
+// Enclose sin over the whole interval. The result is a sound superset:
+// sin(t) for every t in the input is provably inside [lower, upper].
+let (s, _status) = x.sin();
+println!("sin is enclosed by [{}, {}]", s.lower(), s.upper());
+println!("certified accuracy: {} bits", s.rel_accuracy_bits());
+```
+
+`Ball::sin` needs the `trig` feature; the arithmetic surface (`add`, `sub`,
+`mul`, `div`, `sqrt`, `cbrt`) is always available. Two runnable programs sit
+under `examples/`: `sin_over_interval` (the enclosure contract) and
+`ball_oracle` (a ball as a rigorous self-oracle for a `pfloat` scalar).
+
 ## How pfloat-ball is developed
 
 This is an open disclosure of the development process so users can judge for themselves whether the resulting code meets their bar.
