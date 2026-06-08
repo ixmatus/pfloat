@@ -523,6 +523,31 @@ name = "fixed_precision"
 path = "examples/fixed_precision.rs"
 required-features = ["fixed"]
 
+# Guide / doc examples. Each constructs a `BigFloat` and prints it via
+# `Display`, so each needs `big` and `fmt`. Without these stanzas Cargo
+# auto-discovers them with no `required-features` and tries to build them
+# under every profile, which broke every `--no-default-features` matrix
+# combo (BigFloat/RoundingMode unresolved, Display absent).
+[[example]]
+name = "first_value"
+path = "examples/first_value.rs"
+required-features = ["big", "fmt"]
+
+[[example]]
+name = "rounding_modes"
+path = "examples/rounding_modes.rs"
+required-features = ["big", "fmt"]
+
+[[example]]
+name = "status_flags"
+path = "examples/status_flags.rs"
+required-features = ["big", "fmt"]
+
+[[example]]
+name = "why_hard"
+path = "examples/why_hard.rs"
+required-features = ["big", "fmt"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
