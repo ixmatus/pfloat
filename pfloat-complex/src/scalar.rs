@@ -49,6 +49,14 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     fn add(&self, other: &Self, mode: RoundingMode) -> (Self, Status);
     /// `self − other`, correctly rounded under `mode`.
     fn sub(&self, other: &Self, mode: RoundingMode) -> (Self, Status);
+    /// `self·b + c·d`, the fused two-product sum, correctly rounded under
+    /// `mode` with a single rounding (ADR-0088). The complex multiply uses
+    /// this for the `a·d + b·c` component.
+    fn mul_add_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status);
+    /// `self·b − c·d`, the fused two-product difference, correctly rounded
+    /// under `mode` with a single rounding. The complex multiply uses this
+    /// for the `a·c − b·d` component.
+    fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status);
 }
 
 impl sealed::Sealed for BigFloat {}
@@ -81,6 +89,14 @@ impl RealScalar for BigFloat {
     #[inline]
     fn sub(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
         BigFloat::sub(self, other, mode)
+    }
+    #[inline]
+    fn mul_add_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::mul_add_mul(self, b, c, d, mode)
+    }
+    #[inline]
+    fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::mul_sub_mul(self, b, c, d, mode)
     }
 }
 
@@ -122,6 +138,14 @@ mod fixed_impl {
         #[inline]
         fn sub(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
             FixedFloat::sub(self, other, mode)
+        }
+        #[inline]
+        fn mul_add_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
+            FixedFloat::mul_add_mul(self, b, c, d, mode)
+        }
+        #[inline]
+        fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
+            FixedFloat::mul_sub_mul(self, b, c, d, mode)
         }
     }
 }

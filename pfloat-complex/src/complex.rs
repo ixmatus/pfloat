@@ -80,6 +80,21 @@ impl<T: RealScalar> Complex<T> {
         let (im, s_im) = self.im.sub(&other.im, mode);
         (Self { re, im }, s_re | s_im)
     }
+
+    /// `self · other`, the complex product `(a + bi)(c + di) =
+    /// (a·c − b·d) + (a·d + b·c)i`. Each component is one fused two-product
+    /// (the C1 primitive `mul_sub_mul` / `mul_add_mul`), correctly rounded
+    /// with a single rounding (ADR-0088), so the product is componentwise
+    /// correctly rounded with no Ziv loop. The returned [`Status`] is the OR
+    /// of the two component statuses.
+    #[must_use]
+    pub fn mul(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+        // a, b = self.re, self.im;  c, d = other.re, other.im.
+        // re = a·c − b·d ;  im = a·d + b·c.
+        let (re, s_re) = self.re.mul_sub_mul(&other.re, &self.im, &other.im, mode);
+        let (im, s_im) = self.re.mul_add_mul(&other.im, &self.im, &other.re, mode);
+        (Self { re, im }, s_re | s_im)
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +173,40 @@ mod tests {
         let z = Complex::new(nan, bf(1));
         assert!(z.is_nan());
         assert!(!c(1, 2).is_nan());
+    }
+
+    #[test]
+    fn mul_basic() {
+        // (2 + 3i)(4 + 5i) = (8 − 15) + (10 + 12)i = −7 + 22i.
+        let (r, s) = c(2, 3).mul(&c(4, 5), RoundingMode::NearestEven);
+        assert!(s.is_ok());
+        assert!(eq(&r, &c(-7, 22)));
+    }
+
+    #[test]
+    fn i_squared_is_minus_one() {
+        // (0 + 1i)^2 = −1 + 0i.
+        let i = c(0, 1);
+        let (r, _) = i.mul(&i, RoundingMode::NearestEven);
+        assert!(eq(&r, &c(-1, 0)));
+    }
+
+    #[test]
+    fn z_times_conj_is_norm_squared() {
+        // (3 + 4i)(3 − 4i) = 9 + 16 = 25, with an exactly-zero imaginary
+        // part (no spurious INEXACT on the cancelling component).
+        let z = c(3, 4);
+        let (r, s) = z.mul(&z.conj(), RoundingMode::NearestEven);
+        assert!(eq(&r, &c(25, 0)));
+        assert!(!s.inexact());
+    }
+
+    #[test]
+    fn mul_is_commutative() {
+        let z = c(2, -7);
+        let w = c(-3, 5);
+        let (zw, _) = z.mul(&w, RoundingMode::NearestEven);
+        let (wz, _) = w.mul(&z, RoundingMode::NearestEven);
+        assert!(eq(&zw, &wz));
     }
 }
