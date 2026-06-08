@@ -46,3 +46,23 @@ jobs:
         with:
           working-directory: pfloat-ball
           args: --features=big
+
+  # The Vec-free componentwise `Status` merge contract (ADR-0092). Run with
+  # `--no-default-features`: the default profile pulls `pfloat/big`, which
+  # activates pfloat's own `cfg(all(kani, feature = "big"))` verify suite that
+  # needs math features pfloat-complex does not forward. The merge harness needs
+  # only `pfloat::Status`, available in the bare build. The BigFloat-backed
+  # elementary kernels are CBMC-hostile (ADR-0062) and verified by the
+  # enumerated / acb differential lanes instead.
+  kani-complex:
+    name: kani harnesses (pfloat-complex Status merge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+      - uses: model-checking/kani-github-action@v1.1
+        with:
+          working-directory: pfloat-complex
+          args: --no-default-features

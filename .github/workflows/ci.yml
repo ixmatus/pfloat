@@ -161,11 +161,13 @@ jobs:
   # `pfloat-complex` member has its own lane from the day the crate
   # exists. This applies the pf-xyaq lesson up front (ADR-0053): a member
   # crate must compile and test in a per-push job, or defects in it sit
-  # unsurfaced. It lints the full feature surface under clippy
-  # `--all-targets`, compiles the bare `--no-default-features` shell, and
-  # tests the default `big` headline plus the `fixed` surface. No MPFR or
-  # Arb: the complex differential oracle lands with its verification slice
-  # behind its own feature, so this job stays dependency-light.
+  # unsurfaced. It lints the widest feature surface (`fixed,trig`, which
+  # pulls `big`/`exp-log`) under clippy `--all-targets`, compiles the bare
+  # `--no-default-features` shell, and tests the default `big` headline, the
+  # `fixed` surface, and the `fixed,trig` surface (the C4 magnitude/phase and
+  # elementary core). No MPFR or Arb: the complex differential oracle lands
+  # with its verification slice behind its own feature, so this job stays
+  # dependency-light.
   pfloat-complex:
     name: pfloat-complex (componentwise correctly-rounded complex)
     runs-on: ubuntu-latest
@@ -176,10 +178,11 @@ jobs:
           toolchain: ${{ env.PFLOAT_NIGHTLY }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p pfloat-complex --features=fixed --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-complex --features=fixed,trig --all-targets -- -D warnings
       - run: cargo build -p pfloat-complex --no-default-features --verbose
       - run: cargo test -p pfloat-complex --verbose
       - run: cargo test -p pfloat-complex --features=fixed --verbose
+      - run: cargo test -p pfloat-complex --features=fixed,trig --verbose
 
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
   # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status

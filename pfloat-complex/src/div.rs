@@ -38,6 +38,14 @@ pub(crate) fn complex_div_big(
     p: u32,
     mode: RoundingMode,
 ) -> (BigFloat, BigFloat, Status) {
+    // Annex G §G.5.1 infinity/NaN recovery runs first: a zero or infinite
+    // divisor, an infinite dividend, or a NaN operand is resolved to its
+    // mandated value here (ADR-0091), so the directed-pair Ziv loop below only
+    // ever sees finite operands with a nonzero finite divisor.
+    if let Some(special) = crate::specials::complex_div_special(a, b, c, d, p) {
+        return special;
+    }
+
     let mut last: Option<(Resolved, Resolved)> = None;
     for &guard in &GUARDS {
         let w = p.saturating_add(guard);
