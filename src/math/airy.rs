@@ -429,7 +429,7 @@ pub(super) fn airy_threshold_exponent(target_precision: u32) -> i64 {
 }
 
 /// Accumulate the asymptotic coefficient sums. `u_k` follows the
-/// DLMF 9.7.2 recurrence `u_k = (6k−5)(6k−3)(6k−1)/(216k)·u_{k−1}`,
+/// DLMF 9.7.2 recurrence `u_k = (6k−5)(6k−3)(6k−1)/[(2k−1)·216·k]·u_{k−1}`,
 /// `u_0 = 1`; `v_k = −(6k+1)/(6k−1)·u_k`. With `inv_zeta = 1/ζ`, the
 /// running term is `t_k = u_k/ζ^k`. Returns, summed to the smallest
 /// term (optimal truncation, the [`super::si::si_ci_f`] idiom):
