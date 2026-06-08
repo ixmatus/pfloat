@@ -156,6 +156,31 @@ jobs:
       - run: cargo test -p pfloat-ball --features=std,big,fixed,exp-log,trig,serde --verbose
       - run: cargo build -p pfloat-ball --no-default-features --target thumbv6m-none-eabi --verbose
 
+  # ---------- pfloat-complex member: componentwise correctly-rounded complex ----------
+  # The root test matrix scopes to the `pfloat` package, so the
+  # `pfloat-complex` member has its own lane from the day the crate
+  # exists. This applies the pf-xyaq lesson up front (ADR-0053): a member
+  # crate must compile and test in a per-push job, or defects in it sit
+  # unsurfaced. It lints the full feature surface under clippy
+  # `--all-targets`, compiles the bare `--no-default-features` shell, and
+  # tests the default `big` headline plus the `fixed` surface. No MPFR or
+  # Arb: the complex differential oracle lands with its verification slice
+  # behind its own feature, so this job stays dependency-light.
+  pfloat-complex:
+    name: pfloat-complex (componentwise correctly-rounded complex)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PFLOAT_NIGHTLY }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p pfloat-complex --features=fixed --all-targets -- -D warnings
+      - run: cargo build -p pfloat-complex --no-default-features --verbose
+      - run: cargo test -p pfloat-complex --verbose
+      - run: cargo test -p pfloat-complex --features=fixed --verbose
+
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
   # in `.github/workflows/kani.yml` per slice 6k. ADR-0012's status
   # update records the shift: every-push runs were costly (~10

@@ -80,7 +80,7 @@ matrix_union=$(grep -E '^[[:space:]]*-[[:space:]]*"--features=' "$ci" \
 # `big`, ...); those are different crates' surfaces, not the root's
 # kernel-feature union, so exclude them here.
 clippy_union=$(grep -E 'cargo clippy .*--features=' "$ci" \
-    | grep -v -e 'pfloat-libm' -e 'pfloat-ball' \
+    | grep -v -e 'pfloat-libm' -e 'pfloat-ball' -e 'pfloat-complex' \
     | sed -E 's/.*--features=([^ ]*).*/\1/')
 
 if [ -z "$matrix_union" ]; then

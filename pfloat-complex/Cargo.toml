@@ -1,0 +1,44 @@
+[package]
+name = "pfloat-complex"
+version = "0.1.0"
+edition = "2021"
+# No `rust-version`: pfloat-complex builds pfloat, which requires nightly
+# Rust for `feature(generic_const_exprs)` (pfloat ADR-0011). The workspace
+# `rust-toolchain.toml` pins the channel.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ixmatus/pfloat"
+description = "Componentwise correctly-rounded complex arithmetic in pure Rust, built on pfloat"
+authors = ["Parnell Springmeyer <parnell@digitalmentat.com>"]
+keywords = ["complex", "arbitrary-precision", "correctly-rounded", "no_std", "mpc"]
+categories = ["mathematics", "no-std", "science"]
+readme = "README.md"
+
+[features]
+# `Complex<BigFloat>` is the headline dynamic-precision type and needs
+# `alloc` exactly as `BigFloat` does, so the default profile carries
+# `std` + `big`.
+default = ["std", "big"]
+
+# Standard library: pfloat's thread-local sticky flags + std error impls.
+std = ["alloc", "pfloat/std"]
+
+# Heap-allocated multi-limb buffers (required by `BigFloat`).
+alloc = ["pfloat/alloc"]
+
+# `Complex<BigFloat>`: dynamic-precision complex. Requires `alloc`.
+big = ["alloc", "pfloat/big"]
+
+# `Complex<FixedFloat<PREC>>`: compile-time-precision complex. Pulls `big`
+# because pfloat's `fixed` delegates through `big` today.
+fixed = ["big", "pfloat/fixed"]
+
+[dependencies]
+# pfloat is the verified scalar engine the components are. Default-features
+# off; this crate forwards the exact pfloat features it needs, mirroring the
+# pfloat-libm and pfloat-ball members.
+pfloat = { path = "..", default-features = false }
+
+[lints.rust]
+# `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it so
+# the unexpected-cfgs lint stays quiet under -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
