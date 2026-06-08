@@ -128,6 +128,27 @@ impl<T: RealScalar> Complex<T> {
         )
     }
 
+    /// The complex exponential `cexp(self) = e^re·(cos im + i·sin im)`,
+    /// componentwise correctly rounded under `mode` (C99 Annex G §G.6.3.1,
+    /// ADR-0091). `cexp` is entire (no branch cut); the kernel classifies on
+    /// the real part's class for the infinity and NaN rows, stamps the
+    /// imaginary signed zero on the real axis, and encloses the two products
+    /// `e^re·cos im` and `e^re·sin im` with a sign-aware directed pair. Runs in
+    /// `BigFloat`, bridging through [`RealScalar::from_big`].
+    #[cfg(feature = "trig")]
+    #[must_use]
+    pub fn exp(&self, mode: RoundingMode) -> (Self, Status) {
+        let p = self.re.precision().max(self.im.precision());
+        let (re, im, status) = crate::cexp::cexp_big(&self.re.to_big(), &self.im.to_big(), p, mode);
+        (
+            Self {
+                re: T::from_big(&re),
+                im: T::from_big(&im),
+            },
+            status,
+        )
+    }
+
     /// `self + other`, componentwise, each part correctly rounded under
     /// `mode`. The returned [`Status`] is the OR of the two component
     /// statuses (`INEXACT` if either part rounded, and so on).
@@ -239,6 +260,11 @@ mod tests {
 
     fn bf(n: i64) -> BigFloat {
         BigFloat::try_from_i64_exact(n, 64).unwrap()
+    }
+
+    #[cfg(feature = "trig")]
+    fn bfp(n: i64, p: u32) -> BigFloat {
+        BigFloat::try_from_i64_exact(n, p).unwrap()
     }
 
     fn c(re: i64, im: i64) -> Complex<BigFloat> {
@@ -379,6 +405,25 @@ mod tests {
         assert_eq!(upper.im.partial_cmp(&bf(3)).0, Some(Ordering::Equal));
         assert!(lower.im.is_sign_negative());
         assert_eq!(lower.im.partial_cmp(&bf(-3)).0, Some(Ordering::Equal));
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn exp_of_zero_is_one_and_exp_log_inverse() {
+        // Public Complex::exp through the bridge: cexp(0) = 1; and the modulus
+        // identity |cexp(z)| = e^Re(z) for z = 2 + 1i (|cexp| = e²).
+        let (one, s) = c(0, 0).exp(RoundingMode::NearestEven);
+        assert!(eq(&one, &c(1, 0)));
+        assert!(!s.inexact());
+        let z = Complex::new(bfp(2, 200), bfp(1, 200));
+        let (w, _) = z.exp(RoundingMode::NearestEven);
+        let modulus = w.re.hypot(&w.im, RoundingMode::NearestEven).0;
+        let e2 = bfp(2, 200).exp_round(200, RoundingMode::NearestEven).0;
+        let d = modulus.sub(&e2, RoundingMode::NearestEven).0.abs();
+        assert!(matches!(
+            d.partial_cmp(&bfp(1, 200).scale_by_pow2(-170).0).0,
+            Some(Ordering::Less)
+        ));
     }
 
     #[cfg(feature = "trig")]
