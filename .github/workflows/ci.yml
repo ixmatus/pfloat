@@ -251,3 +251,8 @@ jobs:
       # Keep the ADR index (docs/decisions/README.md) in lockstep with the
       # ADR files it lists, so it cannot rot behind the directory.
       - run: ./scripts/adr-index.sh --check
+      # Keep the pfloat-ball enclosure-accuracy posture
+      # (docs/ball-enclosure-status.md) complete against the public ball
+      # surface, so a new ball operation cannot ship without a declared
+      # posture. ADR-0087.
+      - run: ./scripts/ball-enclosure-status.sh --check

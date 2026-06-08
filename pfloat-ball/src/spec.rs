@@ -102,3 +102,14 @@
 //! endpoints round away from the midpoint. A future change that rounds
 //! any radius inward, on any path, is a soundness regression regardless
 //! of how small the effect looks.
+//!
+//! # Soundness here, accuracy elsewhere
+//!
+//! These five laws are the *soundness* contract: every operation returns a
+//! ball that contains the truth. They say nothing about *how tight* the
+//! enclosure is. The per-operation tightness class — which operations
+//! reach the narrowest representable enclosure and which carry a
+//! conservative variation bound near an extremum — is the separate
+//! accuracy posture published at `docs/ball-enclosure-status.md`, measured
+//! per bucket by the `differential_arb` tightness lane rather than asserted
+//! here (ADR-0087).
