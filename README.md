@@ -93,7 +93,8 @@ warranty; see the LICENSE file for the legal terms governing use.
 ## Status
 
 v1.0. The repository carries the design (`DESIGN.md`), the
-architecture decision records (`docs/decisions/`), the CI
+architecture decision records (`docs/decisions/`), the algorithm
+reading guide (`docs/algorithms.md`), the CI
 scaffolding, and the algorithmic kernels (arithmetic, the elementary
 transcendental and special-function surface listed below, both
 precision profiles). The Phase 1 correctness sweep is complete per
