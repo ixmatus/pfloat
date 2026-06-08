@@ -104,6 +104,30 @@ impl<T: RealScalar> Complex<T> {
         (r, theta, s_r | s_t)
     }
 
+    /// The principal complex square root `csqrt(self)` with C99 Annex G
+    /// §G.6.4.2 branch cuts, componentwise correctly rounded under `mode`
+    /// (ADR-0091). The principal branch has `Re ≥ 0` and a cut along the
+    /// negative real axis, continuous from above: `csqrt(−4 + 0i) = +2i`,
+    /// `csqrt(−4 − 0i) = −2i`. The interior uses Kahan's cancellation-robust
+    /// form enclosed by a directed pair; the real-axis zeros are stamped with
+    /// `copysign(0, im)` directly. The kernel runs in `BigFloat` (the
+    /// enclosure's working precision exceeds any `FixedFloat<PREC>`) and
+    /// bridges back through [`RealScalar::from_big`].
+    #[cfg(feature = "exp-log")]
+    #[must_use]
+    pub fn sqrt(&self, mode: RoundingMode) -> (Self, Status) {
+        let p = self.re.precision().max(self.im.precision());
+        let (re, im, status) =
+            crate::csqrt::csqrt_big(&self.re.to_big(), &self.im.to_big(), p, mode);
+        (
+            Self {
+                re: T::from_big(&re),
+                im: T::from_big(&im),
+            },
+            status,
+        )
+    }
+
     /// `self + other`, componentwise, each part correctly rounded under
     /// `mode`. The returned [`Status`] is the OR of the two component
     /// statuses (`INEXACT` if either part rounded, and so on).
@@ -330,6 +354,31 @@ mod tests {
             above.abs().partial_cmp(&below.abs()).0,
             Some(Ordering::Equal)
         );
+    }
+
+    #[cfg(feature = "exp-log")]
+    #[test]
+    fn sqrt_of_gaussian_integer_is_exact() {
+        // Public Complex::sqrt through the to_big/from_big bridge:
+        // csqrt(−7 + 24i) = 3 + 4i (since (3 + 4i)² = −7 + 24i), exact.
+        let (r, s) = c(-7, 24).sqrt(RoundingMode::NearestEven);
+        assert!(eq(&r, &c(3, 4)));
+        assert!(!s.inexact());
+    }
+
+    #[cfg(feature = "exp-log")]
+    #[test]
+    fn sqrt_branch_cut_signed_zero() {
+        // Public method: csqrt(−9 + 0i) = +3i, csqrt(−9 − 0i) = −3i.
+        let neg9 = bf(-9);
+        let pz = BigFloat::try_new_zero(pfloat::Sign::Positive, 64).unwrap();
+        let nz = BigFloat::try_new_zero(pfloat::Sign::Negative, 64).unwrap();
+        let (upper, _) = Complex::new(neg9.clone(), pz).sqrt(RoundingMode::NearestEven);
+        let (lower, _) = Complex::new(neg9, nz).sqrt(RoundingMode::NearestEven);
+        assert!(upper.re.is_zero() && upper.im.is_sign_positive());
+        assert_eq!(upper.im.partial_cmp(&bf(3)).0, Some(Ordering::Equal));
+        assert!(lower.im.is_sign_negative());
+        assert_eq!(lower.im.partial_cmp(&bf(-3)).0, Some(Ordering::Equal));
     }
 
     #[cfg(feature = "trig")]

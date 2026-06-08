@@ -49,8 +49,12 @@ extern crate alloc;
 
 #[cfg(feature = "big")]
 pub mod complex;
+#[cfg(feature = "exp-log")]
+mod csqrt;
 #[cfg(feature = "big")]
 mod div;
+#[cfg(feature = "exp-log")]
+mod enclosure;
 #[cfg(feature = "big")]
 pub mod scalar;
 #[cfg(feature = "big")]
