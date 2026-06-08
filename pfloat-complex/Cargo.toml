@@ -32,6 +32,16 @@ big = ["alloc", "pfloat/big"]
 # because pfloat's `fixed` delegates through `big` today.
 fixed = ["big", "pfloat/fixed"]
 
+# Elementary-function pass-through gates (C4), mirroring pfloat and
+# pfloat-ball. Each enables the matching pfloat kernel family so the complex
+# magnitude/phase and elementary core have a correctly-rounded scalar kernel
+# to compose: `exp-log` covers `hypot`/`exp`/`ln`/`log1p` (and `sqrt` is
+# core); `trig` adds `atan2`/`sin`/`cos`. Opt-in: a minimal
+# `Complex<FixedFloat<PREC>>` keeps add/sub/mul/div without pulling the
+# transcendental surface.
+exp-log = ["big", "pfloat/exp-log"]
+trig = ["exp-log", "pfloat/trig"]
+
 [dependencies]
 # pfloat is the verified scalar engine the components are. Default-features
 # off; this crate forwards the exact pfloat features it needs, mirroring the

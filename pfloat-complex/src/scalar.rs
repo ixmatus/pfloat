@@ -57,6 +57,21 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     /// under `mode` with a single rounding. The complex multiply uses this
     /// for the `a·c − b·d` component.
     fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status);
+    /// `hypot(self, other) = sqrt(self² + other²)`, correctly rounded under
+    /// `mode` to `max(self, other)` precision (IEEE 754-2019 §9.2.1). The
+    /// complex magnitude `abs` delegates to this; the scalar kernel's Ziv
+    /// driver makes it correctly rounded (not the lossy `sqrt(self·self +
+    /// other·other)`) and carries the infinity-dominates-NaN special cases.
+    #[cfg(feature = "exp-log")]
+    fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status);
+    /// `atan2(self, x)`: the polar angle of `(x, self)` in `(−π, π]`,
+    /// correctly rounded under `mode` to `max(self, x)` precision. The
+    /// complex phase `arg` and the imaginary part of complex `log` delegate
+    /// to this; it already carries the C99 Annex G signed-zero branch
+    /// convention (the IEEE 754-2019 §9.2.1 dispatch, e.g. `atan2(+0, −0) =
+    /// +π`, `atan2(−0, −0) = −π`).
+    #[cfg(feature = "trig")]
+    fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status);
     /// Convert to a [`pfloat::BigFloat`], exactly. The complex divide runs
     /// its directed-pair enclosure Ziv loop in `BigFloat` at a working
     /// precision *above* the output precision (which `FixedFloat<PREC>`
@@ -105,6 +120,20 @@ impl RealScalar for BigFloat {
     #[inline]
     fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
         BigFloat::mul_sub_mul(self, b, c, d, mode)
+    }
+    #[cfg(feature = "exp-log")]
+    #[inline]
+    fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+        // `BigFloat::hypot` rounds to `self.precision`; round to the larger
+        // operand precision instead, matching `add`/`atan2` so the complex
+        // magnitude carries the full working precision of its components.
+        let p = BigFloat::precision(self).max(BigFloat::precision(other));
+        BigFloat::hypot_round(self, other, p, mode).expect("precision >= 1 by RealScalar invariant")
+    }
+    #[cfg(feature = "trig")]
+    #[inline]
+    fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status) {
+        BigFloat::atan2(self, x, mode)
     }
     #[inline]
     fn to_big(&self) -> BigFloat {
@@ -162,6 +191,16 @@ mod fixed_impl {
         #[inline]
         fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
             FixedFloat::mul_sub_mul(self, b, c, d, mode)
+        }
+        #[cfg(feature = "exp-log")]
+        #[inline]
+        fn hypot(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+            FixedFloat::hypot(self, other, mode)
+        }
+        #[cfg(feature = "trig")]
+        #[inline]
+        fn atan2(&self, x: &Self, mode: RoundingMode) -> (Self, Status) {
+            FixedFloat::atan2(self, x, mode)
         }
         #[inline]
         fn to_big(&self) -> pfloat::BigFloat {

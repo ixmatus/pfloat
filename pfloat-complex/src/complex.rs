@@ -61,6 +61,49 @@ impl<T: RealScalar> Complex<T> {
         }
     }
 
+    /// The magnitude `|self| = hypot(re, im)`, a real [`RealScalar`],
+    /// correctly rounded under `mode`. Delegates to the scalar `hypot`
+    /// kernel (IEEE 754-2019 §9.2.1), so it is correctly rounded and
+    /// inherits the infinity-dominates-NaN special cases; it is not the
+    /// lossy `sqrt(self.norm_sqr())`.
+    #[cfg(feature = "exp-log")]
+    #[must_use]
+    pub fn abs(&self, mode: RoundingMode) -> (T, Status) {
+        self.re.hypot(&self.im, mode)
+    }
+
+    /// The squared magnitude `|self|² = re² + im²`, a real [`RealScalar`],
+    /// correctly rounded under `mode` with a single rounding (the fused
+    /// two-product `mul_add_mul`, ADR-0088). This is the squared norm, not
+    /// `abs()²`; it can overflow to `+∞` where `abs` stays finite, and it is
+    /// exact (no spurious `INEXACT`) when `re² + im²` is representable.
+    #[must_use]
+    pub fn norm_sqr(&self, mode: RoundingMode) -> (T, Status) {
+        self.re.mul_add_mul(&self.re, &self.im, &self.im, mode)
+    }
+
+    /// The phase `arg(self) = atan2(im, re)` in `(−π, π]`, a real
+    /// [`RealScalar`], correctly rounded under `mode`. The branch cut on the
+    /// negative real axis and the signed-zero discrimination (`arg(−1 + 0i)
+    /// = +π`, `arg(−1 − 0i) = −π`) follow C99 Annex G, carried by the scalar
+    /// `atan2` kernel's IEEE 754-2019 §9.2.1 table.
+    #[cfg(feature = "trig")]
+    #[must_use]
+    pub fn arg(&self, mode: RoundingMode) -> (T, Status) {
+        self.im.atan2(&self.re, mode)
+    }
+
+    /// The polar form `(|self|, arg(self))`, each part correctly rounded
+    /// under `mode`. The returned [`Status`] is the OR of the magnitude and
+    /// phase statuses. (`trig` implies `exp-log`, so `abs` is available.)
+    #[cfg(feature = "trig")]
+    #[must_use]
+    pub fn to_polar(&self, mode: RoundingMode) -> (T, T, Status) {
+        let (r, s_r) = self.abs(mode);
+        let (theta, s_t) = self.arg(mode);
+        (r, theta, s_r | s_t)
+    }
+
     /// `self + other`, componentwise, each part correctly rounded under
     /// `mode`. The returned [`Status`] is the OR of the two component
     /// statuses (`INEXACT` if either part rounded, and so on).
@@ -210,6 +253,64 @@ mod tests {
         let z = Complex::new(nan, bf(1));
         assert!(z.is_nan());
         assert!(!c(1, 2).is_nan());
+    }
+
+    #[cfg(feature = "exp-log")]
+    #[test]
+    fn abs_three_four_is_five() {
+        // |3 + 4i| = hypot(3, 4) = 5, exact.
+        let (r, s) = c(3, 4).abs(RoundingMode::NearestEven);
+        assert!(s.is_ok());
+        assert_eq!(r.compare(&bf(5)).0, Some(Ordering::Equal));
+    }
+
+    #[cfg(feature = "exp-log")]
+    #[test]
+    fn abs_matches_scalar_hypot_inexact() {
+        // |1 + 1i| = hypot(1, 1) = √2, INEXACT, bit-for-bit the scalar hypot.
+        let (r, s) = c(1, 1).abs(RoundingMode::NearestEven);
+        let scalar = bf(1).hypot(&bf(1), RoundingMode::NearestEven).0;
+        assert!(s.inexact());
+        assert_eq!(r.compare(&scalar).0, Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn norm_sqr_is_exact_squared_norm() {
+        // |3 + 4i|² = 9 + 16 = 25, exact (no spurious INEXACT), and distinct
+        // from abs (it can overflow where abs would not).
+        let (r, s) = c(3, 4).norm_sqr(RoundingMode::NearestEven);
+        assert!(!s.inexact());
+        assert_eq!(r.compare(&bf(25)).0, Some(Ordering::Equal));
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn arg_signed_zero_selects_the_branch() {
+        // The Annex G branch cut on the negative real axis, carried by
+        // atan2's signed-zero table: arg(−1 + 0i) = +π, arg(−1 − 0i) = −π.
+        let neg1 = bf(-1);
+        let pz = BigFloat::try_new_zero(pfloat::Sign::Positive, 64).unwrap();
+        let nz = BigFloat::try_new_zero(pfloat::Sign::Negative, 64).unwrap();
+        let (above, _) = Complex::new(neg1.clone(), pz).arg(RoundingMode::NearestEven);
+        let (below, _) = Complex::new(neg1, nz).arg(RoundingMode::NearestEven);
+        assert!(above.is_sign_positive(), "arg(−1 + 0i) = +π");
+        assert!(below.is_sign_negative(), "arg(−1 − 0i) = −π");
+        // Same magnitude (both π): the only difference is the branch sign.
+        assert_eq!(
+            above.abs().partial_cmp(&below.abs()).0,
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn to_polar_of_i_is_one_and_quarter_turn() {
+        // i = 0 + 1i: |i| = 1 exactly, arg(i) = π/2 (so 1 < θ < 2).
+        let (r, theta, _) = c(0, 1).to_polar(RoundingMode::NearestEven);
+        assert_eq!(r.compare(&bf(1)).0, Some(Ordering::Equal));
+        assert!(theta.is_sign_positive());
+        assert_eq!(theta.partial_cmp(&bf(1)).0, Some(Ordering::Greater));
+        assert_eq!(theta.partial_cmp(&bf(2)).0, Some(Ordering::Less));
     }
 
     #[test]
