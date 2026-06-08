@@ -293,8 +293,8 @@ mod tests {
     fn calibrated_bounds() -> Vec<u32> {
         let mut v: Vec<u32> = Vec::new();
         // Always present when `ziv_calibration` compiles (`exp-log`):
-        // elementary, forward + inverse trig and the reciprocal trio,
-        // hyperbolic, power, agm, and the two libm root kernels.
+        // elementary exp/log, hyperbolic and inverse hyperbolic, power,
+        // agm, and the two libm root kernels.
         v.extend_from_slice(&[
             EXP_ERROR_GUARD,
             EXP2_ERROR_GUARD,
@@ -304,16 +304,6 @@ mod tests {
             LOG1P_ERROR_GUARD,
             LOG2_ERROR_GUARD,
             LOG10_ERROR_GUARD,
-            SIN_ERROR_GUARD,
-            COS_ERROR_GUARD,
-            TAN_ERROR_GUARD,
-            COT_ERROR_GUARD,
-            SEC_ERROR_GUARD,
-            CSC_ERROR_GUARD,
-            ASIN_ERROR_GUARD,
-            ACOS_ERROR_GUARD,
-            ATAN_ERROR_GUARD,
-            ATAN2_ERROR_GUARD,
             SINH_ERROR_GUARD,
             COSH_ERROR_GUARD,
             TANH_ERROR_GUARD,
@@ -325,6 +315,25 @@ mod tests {
             AGM_ERROR_GUARD,
             ROOTN_ERROR_GUARD,
             HYPOT_ERROR_GUARD,
+        ]);
+        // Forward + inverse trig and the reciprocal trio are
+        // `#[cfg(feature = "trig")]`, so their guard constants exist only
+        // under `trig`. Gate them the same way the specials family below
+        // is gated, so a `big,agm` (or exp-log-without-trig) build neither
+        // references a missing constant nor leaves one dead (the pf-gwum
+        // intent the doc comment states).
+        #[cfg(feature = "trig")]
+        v.extend_from_slice(&[
+            SIN_ERROR_GUARD,
+            COS_ERROR_GUARD,
+            TAN_ERROR_GUARD,
+            COT_ERROR_GUARD,
+            SEC_ERROR_GUARD,
+            CSC_ERROR_GUARD,
+            ASIN_ERROR_GUARD,
+            ACOS_ERROR_GUARD,
+            ATAN_ERROR_GUARD,
+            ATAN2_ERROR_GUARD,
         ]);
         #[cfg(feature = "specials")]
         v.extend_from_slice(&[
@@ -385,13 +394,14 @@ mod tests {
     /// than rely on `DEFAULT_ERROR_GUARD` implicitly.
     #[test]
     fn calibration_table_enumerates_expected_kernel_count() {
-        // 29 always-present: 8 elementary (exp, exp2, exp10, expm1, ln,
-        // log1p, log2, log10) + 3 forward trig + 3 reciprocal trig + 4
-        // inverse trig + 6 hyperbolic + 2 power + 1 agm + 2 libm roots
-        // (rootn, hypot). The specials family is feature-gated; `cbrt` is
-        // exact-integer with no Ziv path (ADR-0056). Full union = 29 + 6 +
-        // 4 + 1 + 4 + 1 = 45.
-        let expected: usize = 29
+        // 19 always-present: 8 elementary (exp, exp2, exp10, expm1, ln,
+        // log1p, log2, log10) + 6 hyperbolic + 2 power + 1 agm + 2 libm
+        // roots (rootn, hypot). The trig family (3 forward + 3 reciprocal +
+        // 4 inverse = 10) is `trig`-gated; the specials family is
+        // feature-gated; `cbrt` is exact-integer with no Ziv path
+        // (ADR-0056). Full union = 19 + 10 + 6 + 4 + 1 + 4 + 1 = 45.
+        let expected: usize = 19
+            + 10 * usize::from(cfg!(feature = "trig"))
             + 6 * usize::from(cfg!(feature = "specials"))
             + 4 * usize::from(cfg!(feature = "integrals"))
             + usize::from(cfg!(feature = "airy"))
