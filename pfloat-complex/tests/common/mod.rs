@@ -17,6 +17,13 @@ use core::cmp::Ordering;
 use pfloat::{BigFloat, RoundingMode, Sign};
 use pfloat_complex::Complex;
 
+/// The independent complex-Arb (`acb`) subprocess driver + exact dyadic codec,
+/// gated to the differential lane (it drives a python subprocess and needs
+/// `std`). The always-on enumerated / identity lanes do not pull
+/// `differential-acb`, so they never compile this submodule.
+#[cfg(feature = "differential-acb")]
+pub mod acb_bracket;
+
 pub const NE: RoundingMode = RoundingMode::NearestEven;
 
 /// The five IEEE 754 rounding modes, in a fixed order for mode sweeps.

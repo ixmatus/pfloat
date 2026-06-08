@@ -42,6 +42,14 @@ fixed = ["big", "pfloat/fixed"]
 exp-log = ["big", "pfloat/exp-log"]
 trig = ["exp-log", "pfloat/trig"]
 
+# The independent complex-Arb (`acb`) componentwise certified-rounding backstop
+# (per-release lane, C5 / ADR-0092). Reaches Arb purely through a python-flint
+# `acb` subprocess worker (out of process), so it pulls NO `rug`/gmp-mpfr-sys --
+# FLINT/Arb (LGPL) never enter the link graph at rest or under test. It gates
+# the subprocess driver + dyadic codec in `tests/common/acb_bracket.rs` and the
+# `differential_acb` test; `trig` gives it the full elementary surface to pin.
+differential-acb = ["std", "trig"]
+
 [dependencies]
 # pfloat is the verified scalar engine the components are. Default-features
 # off; this crate forwards the exact pfloat features it needs, mirroring the
@@ -64,6 +72,12 @@ required-features = ["trig"]
 [[test]]
 name = "identities"
 required-features = ["trig"]
+
+# The independent acb componentwise certified-rounding lane (per-release; needs
+# the worker venv via scripts/setup_arb_oracle.sh).
+[[test]]
+name = "differential_acb"
+required-features = ["differential-acb"]
 
 [lints.rust]
 # `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it so
