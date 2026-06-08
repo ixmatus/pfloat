@@ -53,6 +53,8 @@ pub mod complex;
 mod div;
 #[cfg(feature = "big")]
 pub mod scalar;
+#[cfg(feature = "big")]
+mod specials;
 
 #[cfg(feature = "big")]
 pub use complex::Complex;

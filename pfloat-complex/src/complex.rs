@@ -136,6 +136,36 @@ impl<T: RealScalar> Complex<T> {
         // re = a·c − b·d ;  im = a·d + b·c.
         let (re, s_re) = self.re.mul_sub_mul(&other.re, &self.im, &other.im, mode);
         let (im, s_im) = self.re.mul_add_mul(&other.im, &self.im, &other.re, mode);
+        // Annex G §G.5.1 infinity recovery (ADR-0091): a complex infinity
+        // times a value with a zero part collapses the fused cross products to
+        // (NaN, NaN) (each carries a 0·∞ term). When that happens and an
+        // operand is a complex infinity, recover the mandated infinity. The
+        // recovery runs in BigFloat (the rare path only), bridged via
+        // to_big/from_big; a genuine NaN with no infinity returns None and the
+        // naive (NaN, NaN) stands.
+        if re.is_nan() && im.is_nan() {
+            let p = self
+                .re
+                .precision()
+                .max(self.im.precision())
+                .max(other.re.precision())
+                .max(other.im.precision());
+            if let Some((r, i, s)) = crate::specials::recover_mul(
+                &self.re.to_big(),
+                &self.im.to_big(),
+                &other.re.to_big(),
+                &other.im.to_big(),
+                p,
+            ) {
+                return (
+                    Self {
+                        re: T::from_big(&r),
+                        im: T::from_big(&i),
+                    },
+                    s,
+                );
+            }
+        }
         (Self { re, im }, s_re | s_im)
     }
 
@@ -428,11 +458,21 @@ mod tests {
     }
 
     #[test]
-    fn div_by_zero_is_nan_invalid_basic() {
-        // Componentwise (C3): the numerator a·c + b·d is also zero when the
-        // divisor c + di is zero, so each component is 0/0 = NaN + INVALID.
-        // The C99 Annex G complex-infinity refinement is a later slice (C4).
-        let (r, s) = c(1, 1).div(&c(0, 0), RoundingMode::NearestEven);
+    fn div_finite_by_zero_is_complex_infinity() {
+        // C4 (Annex G §G.5.1): a finite nonzero dividend over a complex-zero
+        // divisor is a complex infinity, not the C3 componentwise NaN. For
+        // (1 + 1i)/(0 + 0i) the directed infinity has sign from c = +0, so
+        // both parts are +∞.
+        let (r, _) = c(1, 1).div(&c(0, 0), RoundingMode::NearestEven);
+        assert!(r.re.is_infinite() && r.re.is_sign_positive());
+        assert!(r.im.is_infinite() && r.im.is_sign_positive());
+    }
+
+    #[test]
+    fn div_zero_by_zero_is_nan() {
+        // 0/0 stays NaN + INVALID (it reaches the §G.5.1 D1 branch and falls
+        // out as (NaN, NaN) via ∞·0).
+        let (r, s) = c(0, 0).div(&c(0, 0), RoundingMode::NearestEven);
         assert!(r.is_nan());
         assert!(s.invalid());
     }
