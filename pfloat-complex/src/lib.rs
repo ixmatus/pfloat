@@ -30,14 +30,18 @@
 //! with no edge between them). A shared trait, if one is ever extracted,
 //! comes after the concrete crates exist, never before (the roadmap rule).
 //!
-//! # Status (pre-1.0)
+//! # Status
 //!
-//! Version `0.x`; the API will change until `1.0`. This cut ships the
-//! `Complex<T>` type and componentwise additive arithmetic (`add`, `sub`,
-//! `neg`, `conj`). Multiplication and division (the cancellation-safe
-//! `mul_sub_mul` / `mul_add_mul` forms), magnitude and phase, and the
-//! elementary functions with their C99 Annex G branch cuts are later
-//! slices. Part of the pfloat workspace; built and verified alongside it.
+//! Version `1.0`: the public API is settled, and the aim is to keep `1.x`
+//! changes additive (semver); as a personal project this is an intent rather
+//! than a contractual guarantee (ADR-0093). This cut ships the `Complex<T>`
+//! type, componentwise correctly-rounded arithmetic (`add`, `sub`, `neg`,
+//! `conj`, `norm_sqr`, `mul`, `div` with the C99 Annex G §G.5.1 infinity
+//! recovery), magnitude and phase (`abs`, `arg`, `to_polar`), and the
+//! elementary core (`sqrt`, `exp`, `log`) with their C99 Annex G branch cuts.
+//! The trigonometric, hyperbolic, and inverse functions, `pow`/`cis`/
+//! `from_polar`, and the `ComplexBall` join are additive later work (ADR-0093).
+//! Part of the pfloat workspace; built and verified alongside it.
 
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
