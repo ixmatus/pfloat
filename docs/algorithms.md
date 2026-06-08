@@ -187,6 +187,7 @@ See `ADR-0063`; `pfloat-libm/src/saturate.rs`.
 
 ## See also
 
+- `docs/references.md` for the standards, papers, and per function DLMF pointers.
 - `DESIGN.md` for the cross cutting design narrative.
 - `docs/rounding-status.md` for the per function rounding verification status.
 - `docs/decisions/` for the full architecture decision records cited above.

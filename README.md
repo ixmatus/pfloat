@@ -296,8 +296,10 @@ The in-tree documents are the primary reference; the published
 rustdoc is a thin layer on top of them.
 
 - `DESIGN.md` — full architectural design (numeric representation, arithmetic algorithms, transcendental and special-function strategy, verification stack, feature gating, phase plan).
+- `docs/algorithms.md` — a reading guide into the headline algorithms across the three crates.
+- `docs/references.md` — the reference catalog: IEEE 754-2019 clauses, the algorithm papers, and the per-function DLMF pointers.
 - `docs/ROADMAP.md` — current direction, Phase 1/2 sequencing, and the post-ADR-0035 follow-up narrative.
-- `docs/decisions/` — architecture decision records (37 ADRs covering load-bearing choices, with provenance and consequences).
+- `docs/decisions/` — architecture decision records covering load-bearing choices, with provenance and consequences.
 - `tools/alloc-profile/` — standalone allocation profiler crate (path-dep on pfloat) used for ADR-0028 and ADR-0037 measurements.
 - `benches/mul_thresholds.rs` — criterion bench backing the Karatsuba threshold calibration in ADR-0027.
 
