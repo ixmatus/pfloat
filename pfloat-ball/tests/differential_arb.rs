@@ -1,17 +1,27 @@
-//! Independent Arb containment lane for pfloat-ball (ADR-0078 follow-up,
-//! pf-fe5f). Unlike `property_ftia.rs` (self-consistency: the same kernel
-//! computes the midpoint and the witness oracle), this lane brackets the
-//! witness with an INDEPENDENT Arb rigorous interval and asserts the ball
-//! contains it. Reaches Arb out of process via the python-flint worker's
-//! `BRACKET` verb; no FLINT/Arb in the link graph.
+//! Independent Arb containment and range-soundness lanes for pfloat-ball
+//! (ADR-0078, extended by ADR-0082; pf-fe5f and pf-fe5f.7). Where
+//! `property_ftia.rs` is self-consistency (the same kernel computes the
+//! midpoint and the witness oracle), the lanes here check each ball against
+//! an INDEPENDENT Arb rigorous enclosure reached out of process through the
+//! python-flint worker, so no FLINT/Arb enters the link graph.
 //!
-//! Per-release / env-gated: it needs the worker venv
-//! (`scripts/setup_arb_oracle.sh`). The codec round-trip test runs
-//! without the venv; the worker tests skip when the venv is absent.
+//! Two predicates run, against two worker verbs:
 //!
-//! This slice (pf-fe5f.3 prerequisite work) lands the subprocess driver +
-//! dyadic codec and proves the pipe; the containment + tightness lanes
-//! build on it.
+//! - Point containment (`BRACKET`): bracket the true value at sampled
+//!   witnesses inside the input ball and assert the ball contains the
+//!   bracket. This is overlap: the ball must admit Arb's enclosure of the
+//!   true value.
+//! - Interval range soundness (`BRACKETI`): bracket `f` over the WHOLE
+//!   input interval and assert the result ball is a SUPERSET of that image.
+//!   Asserted only at an extremum straddle, where it is provably clean; off
+//!   the extrema a correct ball can be tighter than Arb's inflated interval
+//!   image, so the general width relationship is measured, not asserted, by
+//!   the per-bucket tightness regression table.
+//!
+//! Per-release / env-gated: the worker lanes need the worker venv
+//! (`scripts/setup_arb_oracle.sh`), and the tightness table needs the pinned
+//! Arb build, so it is `#[ignore]`. The codec round-trip test runs without
+//! the venv; the worker tests skip when the venv is absent.
 
 #![cfg(feature = "differential-arb")]
 
