@@ -83,6 +83,26 @@ required-features = ["differential-arb"]
 name = "sin_over_interval"
 required-features = ["trig"]
 
+# The remaining usage examples build `Ball<BigFloat>` and call only the
+# always-available arithmetic surface (`sqrt`, `refine_to_accuracy`), so
+# they need `big`. Without these stanzas Cargo auto-discovered them with no
+# required-features and broke the `--no-default-features` ball clippy lane.
+[[example]]
+name = "oracle_test"
+required-features = ["big"]
+
+[[example]]
+name = "ball_oracle"
+required-features = ["big"]
+
+[[example]]
+name = "target_accuracy"
+required-features = ["big"]
+
+[[example]]
+name = "error_bounds"
+required-features = ["big"]
+
 [lints.rust]
 # `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it
 # so the unexpected-cfgs lint stays quiet under -D warnings.
