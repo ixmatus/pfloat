@@ -137,3 +137,6 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0085: directed f32 EC2 sweep for zeta and Bessel J — feasibility and go/no-go](0085-directed-f32-ec2-sweep-feasibility.md) (accepted)
 - [ADR-0086: pfloat-ball 1.0 public API freeze](0086-pfloat-ball-public-api-freeze.md) (accepted)
 - [ADR-0087: pfloat-ball enclosure-accuracy posture](0087-pfloat-ball-enclosure-accuracy-posture.md) (accepted)
+- [ADR-0088: the fused two-product primitive and its single-rounding proof](0088-fused-two-product-primitive.md) (accepted)
+- [ADR-0089: pfloat-complex and its independent sealed RealScalar trait](0089-pfloat-complex-sealed-realscalar.md) (accepted)
+- [ADR-0090: complex multiply and divide, and the rounding-mode and Status API](0090-complex-multiply-divide.md) (accepted)

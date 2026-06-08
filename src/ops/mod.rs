@@ -26,6 +26,11 @@ pub(crate) mod hypot;
 pub(crate) mod limbs;
 #[cfg(feature = "big")]
 pub(crate) mod mul;
+// `mul_add_mul` / `mul_sub_mul`: the fused two-product sum and difference
+// (a·b ± c·d), correctly rounded via exact `mul` + `fma`. The complex
+// multiply/divide kernels build on these. ADR-0088.
+#[cfg(feature = "big")]
+pub(crate) mod mul_add_mul;
 #[cfg(feature = "big")]
 pub(crate) mod remainder;
 // `rootn` uses the Ziv driver (gated `exp-log`), so it cannot live under

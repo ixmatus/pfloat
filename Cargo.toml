@@ -22,7 +22,7 @@ categories = ["mathematics", "no-std", "no-std::no-alloc"]
 # workspace when it's not" until `fuzz` was named here. `default-members`
 # scopes bare cargo commands to pfloat, so the member builds only in its
 # own explicit lane and the v1.0 CI matrix is unaffected.
-members = ["pfloat-libm", "pfloat-ball"]
+members = ["pfloat-libm", "pfloat-ball", "pfloat-complex"]
 default-members = ["."]
 exclude = ["tools/alloc-profile", "fuzz"]
 
