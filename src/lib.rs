@@ -129,9 +129,9 @@
 //! whose magnitude exceeds the parse round-trip range saturates to
 //! `inf` or `0` rather than rendering unbounded digits, and the
 //! digit extraction is sub-quadratic (ADR-0051, ADR-0052). Shortest
-//! round-trip output (Dragon4 / Steele-White) stays a deferred
-//! follow-up under ADR-0029; the current output is correct and
-//! round-trips, just not always minimal.
+//! round-trip output (Dragon4 / Steele-White) is available via
+//! `to_shortest_decimal_string` (ADR-0071); the default `Display`
+//! output is correct and round-trips, just not always minimal.
 //!
 //! # Phase 3 (in progress)
 //!

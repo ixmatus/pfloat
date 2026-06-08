@@ -84,7 +84,7 @@ already-reviewed surface.
   purely through pfloat's python-flint subprocess and so pulls NO
   `rug`/gmp-mpfr-sys; FLINT/Arb (LGPL) never enter the link graph at rest
   or under test. It is per-release / env-gated (it needs the worker venv).
-  The remaining piece, deferred to pf-fe5f.7, is a `BRACKET` interval-input
+  The remaining piece, deferred to pf-fe5f.7, was a `BRACKET` interval-input
   extension: Arb's enclosure of f over the input INTERVAL rather than at
   sampled witnesses. It closes two gaps the point-sampling lane leaves
   open. First, tightness (per-function, per-bucket regression-guarded): a
@@ -96,10 +96,16 @@ already-reviewed surface.
   to a missed-extremum bug (as is the self-consistency lane; Phase 1's
   exhaustive scalar sweep is the current guard for the scalar kernel, and
   the README discloses this sampled-corner exposure). The interval-input
-  bracket makes the range case directly checkable.
+  bracket makes the range case directly checkable. **LANDED (ADR-0082,
+  pf-fe5f.7): the `BRACKETI` verb, the superset predicate (sound for
+  interval input, the opposite of the point lane's overlap), the
+  extremum-straddle range-soundness lane with a missed-extremum negative
+  control, and the per-bucket tightness regression table.**
 - **Lefèvre–Muller hardest-to-round seeding.** Seed the property
   generators with the hard-to-round corpus (hard-to-round scalars produce
-  hard-to-enclose balls).
+  hard-to-enclose balls). **LANDED (ADR-0083, pf-vcqh): the committed
+  CORE-MATH corpus reused through `include!`, a bit-exact midpoint builder,
+  and a seeded generator wired into both lanes.**
 - **Creusot spike on the containment-composition lemma**, strict-revert
   stop-loss; the ADR entry is the deliverable regardless of outcome. Do
   not re-attempt the BoundedBigFloat Kani shim (ADR-0062).

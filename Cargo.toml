@@ -517,6 +517,12 @@ name = "pf_tqzz_sweep"
 path = "examples/pf_tqzz_sweep.rs"
 required-features = ["differential-arb", "ziv-instrumented"]
 
+# The no_std / embedded usage guide example uses `FixedFloat<PREC>`.
+[[example]]
+name = "fixed_precision"
+path = "examples/fixed_precision.rs"
+required-features = ["fixed"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

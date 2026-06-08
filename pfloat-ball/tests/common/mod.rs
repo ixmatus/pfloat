@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use core::cmp::Ordering;
-use pfloat::{BigFloat, RoundingMode};
+use pfloat::{BigFloat, Parts, RoundingMode};
 use pfloat_ball::{Ball, Mag};
 
 /// The Arb `BRACKET` subprocess driver + exact dyadic codec, gated to the
@@ -86,4 +86,112 @@ pub fn witnesses(b: &Ball<BigFloat>, work: u32) -> Vec<BigFloat> {
         }
     }
     out
+}
+
+/// Binary exponent `floor(log2|v|)` of a finite non-zero `BigFloat`;
+/// `i64::MIN` for zero / non-finite.
+pub fn bin_exponent(v: &BigFloat) -> i64 {
+    match v.parts() {
+        Parts::Normal { exponent, .. } => exponent,
+        _ => i64::MIN,
+    }
+}
+
+// ---------- Lefevre-Muller hardest-to-round seeding (pf-vcqh) ----------
+//
+// Hard-to-round scalars produce hard-to-enclose balls: a midpoint where
+// `f(mid)` sits within sub-ULP of a rounding boundary stresses the directed
+// endpoints that define the ball radius far harder than a random integer
+// midpoint does. The corpus is pfloat-core's committed CORE-MATH / Lefevre-
+// Muller table (`tests/differential/lefevre_muller_data.rs`), reused verbatim
+// through `include!` so there is one source of truth and the MIT attribution
+// header travels with it. ADR-0078's deferred seeding item.
+
+mod lm_corpus {
+    #![allow(dead_code)]
+    // Inputs are CORE-MATH hard-to-round binary64 cases (MIT, attribution in
+    // the included file's header); only the input field is used for seeding.
+    include!("../../../tests/differential/lefevre_muller_data.rs");
+}
+
+/// The hard-to-round corpus `(input_bits, expected_bits)` for a ball function
+/// id, or `None` when the function has no corpus (`cbrt` / `sqrt`, and the
+/// inverse-trig edge functions, keep random inputs only). The corpus is
+/// per-function: an input hard to round for `f` makes `f(mid)` boundary-close,
+/// which is what stresses `f`'s ball endpoints.
+pub fn lm_cases_for(fn_id: &str) -> Option<&'static [(u64, u64)]> {
+    use lm_corpus::*;
+    Some(match fn_id {
+        "exp" => EXP_CASES,
+        "expm1" => EXPM1_CASES,
+        "exp2" => EXP2_CASES,
+        "exp10" => EXP10_CASES,
+        "sinh" => SINH_CASES,
+        "cosh" => COSH_CASES,
+        "tanh" => TANH_CASES,
+        "atan" => ATAN_CASES,
+        "asinh" => ASINH_CASES,
+        "sin" => SIN_CASES,
+        "cos" => COS_CASES,
+        "tan" => TAN_CASES,
+        "ln" => LN_CASES,
+        "log2" => LOG2_CASES,
+        "log10" => LOG10_CASES,
+        "log1p" => LOG1P_CASES,
+        _ => return None,
+    })
+}
+
+/// Whether a binary64 bit pattern is finite and non-zero (a usable seed
+/// midpoint). The corpus is already finite by construction, but a ±0 or
+/// special slipping through is filtered rather than panicking the builder.
+pub fn is_finite_nonzero_f64(bits: u64) -> bool {
+    let exp_field = (bits >> 52) & 0x7ff;
+    let mant = bits & 0x000f_ffff_ffff_ffff;
+    exp_field != 0x7ff && !(exp_field == 0 && mant == 0)
+}
+
+/// Build a `BigFloat` at precision `p` (which must be `>= 53`) that equals the
+/// binary64 value with bit pattern `bits` EXACTLY: the integer significand
+/// times an exact power-of-two scale (the bit-exact route; a shortest-decimal
+/// round-trip would round at the finer `BigFloat` precision and lose the
+/// hard-to-round property). Caller filters non-finite / zero via
+/// [`is_finite_nonzero_f64`].
+pub fn bf_of_f64_bits(bits: u64, p: u32) -> BigFloat {
+    debug_assert!(p >= 53, "binary64 significand needs p >= 53 to stay exact");
+    let sign = bits >> 63;
+    let exp_field = (bits >> 52) & 0x7ff;
+    let mant = bits & 0x000f_ffff_ffff_ffff;
+    let (int_mant, scale) = if exp_field == 0 {
+        (mant, -1074i64) // subnormal
+    } else {
+        (mant | 0x0010_0000_0000_0000, exp_field as i64 - 1023 - 52)
+    };
+    let mut v = BigFloat::try_from_i64_exact(int_mant as i64, p)
+        .expect("binary64 significand fits i64 and p >= 53");
+    v = v.scale_by_pow2(scale).0;
+    if sign == 1 {
+        v = v.negated();
+    }
+    v
+}
+
+/// A ball whose midpoint is the hard-to-round binary64 value `bits`, at
+/// precision 53 or 113 (where the 53-bit value is exact), with a small radius
+/// bound to the midpoint magnitude (`2^(e-38 ..= e-22)`, the same relative
+/// regime as [`random_ball`]) or exact 1/8 of the time. `bits` must be a
+/// finite non-zero pattern ([`is_finite_nonzero_f64`]).
+pub fn seeded_ball(rng: &mut Rng, bits: u64) -> Ball<BigFloat> {
+    let p = if rng.next().is_multiple_of(2) {
+        53
+    } else {
+        113
+    };
+    let mid = bf_of_f64_bits(bits, p);
+    let e = bin_exponent(&mid);
+    let rad = match rng.next() % 8 {
+        0 => Mag::ZERO,
+        _ => Mag::from_pow2(e + rng.int(8) - 30),
+    };
+    Ball::new(mid, rad).unwrap()
 }

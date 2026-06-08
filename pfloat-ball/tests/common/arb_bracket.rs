@@ -110,18 +110,58 @@ impl ArbBracketWorker {
             line.push_str(&format!(" {ys} {ym} {ye}"));
         }
         let resp = self.request(&line);
-        let parts: Vec<&str> = resp.split_whitespace().collect();
-        match parts.as_slice() {
-            ["OK", ls, lm, le, hs, hm, he] => Bracket::Finite {
-                lo: dyadic_to_bigfloat(ls, lm, le),
-                hi: dyadic_to_bigfloat(hs, hm, he),
-            },
-            ["NAN"] => Bracket::Nan,
-            ["POS_INF"] => Bracket::PosInf,
-            ["NEG_INF"] => Bracket::NegInf,
-            ["INC"] => Bracket::Inconclusive,
-            _ => panic!("BRACKET {fn_id}: unexpected response `{resp}`"),
+        parse_bracket(fn_id, &resp)
+    }
+
+    /// The rigorous enclosure of `fn_id` over the input INTERVAL(s)
+    /// `[mid - rad, mid + rad]`, via the worker's `BRACKETI` verb. `y` is
+    /// `Some((y_mid, y_rad))` for binary functions (add/sub/mul/div/atan2/
+    /// hypot).
+    ///
+    /// Where [`bracket`](Self::bracket) evaluates `f` at a single point, this
+    /// brackets `f` over the whole input ball, so it can witness a result ball
+    /// that fails to enclose an interior extremum of a non-monotonic function
+    /// (the range-soundness check five point witnesses are structurally blind
+    /// to). The radii are passed as `BigFloat`s (a `Mag` lifts via
+    /// `to_bigfloat`); a zero radius makes `BRACKETI` reduce to `bracket`
+    /// bit-for-bit.
+    pub fn bracket_interval(
+        &mut self,
+        fn_id: &str,
+        oracle_prec: u32,
+        x_mid: &BigFloat,
+        x_rad: &BigFloat,
+        y: Option<(&BigFloat, &BigFloat)>,
+    ) -> Bracket {
+        let (xms, xmm, xme) = bigfloat_to_dyadic(x_mid).expect("finite x midpoint");
+        let (xrs, xrm, xre) = bigfloat_to_dyadic(x_rad).expect("finite x radius");
+        let mut line =
+            format!("BRACKETI {fn_id} {oracle_prec} {xms} {xmm} {xme} {xrs} {xrm} {xre}");
+        if let Some((y_mid, y_rad)) = y {
+            let (yms, ymm, yme) = bigfloat_to_dyadic(y_mid).expect("finite y midpoint");
+            let (yrs, yrm, yre) = bigfloat_to_dyadic(y_rad).expect("finite y radius");
+            line.push_str(&format!(" {yms} {ymm} {yme} {yrs} {yrm} {yre}"));
         }
+        let resp = self.request(&line);
+        parse_bracket(fn_id, &resp)
+    }
+}
+
+/// Parse a worker BRACKET / BRACKETI reply into a [`Bracket`]. The point and
+/// interval verbs share the reply grammar (the worker encodes both through one
+/// helper), so they share one parser.
+fn parse_bracket(fn_id: &str, resp: &str) -> Bracket {
+    let parts: Vec<&str> = resp.split_whitespace().collect();
+    match parts.as_slice() {
+        ["OK", ls, lm, le, hs, hm, he] => Bracket::Finite {
+            lo: dyadic_to_bigfloat(ls, lm, le),
+            hi: dyadic_to_bigfloat(hs, hm, he),
+        },
+        ["NAN"] => Bracket::Nan,
+        ["POS_INF"] => Bracket::PosInf,
+        ["NEG_INF"] => Bracket::NegInf,
+        ["INC"] => Bracket::Inconclusive,
+        _ => panic!("bracket {fn_id}: unexpected response `{resp}`"),
     }
 }
 
@@ -187,6 +227,38 @@ pub fn arb_lane_available(test_name: &str) -> bool {
 pub fn contains_bracket(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> bool {
     ball.lower().partial_cmp(hi).0 != Some(Ordering::Greater)
         && ball.upper().partial_cmp(lo).0 != Some(Ordering::Less)
+}
+
+/// The SOUND independent check for INTERVAL input (`BRACKETI`): the result
+/// ball must be a SUPERSET of Arb's rigorous enclosure `[lo, hi]` of `f` over
+/// the whole input interval. Since `f(input_interval) ⊆ [lo, hi]` (Arb is
+/// rigorous) and range soundness requires `f(input_interval) ⊆ ball`, a ball
+/// that contains `[lo, hi]` certainly contains the image:
+///
+/// ```text
+/// ball.lower() <= lo   AND   ball.upper() >= hi
+/// ```
+///
+/// This is the OPPOSITE direction from [`contains_bracket`], and deliberately
+/// so. For POINT input the oracle brackets `f` at one value and the sound
+/// check is overlap; a superset check there would false-fail when the true
+/// value sits within Arb's sub-ULP half-width of a ball edge. For INTERVAL
+/// input the oracle brackets the whole IMAGE, and overlap becomes UNSOUND: a
+/// ball that misses an interior extremum still overlaps the image enclosure,
+/// so only the superset direction proves range soundness.
+///
+/// Caveat (the reason this is asserted narrowly): Arb's interval image carries
+/// an outward overshoot, because the input ball's radius is an inflated ~30-bit
+/// `mag` and a steep `f` propagates that overshoot to the output. A correct
+/// result ball can therefore be TIGHTER than `[lo, hi]` away from the extrema
+/// (measured: at p=113 the great majority of general balls have `ball ⊉
+/// [lo, hi]` for exactly this reason). So the hard superset assertion is used
+/// only at an extremum straddle, where `|f'| -> 0` makes `[lo, hi]` tight while
+/// the ball stays Lipschitz-wide; the general width relationship is MEASURED by
+/// the tightness lane, not asserted.
+pub fn contains_interval(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> bool {
+    ball.lower().partial_cmp(lo).0 != Some(Ordering::Greater)
+        && ball.upper().partial_cmp(hi).0 != Some(Ordering::Less)
 }
 
 /// `(sign_str, abs_mantissa_hex, exp)` of an exact finite `BigFloat`

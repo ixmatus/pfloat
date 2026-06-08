@@ -36,8 +36,8 @@
 //! saturates the way parse does: too large to print reads back as
 //! `inf`, too small as `0` (ADR-0051). Within the cap the output
 //! round-trips at the operand's own precision; it is not the
-//! shortest such string. Shortest round-trip output (Dragon4 /
-//! Steele-White) stays deferred to a follow-up under ADR-0029.
+//! shortest such string. The shortest round-trip output (Dragon4 /
+//! Steele-White) is `to_shortest_decimal_string` (ADR-0071).
 
 use alloc::string::String;
 use alloc::vec;

@@ -78,6 +78,11 @@ required-features = ["trig"]
 name = "differential_arb"
 required-features = ["differential-arb"]
 
+# The sin-over-interval usage example calls a `trig` elementary function.
+[[example]]
+name = "sin_over_interval"
+required-features = ["trig"]
+
 [lints.rust]
 # `cfg(kani)` is set by the Kani model checker, not by Cargo; declare it
 # so the unexpected-cfgs lint stays quiet under -D warnings.

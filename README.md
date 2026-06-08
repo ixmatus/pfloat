@@ -93,7 +93,8 @@ warranty; see the LICENSE file for the legal terms governing use.
 ## Status
 
 v1.0. The repository carries the design (`DESIGN.md`), the
-architecture decision records (`docs/decisions/`), the CI
+architecture decision records (`docs/decisions/`), the algorithm
+reading guide (`docs/algorithms.md`), the CI
 scaffolding, and the algorithmic kernels (arithmetic, the elementary
 transcendental and special-function surface listed below, both
 precision profiles). The Phase 1 correctness sweep is complete per
@@ -102,6 +103,36 @@ through p1.11 and the follow-ups pf-jn1y, pf-cvs, pf-06sw; see
 Verification posture below for what the audit does). The public API is
 stable under semver as of v1.0 (ADR-0054); the per-function rounding
 status is published at `docs/rounding-status.md`.
+
+## The pfloat family
+
+Three crates share one verified scalar engine. Pick by what you need to hold.
+
+- `pfloat` (this crate): one arbitrary-precision real number, correctly rounded
+  under any of the five IEEE 754-2019 modes, with sticky flags. Reach for it
+  when the deliverable is a single rounded value at a precision you choose.
+- [`pfloat-ball`](pfloat-ball/README.md): a rigorous enclosure rather than a
+  single number. A `Ball<BigFloat>` denotes `[m - r, m + r]`, and every
+  operation returns a sound superset of the truth. Reach for it when you need a
+  guaranteed outward bound, evaluate a function over an input interval, or want
+  a second independent witness for a scalar result.
+- [`pfloat-libm`](pfloat-libm/README.md): a drop-in correctly-rounded `f32` and
+  `f64` libm in pure Rust, no C toolchain. Reach for it when you want
+  hardware-width results that are correct in the last bit, which `std`'s float
+  methods do not promise.
+
+The two companions depend only on `pfloat`, never on each other, and neither
+duplicates arithmetic: `pfloat-ball` carries its midpoint as a `pfloat` scalar
+and bounds the radius by the rounding error the kernel already reports, and
+`pfloat-libm` evaluates the same kernel at high precision then rounds back under
+an enclosure loop. The shared engine lets `pfloat-ball` serve as a rigorous
+self-oracle for `pfloat`: compute a value two ways and assert the scalar lands
+between the ball's endpoints.
+
+All three are `no_std` first and need `alloc` to compute, since correct rounding
+grows the working precision past any fixed width. `pfloat-ball` adds one
+alloc-free island, the `Mag` radius primitive, exposed by a bare
+`--no-default-features` build.
 
 ## pfloat-libm
 
@@ -265,8 +296,11 @@ The in-tree documents are the primary reference; the published
 rustdoc is a thin layer on top of them.
 
 - `DESIGN.md` — full architectural design (numeric representation, arithmetic algorithms, transcendental and special-function strategy, verification stack, feature gating, phase plan).
+- `docs/guides/` — task-oriented and learning-oriented guides (tutorials and how-tos) for using the three crates.
+- `docs/algorithms.md` — a reading guide into the headline algorithms across the three crates.
+- `docs/references.md` — the reference catalog: IEEE 754-2019 clauses, the algorithm papers, and the per-function DLMF pointers.
 - `docs/ROADMAP.md` — current direction, Phase 1/2 sequencing, and the post-ADR-0035 follow-up narrative.
-- `docs/decisions/` — architecture decision records (37 ADRs covering load-bearing choices, with provenance and consequences).
+- `docs/decisions/` — architecture decision records covering load-bearing choices, with provenance and consequences.
 - `tools/alloc-profile/` — standalone allocation profiler crate (path-dep on pfloat) used for ADR-0028 and ADR-0037 measurements.
 - `benches/mul_thresholds.rs` — criterion bench backing the Karatsuba threshold calibration in ADR-0027.
 
