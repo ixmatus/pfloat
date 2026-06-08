@@ -191,7 +191,7 @@ fn degenerate_interval_bracket_equals_point_bracket() {
 // The point-sampling soundness backstop -- the load-bearing every-witness
 // containment claim -- lands here.
 
-use common::arb_bracket::contains_bracket;
+use common::arb_bracket::{contains_bracket, contains_interval};
 use common::{random_ball, witnesses, Rng};
 use pfloat::Parts;
 use pfloat_ball::{Ball, Mag};
@@ -721,5 +721,179 @@ fn domain_edge_invalid_matches_arb_nan() {
                 "{fn_id} out of domain: Arb should return a NaN ball"
             );
         }
+    }
+}
+
+// ---------- pf-fe5f.7 S3: interval range-soundness lane ----------
+//
+// The point lanes above sample witnesses INSIDE the input ball, so they are
+// structurally blind to a result ball that fails to enclose an interior
+// extremum of a non-monotonic function: no witness reaches sin's peak at
+// pi/2, but the true image does. The interval BRACKETI verb closes this: Arb's
+// image of the WHOLE input interval sees the extremum, and a sound result ball
+// must be a SUPERSET of that image (`contains_interval`, the opposite of the
+// point predicate; see its doc comment for why overlap is unsound here).
+//
+// The hard superset assertion is used only at an extremum straddle. There
+// |f'| -> 0 makes Arb's image tight while pfloat-ball's Lipschitz radius stays
+// wide, so a correct ball is robustly a superset (measured: 0 false-fails at
+// p in {24,53,113}). Off the extrema a correct ball can be tighter than Arb's
+// interval image (its input radius is an inflated ~30-bit mag), so the general
+// width relationship is the tightness lane's job (S4), not a pass/fail here.
+
+/// The interior extremum of `f` (sin/cos) at index `n`, computed at precision
+/// `work`: sin extrema at `pi/2 + n*pi`, cos extrema at `n*pi`; the value is
+/// `(-1)^n` (`+1` a maximum, `-1` a minimum).
+fn extremum_loc(f: &str, n: i64, work: u32) -> BigFloat {
+    let pi = pfloat::constants::pi(work, NE).0;
+    let npi = pi.mul(&bf(n, work), NE).0;
+    match f {
+        "sin" => pfloat::constants::pi_over_2(work, NE).0.add(&npi, NE).0,
+        "cos" => npi,
+        other => panic!("extremum_loc only for sin/cos, got {other}"),
+    }
+}
+
+/// A ball straddling an interior extremum of `f`: the midpoint is the extremum
+/// location plus a sub-radius offset, so the extremum lies strictly inside
+/// `[mid - rad, mid + rad]` yet is reached by no endpoint witness. Returns the
+/// ball and the high-precision extremum location (for the straddle check).
+fn extremum_ball(rng: &mut Rng, f: &str, p: u32) -> (Ball<BigFloat>, BigFloat) {
+    let work = p + 80;
+    let n = rng.int(3); // a spread of maxima and minima at modest |location|
+    let loc = extremum_loc(f, n, work);
+    let rad_exp = -6 - (rng.next() % 10) as i64; // radius 2^-6 .. 2^-15
+    let off_sign = if rng.next().is_multiple_of(2) { 1 } else { -1 };
+    // |offset| = 2^(rad_exp - 2) is a quarter of the radius, so the extremum
+    // sits strictly interior but away from the midpoint.
+    let (offset, _) = bf(off_sign, p).scale_by_pow2(rad_exp - 2);
+    let mid = loc.round_to_precision(p, NE).unwrap().0.add(&offset, NE).0;
+    (Ball::new(mid, Mag::from_pow2(rad_exp)).unwrap(), loc)
+}
+
+/// Whether the high-precision `loc` is strictly interior to the ball.
+fn straddles_loc(a: &Ball<BigFloat>, loc: &BigFloat) -> bool {
+    a.lower().partial_cmp(loc).0 == Some(core::cmp::Ordering::Less)
+        && a.upper().partial_cmp(loc).0 == Some(core::cmp::Ordering::Greater)
+}
+
+#[test]
+fn arb_range_soundness_extrema() {
+    if !arb_lane_available("arb_range_soundness_extrema") {
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    for &f in &["sin", "cos"] {
+        let seed = f.bytes().fold(0x5241_4e47_0000_0001u64, |a, b| {
+            a.wrapping_mul(131).wrapping_add(b as u64)
+        });
+        for &p in &[24u32, 53, 113] {
+            let mut rng = Rng(seed ^ p as u64);
+            let mut checked = 0u32;
+            let mut straddled = 0u32;
+            for _ in 0..40 {
+                let (a, loc) = extremum_ball(&mut rng, f, p);
+                if !straddles_loc(&a, &loc) {
+                    continue; // not an actual straddle (rare at small radius)
+                }
+                straddled += 1;
+                let result = ball_unary(&a, f);
+                if result.is_entire() {
+                    continue;
+                }
+                let rad_bf = a.radius().to_bigfloat();
+                if let Bracket::Finite { lo, hi } =
+                    w.bracket_interval(f, p + 128, a.midpoint(), &rad_bf, None)
+                {
+                    // SOUNDNESS: Arb's image [lo, hi] encloses f over the whole
+                    // straddle (extremum included); a sound ball must be a
+                    // superset of it. A ball that stops short -- a missed
+                    // interior extremum -- is caught here.
+                    assert!(
+                        contains_interval(&result, &lo, &hi),
+                        "{f} p={p}: ball [{}, {}] is NOT a superset of Arb's interval image [{}, {}] over an extremum straddle -- a missed interior extremum",
+                        result.lower(),
+                        result.upper(),
+                        lo,
+                        hi
+                    );
+                    checked += 1;
+                }
+            }
+            eprintln!(
+                "arb_range_soundness_extrema {f} p={p}: {checked} interval brackets checked, {straddled} straddles"
+            );
+            assert!(
+                straddled >= 10,
+                "{f} p={p}: only {straddled} extremum straddles generated"
+            );
+            assert!(
+                checked >= 10,
+                "{f} p={p}: only {checked} interval brackets checked"
+            );
+        }
+    }
+}
+
+#[test]
+fn range_soundness_catches_missed_extremum() {
+    // Negative control with teeth: the naive endpoint-only enclosure (treating
+    // sin / cos as if monotonic) misses the interior extremum, since both
+    // endpoints sit strictly past the peak. The superset check MUST reject it,
+    // or the lane is vacuous.
+    if !arb_lane_available("range_soundness_catches_missed_extremum") {
+        return;
+    }
+    let mut w = ArbBracketWorker::spawn();
+    let mut caught = 0u32;
+    for &f in &["sin", "cos"] {
+        let seed = f.bytes().fold(0x4d49_5353_0000_0001u64, |a, b| {
+            a.wrapping_mul(137).wrapping_add(b as u64)
+        });
+        for &p in &[24u32, 53, 113] {
+            let mut rng = Rng(seed ^ p as u64);
+            for _ in 0..40 {
+                let (a, loc) = extremum_ball(&mut rng, f, p);
+                if !straddles_loc(&a, &loc) {
+                    continue;
+                }
+                // The endpoint-only enclosure: [min(f(alo), f(ahi)), max(...)],
+                // outward-rounded. For a straddle both endpoints lie past the
+                // extremum, so this ball never reaches the peak value.
+                let alo = a.lower();
+                let ahi = a.upper();
+                let slo = scalar_sin_cos(f, &alo);
+                let shi = scalar_sin_cos(f, &ahi);
+                let (lo_end, hi_end) =
+                    if slo.partial_cmp(&shi).0 == Some(core::cmp::Ordering::Greater) {
+                        (shi, slo)
+                    } else {
+                        (slo, shi)
+                    };
+                let naive = Ball::from_interval(&lo_end, &hi_end).unwrap();
+                let rad_bf = a.radius().to_bigfloat();
+                if let Bracket::Finite { lo, hi } =
+                    w.bracket_interval(f, p + 128, a.midpoint(), &rad_bf, None)
+                {
+                    if !contains_interval(&naive, &lo, &hi) {
+                        caught += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        caught >= 20,
+        "missed-extremum negative control caught only {caught}; the range check lacks teeth"
+    );
+}
+
+/// The scalar `sin` / `cos` kernel at NearestEven, for the endpoint-only
+/// enclosure the negative control builds.
+fn scalar_sin_cos(f: &str, x: &BigFloat) -> BigFloat {
+    match f {
+        "sin" => x.sin(NE).0,
+        "cos" => x.cos(NE).0,
+        other => panic!("scalar_sin_cos only for sin/cos, got {other}"),
     }
 }

@@ -229,6 +229,38 @@ pub fn contains_bracket(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> 
         && ball.upper().partial_cmp(lo).0 != Some(Ordering::Less)
 }
 
+/// The SOUND independent check for INTERVAL input (`BRACKETI`): the result
+/// ball must be a SUPERSET of Arb's rigorous enclosure `[lo, hi]` of `f` over
+/// the whole input interval. Since `f(input_interval) ⊆ [lo, hi]` (Arb is
+/// rigorous) and range soundness requires `f(input_interval) ⊆ ball`, a ball
+/// that contains `[lo, hi]` certainly contains the image:
+///
+/// ```text
+/// ball.lower() <= lo   AND   ball.upper() >= hi
+/// ```
+///
+/// This is the OPPOSITE direction from [`contains_bracket`], and deliberately
+/// so. For POINT input the oracle brackets `f` at one value and the sound
+/// check is overlap; a superset check there would false-fail when the true
+/// value sits within Arb's sub-ULP half-width of a ball edge. For INTERVAL
+/// input the oracle brackets the whole IMAGE, and overlap becomes UNSOUND: a
+/// ball that misses an interior extremum still overlaps the image enclosure,
+/// so only the superset direction proves range soundness.
+///
+/// Caveat (the reason this is asserted narrowly): Arb's interval image carries
+/// an outward overshoot, because the input ball's radius is an inflated ~30-bit
+/// `mag` and a steep `f` propagates that overshoot to the output. A correct
+/// result ball can therefore be TIGHTER than `[lo, hi]` away from the extrema
+/// (measured: at p=113 the great majority of general balls have `ball ⊉
+/// [lo, hi]` for exactly this reason). So the hard superset assertion is used
+/// only at an extremum straddle, where `|f'| -> 0` makes `[lo, hi]` tight while
+/// the ball stays Lipschitz-wide; the general width relationship is MEASURED by
+/// the tightness lane, not asserted.
+pub fn contains_interval(ball: &Ball<BigFloat>, lo: &BigFloat, hi: &BigFloat) -> bool {
+    ball.lower().partial_cmp(lo).0 != Some(Ordering::Greater)
+        && ball.upper().partial_cmp(hi).0 != Some(Ordering::Less)
+}
+
 /// `(sign_str, abs_mantissa_hex, exp)` of an exact finite `BigFloat`
 /// value `sign * mantissa * 2^exp`. `None` for non-finite. Matches the
 /// worker's dyadic input format; the construction is exact (the integer
