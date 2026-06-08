@@ -142,3 +142,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0090: complex multiply and divide, and the rounding-mode and Status API](0090-complex-multiply-divide.md) (accepted)
 - [ADR-0091: complex magnitude, phase, and the elementary core with C99 Annex G branch cuts](0091-complex-magnitude-phase-elementary-annex-g.md) (accepted)
 - [ADR-0092: the pfloat-complex verification posture](0092-complex-verification-posture.md) (accepted)
+- [ADR-0093: pfloat-complex 1.0 public API freeze](0093-pfloat-complex-public-api-freeze.md) (accepted)
