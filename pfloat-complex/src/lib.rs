@@ -49,6 +49,8 @@ extern crate alloc;
 
 #[cfg(feature = "trig")]
 mod cexp;
+#[cfg(feature = "trig")]
+mod clog;
 #[cfg(feature = "big")]
 pub mod complex;
 #[cfg(feature = "exp-log")]

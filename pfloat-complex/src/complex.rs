@@ -149,6 +149,27 @@ impl<T: RealScalar> Complex<T> {
         )
     }
 
+    /// The principal complex natural logarithm `clog(self) = ln|self| +
+    /// i·arg(self)` with C99 Annex G §G.6.3.2 branch cuts, componentwise
+    /// correctly rounded under `mode` (ADR-0091). The imaginary part is exactly
+    /// `arg = atan2(im, re)`, carrying the cut on the negative real axis and
+    /// the signed-zero discrimination; the real part `ln(hypot(re, im))` is
+    /// enclosed by a directed pair. `clog(1 + 0i) = +0` is exact. Runs in
+    /// `BigFloat`, bridging through [`RealScalar::from_big`].
+    #[cfg(feature = "trig")]
+    #[must_use]
+    pub fn log(&self, mode: RoundingMode) -> (Self, Status) {
+        let p = self.re.precision().max(self.im.precision());
+        let (re, im, status) = crate::clog::clog_big(&self.re.to_big(), &self.im.to_big(), p, mode);
+        (
+            Self {
+                re: T::from_big(&re),
+                im: T::from_big(&im),
+            },
+            status,
+        )
+    }
+
     /// `self + other`, componentwise, each part correctly rounded under
     /// `mode`. The returned [`Status`] is the OR of the two component
     /// statuses (`INEXACT` if either part rounded, and so on).
@@ -424,6 +445,38 @@ mod tests {
             d.partial_cmp(&bfp(1, 200).scale_by_pow2(-170).0).0,
             Some(Ordering::Less)
         ));
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn log_exp_round_trip() {
+        // exp(log(z)) = z for z ≠ 0 (log = ln|z| + i·arg, exp inverts it). Use
+        // z = 3 + 4i at high precision and check the round-trip is close.
+        let p = 200;
+        let z = Complex::new(bfp(3, p), bfp(4, p));
+        let (lz, _) = z.log(RoundingMode::NearestEven);
+        let (back, _) = lz.exp(RoundingMode::NearestEven);
+        let dr = back.re.sub(&bfp(3, p), RoundingMode::NearestEven).0.abs();
+        let di = back.im.sub(&bfp(4, p), RoundingMode::NearestEven).0.abs();
+        let tol = bfp(1, p).scale_by_pow2(-170).0;
+        assert!(
+            matches!(dr.partial_cmp(&tol).0, Some(Ordering::Less)),
+            "re {dr}"
+        );
+        assert!(
+            matches!(di.partial_cmp(&tol).0, Some(Ordering::Less)),
+            "im {di}"
+        );
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn log_of_one_is_zero_exact() {
+        // clog(1 + 0i) = +0 + 0i exact (through the public bridge).
+        let (r, s) = c(1, 0).log(RoundingMode::NearestEven);
+        assert!(r.re.is_zero() && r.re.is_sign_positive());
+        assert!(r.im.is_zero() && r.im.is_sign_positive());
+        assert!(!s.inexact());
     }
 
     #[cfg(feature = "trig")]
