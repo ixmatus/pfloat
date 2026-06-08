@@ -95,6 +95,43 @@ impl<T: RealScalar> Complex<T> {
         let (im, s_im) = self.re.mul_add_mul(&other.im, &self.im, &other.re, mode);
         (Self { re, im }, s_re | s_im)
     }
+
+    /// `self / other`, the complex quotient
+    /// `(a + bi)/(c + di) = [(ac + bd) + (bc − ad)i] / (c² + d²)`,
+    /// componentwise correctly rounded under `mode` (ADR-0090).
+    ///
+    /// Unlike multiply, the quotient is not correctly rounded by rounding
+    /// each part's numerator and denominator separately. The kernel brackets
+    /// the true numerators and denominator with their directed fused
+    /// two-product pairs at a working precision above the output precision,
+    /// forms the quotient interval, and grows the precision until both ends
+    /// round to the same value (a Ziv loop, capped at five iterations). The
+    /// working precision exceeds any `FixedFloat<PREC>`, so the kernel runs
+    /// in `BigFloat` and bridges back through [`RealScalar::from_big`].
+    #[must_use]
+    pub fn div(&self, other: &Self, mode: RoundingMode) -> (Self, Status) {
+        let p = self
+            .re
+            .precision()
+            .max(self.im.precision())
+            .max(other.re.precision())
+            .max(other.im.precision());
+        let (re, im, status) = crate::div::complex_div_big(
+            &self.re.to_big(),
+            &self.im.to_big(),
+            &other.re.to_big(),
+            &other.im.to_big(),
+            p,
+            mode,
+        );
+        (
+            Self {
+                re: T::from_big(&re),
+                im: T::from_big(&im),
+            },
+            status,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +245,94 @@ mod tests {
         let (zw, _) = z.mul(&w, RoundingMode::NearestEven);
         let (wz, _) = w.mul(&z, RoundingMode::NearestEven);
         assert!(eq(&zw, &wz));
+    }
+
+    #[test]
+    fn div_by_real_is_componentwise() {
+        // (6 + 8i)/(2) = 3 + 4i.
+        let (r, _) = c(6, 8).div(&c(2, 0), RoundingMode::NearestEven);
+        assert!(eq(&r, &c(3, 4)));
+    }
+
+    #[test]
+    fn div_one_by_i_is_minus_i() {
+        // 1/i = −i. re = (0+0)/1 = 0; im = (0−1)/1 = −1.
+        let (r, _) = c(1, 0).div(&c(0, 1), RoundingMode::NearestEven);
+        assert!(eq(&r, &c(0, -1)));
+    }
+
+    #[test]
+    fn div_by_self_is_one_exactly() {
+        let z = c(2, 3);
+        let (r, s) = z.div(&z, RoundingMode::NearestEven);
+        assert!(eq(&r, &c(1, 0)));
+        assert!(!s.inexact(), "z/z = 1 exactly");
+    }
+
+    #[test]
+    fn div_inverts_mul_exactly() {
+        // (2 + 3i)(4 + 5i) = −7 + 22i, so (−7 + 22i)/(4 + 5i) = 2 + 3i,
+        // an exact integer quotient.
+        let z = c(-7, 22);
+        let w = c(4, 5);
+        let (r, s) = z.div(&w, RoundingMode::NearestEven);
+        assert!(eq(&r, &c(2, 3)));
+        assert!(!s.inexact());
+    }
+
+    #[test]
+    fn div_round_trips_a_product() {
+        // (z·w)/w == z, with z, w chosen so z·w is exact and z·w/w is too.
+        let z = c(13, -29);
+        let w = c(5, 8);
+        let (zw, _) = z.mul(&w, RoundingMode::NearestEven);
+        let (back, _) = zw.div(&w, RoundingMode::NearestEven);
+        assert!(eq(&back, &z));
+    }
+
+    #[test]
+    fn div_real_matches_scalar_div_bit_for_bit() {
+        // (1 + 0i)/(3 + 0i) real part = 1/3, correctly rounded. It must equal
+        // the scalar correctly-rounded 1/3 bit for bit, with INEXACT set —
+        // the componentwise-CR claim reduced to the real axis.
+        let (r, s) = c(1, 0).div(&c(3, 0), RoundingMode::NearestEven);
+        let scalar_third = bf(1).div(&bf(3), RoundingMode::NearestEven).0;
+        assert_eq!(r.re.compare(&scalar_third).0, Some(Ordering::Equal));
+        assert!(r.im.is_zero());
+        assert!(s.inexact());
+    }
+
+    #[test]
+    fn div_real_matches_scalar_div_all_modes() {
+        // The componentwise-CR claim under every rounding mode: (1)/(7) real
+        // part must equal the scalar correctly-rounded 1/7 bit for bit in
+        // each of the five modes (1/7 rounds differently per mode).
+        use RoundingMode::{NearestAway, NearestEven, TowardNegative, TowardPositive, TowardZero};
+        for mode in [
+            NearestEven,
+            NearestAway,
+            TowardZero,
+            TowardPositive,
+            TowardNegative,
+        ] {
+            let (r, _) = c(1, 0).div(&c(7, 0), mode);
+            let scalar = bf(1).div(&bf(7), mode).0;
+            assert_eq!(
+                r.re.compare(&scalar).0,
+                Some(Ordering::Equal),
+                "real part diverged from scalar 1/7 under {mode:?}"
+            );
+            assert!(r.im.is_zero());
+        }
+    }
+
+    #[test]
+    fn div_by_zero_is_nan_invalid_basic() {
+        // Componentwise (C3): the numerator a·c + b·d is also zero when the
+        // divisor c + di is zero, so each component is 0/0 = NaN + INVALID.
+        // The C99 Annex G complex-infinity refinement is a later slice (C4).
+        let (r, s) = c(1, 1).div(&c(0, 0), RoundingMode::NearestEven);
+        assert!(r.is_nan());
+        assert!(s.invalid());
     }
 }

@@ -50,6 +50,8 @@ extern crate alloc;
 #[cfg(feature = "big")]
 pub mod complex;
 #[cfg(feature = "big")]
+mod div;
+#[cfg(feature = "big")]
 pub mod scalar;
 
 #[cfg(feature = "big")]

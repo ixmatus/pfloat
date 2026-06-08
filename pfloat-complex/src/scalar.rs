@@ -57,6 +57,14 @@ pub trait RealScalar: Clone + core::fmt::Debug + sealed::Sealed {
     /// under `mode` with a single rounding. The complex multiply uses this
     /// for the `a·c − b·d` component.
     fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status);
+    /// Convert to a [`pfloat::BigFloat`], exactly. The complex divide runs
+    /// its directed-pair enclosure Ziv loop in `BigFloat` at a working
+    /// precision *above* the output precision (which `FixedFloat<PREC>`
+    /// cannot hold), so it bridges through this conversion.
+    fn to_big(&self) -> pfloat::BigFloat;
+    /// Convert a [`pfloat::BigFloat`] at this type's output precision back to
+    /// this scalar type (for `FixedFloat<PREC>`, exactly `PREC` bits).
+    fn from_big(b: &pfloat::BigFloat) -> Self;
 }
 
 impl sealed::Sealed for BigFloat {}
@@ -97,6 +105,14 @@ impl RealScalar for BigFloat {
     #[inline]
     fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
         BigFloat::mul_sub_mul(self, b, c, d, mode)
+    }
+    #[inline]
+    fn to_big(&self) -> BigFloat {
+        self.clone()
+    }
+    #[inline]
+    fn from_big(b: &BigFloat) -> Self {
+        b.clone()
     }
 }
 
@@ -146,6 +162,14 @@ mod fixed_impl {
         #[inline]
         fn mul_sub_mul(&self, b: &Self, c: &Self, d: &Self, mode: RoundingMode) -> (Self, Status) {
             FixedFloat::mul_sub_mul(self, b, c, d, mode)
+        }
+        #[inline]
+        fn to_big(&self) -> pfloat::BigFloat {
+            FixedFloat::to_big(self)
+        }
+        #[inline]
+        fn from_big(b: &pfloat::BigFloat) -> Self {
+            FixedFloat::try_from_big_exact(b.clone()).expect("BigFloat is at PREC")
         }
     }
 }
