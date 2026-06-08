@@ -112,12 +112,29 @@ jobs:
 
   # ---------- pfloat-ball member: rigorous real ball arithmetic ----------
   # The root test matrix scopes to the `pfloat` package, so the
-  # `pfloat-ball` member has its own lane. It builds and lints the bare
-  # `Mag`-only surface (no_std, alloc-free, the Kani target) and the
-  # `big` headline surface, runs the tests for both, and cross-compiles
-  # the bare surface to the thumbv6m floor. No MPFR: the independent Arb
-  # containment lane lands with the verification slice and is gated
-  # behind its own feature, so this job stays dependency-light.
+  # `pfloat-ball` member has its own lane. It lints and tests three
+  # surfaces and cross-compiles to the thumbv6m floor:
+  #
+  #   1. no_std: the bare `Mag`-only surface (alloc-free, the Kani
+  #      target), plus `fixed` and `trig`, so an embedded build cannot
+  #      regress.
+  #   2. The full feature union under clippy `--all-targets`. This is the
+  #      pf-xyaq lesson (ADR-0053) applied to the ball: the `serde` impls
+  #      and the `differential-arb` test target compile in NO other
+  #      per-push job, so without this line a break in either would ship
+  #      green. The union compiles them every push.
+  #   3. The default std + big headline surface plus the pure-Rust union
+  #      under `cargo test`, which runs the unit suite and the blocking
+  #      FTIA self-consistency lane (`property_ftia`) across std, serde,
+  #      and the elementary surface.
+  #
+  # The `differential-arb` Arb-containment + BRACKETI range-soundness
+  # sweep is COMPILED above but NOT run here: per-push CI stays Python-free
+  # (the python-flint worker venv is a local/EC2 release deliverable, like
+  # the pfloat EC2 cross-check, ADR-0049). The sweep is the per-release
+  # gate, run under
+  #   PFLOAT_ARB_REQUIRED=1 cargo test -p pfloat-ball --features=differential-arb
+  # (slice B0.4's ship gate; see scripts/setup_arb_oracle.sh for the venv).
   pfloat-ball:
     name: pfloat-ball (real ball arithmetic)
     runs-on: ubuntu-latest
@@ -132,9 +149,11 @@ jobs:
       - run: cargo clippy -p pfloat-ball --no-default-features --all-targets -- -D warnings
       - run: cargo clippy -p pfloat-ball --no-default-features --features=fixed --all-targets -- -D warnings
       - run: cargo clippy -p pfloat-ball --no-default-features --features=trig --all-targets -- -D warnings
+      - run: cargo clippy -p pfloat-ball --features=std,big,fixed,exp-log,trig,serde,differential-arb --all-targets -- -D warnings
       - run: cargo test -p pfloat-ball --no-default-features --verbose
       - run: cargo test -p pfloat-ball --no-default-features --features=fixed --verbose
       - run: cargo test -p pfloat-ball --no-default-features --features=trig --verbose
+      - run: cargo test -p pfloat-ball --features=std,big,fixed,exp-log,trig,serde --verbose
       - run: cargo build -p pfloat-ball --no-default-features --target thumbv6m-none-eabi --verbose
 
   # Kani harnesses moved to a manual `workflow_dispatch` trigger
@@ -232,3 +251,8 @@ jobs:
       # Keep the ADR index (docs/decisions/README.md) in lockstep with the
       # ADR files it lists, so it cannot rot behind the directory.
       - run: ./scripts/adr-index.sh --check
+      # Keep the pfloat-ball enclosure-accuracy posture
+      # (docs/ball-enclosure-status.md) complete against the public ball
+      # surface, so a new ball operation cannot ship without a declared
+      # posture. ADR-0087.
+      - run: ./scripts/ball-enclosure-status.sh --check

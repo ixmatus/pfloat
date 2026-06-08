@@ -1,6 +1,6 @@
 [package]
 name = "pfloat-ball"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 # No `rust-version`: pfloat-ball builds pfloat, which requires nightly
 # Rust for `feature(generic_const_exprs)` (pfloat ADR-0011). The
