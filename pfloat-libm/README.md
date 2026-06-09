@@ -30,6 +30,31 @@ pfloat-libm is `no_std` + `alloc`. There is no alloc-free profile: correct
 rounding grows the working precision at runtime past any compile-time width, so
 the computation allocates.
 
+## Alternatives
+
+The honest comparison. pfloat-libm does not claim to be the fastest or the most
+complete correctly-rounded libm; CORE-MATH and CRlibm are mature, faster, and
+broader. What pfloat-libm offers is a combination none of the others does: pure
+Rust with no C toolchain, a permissive license, correct rounding, and an
+exhaustive `f32` verification.
+
+| Library | Pure Rust | Correctly rounded | `no_std` | No C toolchain | Exhaustive `f32` check | License |
+| --- | --- | --- | --- | --- | --- | --- |
+| **pfloat-libm** | yes | yes | yes (`alloc`) | yes | yes (unary) | MIT OR Apache-2.0 |
+| [`libm`](https://crates.io/crates/libm) | yes | no (~1 ULP) | yes | yes | no | MIT OR Apache-2.0 |
+| CORE-MATH | no (C) | yes | — | no | yes (its own) | MIT-style |
+| CRlibm | no (C) | yes | — | no | proven, not enumerated | LGPL |
+| MPFR via [`rug`](https://crates.io/crates/rug) | no (C / FFI) | yes | — | no | n/a (it is the oracle) | LGPL |
+
+The differentiator is the row, not any single column. The only other pure-Rust
+member, the `libm` crate, is a faithful `~1` ULP port and not correctly rounded;
+every correctly-rounded alternative is C-backed and pulls a toolchain (and, for
+CRlibm and MPFR, an LGPL dependency). pfloat-libm is the pure-Rust member that is
+correctly rounded, and among pure-Rust libms the only one whose claim is checked
+by enumerating the whole `binary32` grid rather than by sampling. The price is
+performance: every call routes through arbitrary-precision `BigFloat`, so this is
+a correctness-first libm, not a speed-first one.
+
 ## Usage
 
 ```rust
@@ -52,6 +77,36 @@ even) and a directed form (`lm::exp_round(x, mode) -> (f32, Status)`). The
 `f64` surface mirrors it under `pfloat_libm::f64`. A runnable walk through,
 including the saturation fast path, lives in
 `examples/correctly_rounded_exp.rs`.
+
+## Verified surface
+
+The unary `f32` surface is verified exhaustively: every one of the 2^32
+`binary32` inputs is evaluated and compared against an independent MPFR oracle
+(via `rug`, kept out of the shipped link graph) under all five IEEE 754 rounding
+modes. Across all 25 unary kernels the result is uniform: **0 mismatches, 0
+panics, worst error 0 ULP**, correctly rounded on every input in every mode. The
+per-function status records are checked in under `tests/harness/status/`.
+
+| Family | Functions | `f32` (2^32 x 5 modes) | `f64` |
+| --- | --- | --- | --- |
+| exponential | `exp` `exp2` `exp10` `expm1` | correctly rounded | differential |
+| logarithm | `ln` `log2` `log10` `log1p` | correctly rounded | differential |
+| root | `sqrt` `cbrt` | correctly rounded | differential |
+| forward trig | `sin` `cos` `tan` | correctly rounded | differential |
+| reciprocal trig | `cot` `sec` `csc` | correctly rounded | differential |
+| inverse trig | `asin` `acos` `atan` | correctly rounded | differential |
+| hyperbolic | `sinh` `cosh` `tanh` | correctly rounded | differential |
+| inverse hyperbolic | `asinh` `acosh` `atanh` | correctly rounded | differential |
+
+The 25 unary kernels are the 21 elementary functions pfloat shipped correctly
+rounded at 1.0 plus the four net-new direct kernels `cbrt`, `cot`, `sec`, `csc`
+(ADR-0032: a correctly-rounded reciprocal or root is a direct kernel, never an
+alias of a composed one). The two multi-argument kernels `hypot` and `rootn` are
+binary, so they cannot be enumerated over either width and rest on differential
+testing plus the published worst-case vectors. The `f64` surface rests on the
+same MPFR differential lane over a structured sample plus the Lefevre-Muller
+hard-to-round vectors, since the 2^64 input space cannot be enumerated.
+`docs/kernel-list.md` records the per-kernel implementation site and tier.
 
 For the development process that produced this code, read the disclosure
 immediately below before deciding whether to adopt.
