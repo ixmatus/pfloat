@@ -680,3 +680,150 @@ fn lgamma_deep_root_charges_spouge_sum_cancellation() {
     );
     assert!(st.inexact());
 }
+
+// ---------------------------------------------------------------
+// pf-gg96 / pf-k68i / pf-pdda: input-structure-aware dispatch. The
+// input encodes proximity (to the zeta pole, to a multiple of
+// pi/2, to a gamma pole) beyond the working resolution; the kernel
+// must resolve it exactly or grow resolution to the input's
+// precision, and half_width(non-Normal) = 0 must never certify a
+// collapsed special.
+// ---------------------------------------------------------------
+
+/// pf-gg96: zeta(1 + 2^-5000) at p5001 -> 53. The conditioning
+/// probe rounded s to target+8 bits, collapsing s - 1 to zero; the
+/// working round of s then made 1 - 2^(1-s) exactly 0, the
+/// `DIV_BY_ZERO` from `eta/0` was discarded, and `half_width(inf)` = 0
+/// certified +Inf with Status OK. The truth is ~2^5000 + gamma
+/// (mpmath 1.4.1 @5400 bits), which rounds at 53 bits to exactly
+/// 2^5000 (the Euler-gamma correction sits ~4946 bits below the
+/// ulp), INEXACT.
+#[test]
+fn zeta_near_one_resolves_input_encoded_proximity() {
+    let one = BigFloat::try_from_i64_exact(1, 5001).unwrap();
+    let (t, _) = scaled(1, 5001, -5000).round_to_precision(5001, NE).unwrap();
+    let (s, ss) = one.add(&t, NE);
+    assert!(ss.is_ok(), "1 + 2^-5000 must be exact at p5001");
+    let (r, st) = s.zeta_round(53, NE).unwrap();
+    assert!(!r.is_infinite(), "zeta collapsed to +Inf, got {r}");
+    let expected = scaled(1, 53, 5000);
+    assert_eq!(
+        r.total_cmp(&expected),
+        Ordering::Equal,
+        "zeta(1+2^-5000) must be 2^5000 at 53 bits, got {r}"
+    );
+    assert!(st.inexact(), "INEXACT missing (OK was the defect)");
+    assert!(!st.div_by_zero(), "no pole was hit");
+}
+
+/// pf-k68i: `sin(RN(pi, 2048))` -> 53. `reduce()`'s `mul_prec` clamped to
+/// [2048, 4096]; y = x*(2/pi) rounded to exactly 2.0, the residual
+/// subtracted to exact zero, and `half_width(0)` = 0 certified -0
+/// with Status OK. True value at the exact 2048-bit input: mpmath
+/// 1.4.1 @4000 bits.
+#[test]
+fn sin_near_pi_resolves_the_reduction_residual() {
+    let (x, st_pi) = pfloat::constants::pi(2048, NE);
+    assert!(st_pi.inexact(), "pi at 2048 bits is inexact");
+    let (r, st) = x.sin_round(53, NE).unwrap();
+    assert!(!r.is_zero(), "sin collapsed to a signed zero");
+    assert_bit_exact(
+        "sin(RN2048(pi))",
+        &r,
+        "-9.19480169066345569190858554773515892681967123e-618",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// pf-pdda: beta(0.5 + 2^-60 @p61, -3.5 @p3). The ADR-0030 case-5
+/// dispatch classified the pole on a+b rounded to max(operand
+/// precisions) = 61 bits, where -3 + 2^-60 ties-evens to exactly
+/// -3: it returned +0 with Status OK where the truth is NEGATIVE
+/// (-2.4913e-18, mpmath 1.4.1 @5400 bits at the exact inputs).
+#[test]
+fn beta_pole_dispatch_classifies_on_the_exact_sum() {
+    let half = scaled(1, 61, -1);
+    let (t, _) = scaled(1, 61, -60).round_to_precision(61, NE).unwrap();
+    let (a, sa) = half.add(&t, NE);
+    assert!(sa.is_ok(), "0.5 + 2^-60 must be exact at p61");
+    let (b, sb) = BigFloat::try_from_i64_exact(-7, 3)
+        .unwrap()
+        .scale_by_pow2(-1);
+    assert!(sb.is_ok(), "-3.5 must be exact at p3");
+    let (r, st) = a.beta(&b, NE);
+    assert!(
+        r.is_sign_negative() && !r.is_zero(),
+        "beta must be a negative normal, got {r} (status {st:?})"
+    );
+    assert_bit_exact(
+        "beta(0.5+2^-60, -3.5)",
+        &r,
+        "-2.49133464143473706409934468754659056398247682e-18",
+        61,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// The missing fourth member of the ADR-0098 family, found by the
+/// slice's adversarial verification (pre-existing): the lgamma
+/// reflection collapses input-encoded proximity to the
+/// negative-axis POLES inside `pi*x` before sin sees it, and the
+/// realised-cancellation probe never fires because the result is
+/// O(depth), not near zero. lgamma(-3+2^-80 @p84) -> 53 certified a
+/// value wrong from bit ~41. mpmath 1.4.1 @4000 bits.
+#[test]
+fn lgamma_reflection_resolves_pole_proximity() {
+    let three = BigFloat::try_from_i64_exact(-3, 84).unwrap();
+    let (t, _) = scaled(1, 84, -80).round_to_precision(84, NE).unwrap();
+    let (x, sx) = three.add(&t, NE);
+    assert!(sx.is_ok());
+    let (r, st) = x.lgamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "lgamma(-3+2^-80)",
+        &r,
+        "53.6600149755675697525660933973096055854146489",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+    // digamma's reflection has the same pole structure.
+    let (rd, _) = x.digamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "digamma(-3+2^-80)",
+        &rd,
+        "-1208925819614629174706174.74388233156819952727",
+        53,
+        NE,
+    );
+}
+
+/// The deep-beta consumer of the same defect: the exact-sum handoff
+/// (this slice) routes B(0.5+2^-120, -3.5)'s near-pole sum into the
+/// lgamma reflection, which returned the SIGN of Gamma flipped
+/// pre-fix (+2.16e-36 where the truth is negative).
+#[test]
+fn beta_deep_near_pole_sum_keeps_the_sign() {
+    let half = scaled(1, 121, -1);
+    let (t, _) = scaled(1, 121, -120).round_to_precision(121, NE).unwrap();
+    let (a, sa) = half.add(&t, NE);
+    assert!(sa.is_ok());
+    let (b, sb) = BigFloat::try_from_i64_exact(-7, 3)
+        .unwrap()
+        .scale_by_pow2(-1);
+    assert!(sb.is_ok());
+    let (r, st) = a.beta(&b, NE);
+    assert!(
+        r.is_sign_negative(),
+        "beta sign must be negative, got {r} ({st:?})"
+    );
+    assert_bit_exact(
+        "beta(0.5+2^-120, -3.5)",
+        &r,
+        "-2.160888344505549714961133716867520191111181e-36",
+        121,
+        NE,
+    );
+}

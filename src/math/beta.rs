@@ -159,7 +159,23 @@ fn beta_kernel(
     //   1/2 otherwise                          → signed lgamma path
     let a_npi = is_nonpos_integer(a);
     let b_npi = is_nonpos_integer(b);
-    let (sum, _) = a.add(b, RoundingMode::NearestEven);
+    // The pole classification must see the EXACT sum (pf-pdda,
+    // ADR-0098): a + b rounded to max(operand precisions) snapped
+    // (0.5 + 2^-60) + (−3.5) — true sum −3 + 2^-60 — to exactly −3
+    // (a ties-even), dispatching the denominator-pole +0 with
+    // Status OK where the truth is a finite NEGATIVE value. Compute
+    // the sum exactly at its bit-span precision; when the spans are
+    // too far apart to interact (past the budget), the rounded sum
+    // is sound for classification because a dominant
+    // negative-integer operand was already dispatched as a Γ pole
+    // above, and a dominant non-integer stays non-integer under a
+    // below-half-ulp perturbation. The exact sum also feeds the
+    // signed-lgamma path below, so a near-pole a + b reaches
+    // lgamma's reflection (and its cancellation boost) unsnapped.
+    let sum = match exact_sum(a, b, target_precision) {
+        Some(exact) => exact,
+        None => a.add(b, RoundingMode::NearestEven).0,
+    };
     let s_npi = is_nonpos_integer(&sum);
 
     // Case 6: both operands at Γ poles; the net is still a pole.
@@ -402,6 +418,43 @@ fn try_beta_case4_exact(
 }
 
 /// `true` iff `x` is a non-positive integer, i.e. sits at a Γ pole
+/// `a + b` computed exactly at its bit-span precision, or `None`
+/// when the span exceeds the classification budget
+/// `2(pa + pb) + 2·target + 4096` (pf-pdda, ADR-0098). The exact
+/// sum is representable in `top_exponent − bottom_ulp_position + 2`
+/// bits, so the add at that precision is exact by construction
+/// (debug-asserted). Past the budget the operand bit-ranges are
+/// separated by more than the target can observe and more than
+/// either operand resolves, so the rounded fallback is sound for
+/// both the integrality classification (see the call site) and the
+/// downstream evaluation. The budget keeps the allocation
+/// proportional to what the caller already supplied (the bignum
+/// DoS-budget posture).
+fn exact_sum(a: &BigFloat, b: &BigFloat, target_precision: u32) -> Option<BigFloat> {
+    let part = |v: &BigFloat| match &v.class {
+        Class::Normal { exponent, .. } => Some((*exponent, v.precision())),
+        _ => None,
+    };
+    let (ea, pa) = part(a)?;
+    let (eb, pb) = part(b)?;
+    let top = ea.max(eb);
+    let bot = (ea.saturating_sub(i64::from(pa)).saturating_add(1))
+        .min(eb.saturating_sub(i64::from(pb)).saturating_add(1));
+    let span = top.saturating_sub(bot).saturating_add(2);
+    let budget = 2u64
+        .saturating_mul(u64::from(pa) + u64::from(pb))
+        .saturating_add(2u64.saturating_mul(u64::from(target_precision)))
+        .saturating_add(4096);
+    let span_u = u64::try_from(span).ok()?;
+    if span_u > budget {
+        return None;
+    }
+    let p = u32::try_from(span_u).ok()?;
+    let (s, st) = a.add_round(b, p, RoundingMode::NearestEven).ok()?;
+    debug_assert!(st.is_ok(), "span-precision add must be exact");
+    Some(s)
+}
+
 /// (DLMF 5.2: simple poles exactly at 0, −1, −2, …). Zero counts;
 /// positive integers do not.
 fn is_nonpos_integer(x: &BigFloat) -> bool {

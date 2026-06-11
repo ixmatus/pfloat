@@ -169,7 +169,12 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         // ψ(1 − x) − π·cot(πx) is a near-total cancellation of O(1)
         // terms; boost the working precision by the realised
         // cancellation so the Ziv half-width stays sound (review
-        // 2026-05-29, root cause 2).
+        // 2026-05-29, root cause 2). Proximity to the negative-axis
+        // POLES additionally collapses inside π·x before sin/cos see
+        // it (the lgamma reflection analog, ADR-0098): pre-boost by
+        // the exactly-computed depth to the nearest integer.
+        let pole_boost = super::lgamma::pole_proximity_depth(x).saturating_add(8);
+        let working_prec = working_prec.saturating_add(pole_boost);
         return super::ziv::cancellation_boosted(working_prec, |w| {
             // Reflection: ψ(x) = ψ(1 − x) − π·cot(πx).
             let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");

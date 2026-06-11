@@ -115,25 +115,74 @@ pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
         .max(0)
         .saturating_add(i64::from(working_prec))
         .saturating_add(64);
-    let mul_prec = u32::try_from(needed)
-        .unwrap_or(4096)
+    let base_prec = u32::try_from(needed)
+        .unwrap_or(u32::MAX)
         .max(x.precision)
-        .max(2048)
-        .clamp(2048, 4096);
-    let two_over_pi = two_over_pi_at(mul_prec);
-    let (y, _) = x
-        .mul_round(&two_over_pi, mul_prec, RoundingMode::NearestEven)
-        .expect("precision >= 1");
+        .max(2048);
+    // The residual y − q can be as small as the input's encoded
+    // proximity to a multiple of π/2, which a FIXED product width
+    // cannot resolve: sin(RN(π, 2048)) at the old [2048, 4096] clamp
+    // had y = x·(2/π) round to exactly 2.0, the residual subtract to
+    // exact 0, and half_width(0) = 0 certify −0 with Status OK
+    // (pf-k68i, ADR-0098). Grow the width on REALIZED collapse: the
+    // residual must clear the product's rounding-noise floor
+    // 2^(e_y + 1 − mul_prec) by working_prec + 8 bits, else double.
+    // Termination: by the irrationality measure of π
+    // (μ(π) ≤ 7.103205334137, Zeilberger–Zudilin 2020;
+    // docs/references/), a px-bit dyadic x with exponent e_x cannot
+    // sit closer to q·(π/2) than ~2^-(μ·(px + e_x) + c), so the cap
+    // 8·(px + e_x) + working + 256 always resolves (8 > μ with
+    // slack). Generic inputs resolve on the first pass at the old
+    // cost; two_over_pi_at computes live past its 4096-bit table.
+    let e_x_pos = u32::try_from(e_x.max(0)).unwrap_or(0);
+    let cap = 8u32
+        .saturating_mul(x.precision.saturating_add(e_x_pos))
+        .saturating_add(working_prec)
+        .saturating_add(256)
+        .max(base_prec);
+    let mut mul_prec = base_prec;
+    let (q_int, r_unscaled) = loop {
+        let two_over_pi = two_over_pi_at(mul_prec);
+        let (y, _) = x
+            .mul_round(&two_over_pi, mul_prec, RoundingMode::NearestEven)
+            .expect("precision >= 1");
 
-    // Round y to nearest integer with banker's tie-breaking. The
-    // helper handles |y| < 0.5 (rounds to 0), |y| in [0.5, 1)
-    // (round-to-even rounds 0.5 to 0, anything above to ±1), and
-    // |y| ≥ 1 (round-to-precision with precision = exponent + 1).
-    let q_int = round_to_nearest_int(&y);
+        // Round y to nearest integer with banker's tie-breaking. The
+        // helper handles |y| < 0.5 (rounds to 0), |y| in [0.5, 1)
+        // (round-to-even rounds 0.5 to 0, anything above to ±1), and
+        // |y| ≥ 1 (round-to-precision with precision = exponent + 1).
+        let q_int = round_to_nearest_int(&y);
 
-    // r_unscaled = y − q. Exact in real math; rounded to working
-    // precision so we don't carry the full mul-width afterward.
-    let (r_unscaled, _) = y.sub(&q_int, RoundingMode::NearestEven);
+        // r_unscaled = y − q. Exact in real math (Sterbenz at the
+        // product width); rounded to working precision downstream.
+        let (r_unscaled, _) = y.sub(&q_int, RoundingMode::NearestEven);
+
+        let noise_floor = match &y.class {
+            Class::Normal { exponent, .. } => exponent
+                .saturating_sub(i64::from(mul_prec))
+                .saturating_add(1),
+            _ => i64::MIN,
+        };
+        let resolved = match &r_unscaled.class {
+            Class::Normal { exponent, .. } => {
+                *exponent >= noise_floor.saturating_add(i64::from(working_prec) + 8)
+            }
+            // An exactly-zero residual means y rounded onto an
+            // integer: x·(2/π) is irrational for dyadic x ≠ 0, so
+            // the truth is never zero — always unresolved.
+            _ => false,
+        };
+        if resolved {
+            break (q_int, r_unscaled);
+        }
+        if mul_prec >= cap {
+            // Unreachable by the measure bound; refuse loudly (the
+            // caller's None path: NaN + INVALID) rather than let
+            // half_width(0) certify a collapsed residual.
+            return None;
+        }
+        mul_prec = mul_prec.saturating_mul(2).min(cap);
+    };
 
     // quadrant = q mod 4 (signed mod, taken into [0, 4)).
     let quadrant = mod_4(&q_int);

@@ -147,3 +147,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0095: agm convergence floor is relative to the iterate magnitude](0095-agm-relative-convergence-floor.md) (accepted)
 - [ADR-0096: exp at the exponent rim — certified dispatch and pinned reduction](0096-exp-exponent-ceiling.md) (accepted)
 - [ADR-0097: input-encoded cancellation at ln/asin/lgamma/digamma — three fixes, one mechanism](0097-cancellation-boost-positive-roots.md) (accepted)
+- [ADR-0098: input-structure-aware resolution for zeta, trig reduction, and beta](0098-input-structure-aware-dispatch.md) (accepted)

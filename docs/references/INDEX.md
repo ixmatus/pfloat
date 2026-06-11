@@ -47,4 +47,5 @@ file by hand. Row format: slug (category, provenance class, rot risk).
 - [stehle-lefevre-zimmermann-2005](stehle-lefevre-zimmermann-2005.md) (paper, lineage, stable-publisher)
 - [toth-gamma-2005](toth-gamma-2005.md) (web, primary, single-maintainer)
 - [vinc17-testlibm](vinc17-testlibm.md) (corpus, lineage, single-maintainer)
+- [zeilberger-zudilin-pi-2020](zeilberger-zudilin-pi-2020.md) (paper, primary, stable-publisher)
 - [ziv-1991](ziv-1991.md) (paper, primary, stable-publisher)

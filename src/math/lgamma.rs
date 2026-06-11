@@ -206,6 +206,22 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         // of O(1) terms; boost the working precision by the realised
         // cancellation so the Ziv half-width stays sound (review
         // 2026-05-29, root cause 2).
+        //
+        // Separately, proximity to the negative-axis POLES (the
+        // integers) is input-encoded and collapses inside π·x before
+        // sin ever sees it: at x = −3 + 2^-k the product carries the
+        // 2^-k offset only to the working width, sin's relative error
+        // grows by 2^k, and ln amplifies it into the result while the
+        // result itself stays O(k) — so the realised-cancellation
+        // probe never fires (lgamma(−3+2^-80 @p84) → 53 certified a
+        // value wrong from bit ~41; pf-pdda's deep-beta consumer hit
+        // this through the exact-sum handoff, ADR-0098; found by the
+        // slice's adversarial verification, pre-existing). The depth
+        // is exactly computable up front (the gap to the nearest
+        // integer is on x's own grid): pre-boost by it, the
+        // asin/ln pattern of ADR-0097.
+        let pole_boost = pole_proximity_depth(x).saturating_add(8);
+        let working_prec = working_prec.saturating_add(pole_boost);
         return super::ziv::cancellation_boosted(working_prec, |w| {
             let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
             // y = 1 − x, positive since x < 0.
@@ -370,6 +386,51 @@ fn product_ln(x: &BigFloat, n: u32, working_prec: u32) -> BigFloat {
         product = next;
     }
     product.ln(RoundingMode::NearestEven).0
+}
+
+/// Bits of proximity from `x` to its nearest integer: `−exponent`
+/// of the (exactly computed) gap, or 0 when `x` is at least 2^-1
+/// away or sits exactly on an integer (the caller dispatched the
+/// poles already). The gap lives on `x`'s own grid, so the
+/// subtraction is exact; for `|x| < 1` both neighbouring integers
+/// (0 and ±1) are checked. `pub(super)`: digamma's reflection has
+/// the same pole structure (ADR-0098).
+pub(super) fn pole_proximity_depth(x: &BigFloat) -> u32 {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => return 0,
+    };
+    let gap_exponent = if e_x < 0 {
+        // |x| < 1: nearest integers are 0 (gap |x|, exponent e_x)
+        // and ±1 (gap 1 − |x|, Sterbenz-exact).
+        let one = BigFloat::try_from_i64_exact(1, x.precision()).expect("precision >= 1");
+        let (gap_to_one, _) = one.sub(&x.abs(), RoundingMode::NearestEven);
+        match &gap_to_one.class {
+            Class::Normal { exponent, .. } => e_x.min(*exponent),
+            // x = ±1 exactly: a pole/root, dispatched upstream.
+            _ => return 0,
+        }
+    } else {
+        if e_x >= i64::from(x.precision()) {
+            // ulp(x) ≥ 1: x is itself an integer (dispatched).
+            return 0;
+        }
+        // Nearest integer: round x to e_x + 1 mantissa bits (ulp 1).
+        let int_bits = u32::try_from(e_x + 1).expect("e_x < precision <= u32::MAX");
+        let n = x
+            .round_to_precision(int_bits, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let (gap, _) = x.sub(&n, RoundingMode::NearestEven);
+        match &gap.class {
+            Class::Normal { exponent, .. } => *exponent,
+            _ => return 0,
+        }
+    };
+    if gap_exponent >= -1 {
+        return 0;
+    }
+    u32::try_from(gap_exponent.saturating_neg()).unwrap_or(u32::MAX)
 }
 
 /// Returns `true` if `x` is a finite integer.
