@@ -32,6 +32,7 @@ file by hand. Row format: slug (category, provenance class, rot risk).
 - [kahan-branch-cuts-1987](kahan-branch-cuts-1987.md) (paper, primary, academic-personal)
 - [knuth-taocp-v2](knuth-taocp-v2.md) (book, primary, stable-publisher)
 - [lefevre-muller-2001](lefevre-muller-2001.md) (paper, lineage, stable-publisher)
+- [marcovecchio-log2-2009](marcovecchio-log2-2009.md) (paper, primary, died-once)
 - [maxima](maxima.md) (software, oracle, community-run)
 - [mpc](mpc.md) (software, primary, community-run)
 - [mpfr](mpfr.md) (software, oracle, community-run)

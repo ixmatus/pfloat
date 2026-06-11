@@ -145,3 +145,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0093: pfloat-complex 1.0 public API freeze](0093-pfloat-complex-public-api-freeze.md) (accepted)
 - [ADR-0094: Per-source reference registry at docs/references/](0094-reference-registry.md) (accepted)
 - [ADR-0095: agm convergence floor is relative to the iterate magnitude](0095-agm-relative-convergence-floor.md) (accepted)
+- [ADR-0096: exp at the exponent rim — certified dispatch and pinned reduction](0096-exp-exponent-ceiling.md) (accepted)
