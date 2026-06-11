@@ -37,7 +37,7 @@ than the recursion it replaces, which is what wins at large precision. The
 helpers (the divide by three step, the Vandermonde interpolation) derive from
 the published method, not from a transcription of GMP. Source: Brent and
 Zimmermann, Modern Computer Arithmetic, section 1.3.3; Bodrato and Zanoni
-(WAIFI 2007); Jebelean (1993) for exact division by three. See `ADR-0061` and
+(ISSAC 2007); Jebelean (1993) for exact division by three. See `ADR-0061` and
 `ADR-0027`; `src/ops/limbs.rs`.
 
 ### The IEEE 754-2019 remainder kernel

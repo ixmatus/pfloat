@@ -50,12 +50,11 @@ integer kernel does not need.
 ## Citation defect in tree
 
 The in tree citations (`src/ops/limbs.rs`, ADR-0061, the old
-bibliography in `docs/references.md`) name this paper as "Bodrato and
-Zanoni, WAIFI 2007". That conflates two works: the author pair and the
+bibliography in `docs/references.md`) named this paper as "Bodrato and
+Zanoni, WAIFI 2007". That conflated two works: the author pair and the
 title belong to the ISSAC 2007 paper recorded here; WAIFI 2007 published
-the Bodrato solo paper. This entry records the corrected citation; the
-in tree comment fix is tracked as a separate concern (bead filed at
-mining time).
+the Bodrato solo paper. Fixed in tree under bead pf-xebo (every site now
+says ISSAC 2007; ADR-0061 carries a correction note).
 
 ## Archive note
 
