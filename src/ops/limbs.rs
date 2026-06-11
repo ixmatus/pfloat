@@ -1169,7 +1169,7 @@ fn limb_window(v: &[u64], lo: usize, hi: usize) -> Vec<u64> {
 /// polynomial at `{0, 1, −1, 2, ∞}`, and interpolates the five product
 /// coefficients. The interpolation is derived from the Vandermonde
 /// inverse at those points (Brent & Zimmermann, *Modern Computer
-/// Arithmetic* §1.3.3; Bodrato & Zanoni, WAIFI 2007); the five
+/// Arithmetic* §1.3.3; Bodrato & Zanoni, ISSAC 2007); the five
 /// sub-products recurse through [`multiply_limbs`].
 ///
 /// Returns `a.len() + b.len()` limbs, matching the other multipliers.

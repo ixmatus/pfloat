@@ -81,7 +81,7 @@ loses by 12 to 49%.
 polynomial at `{0, 1, −1, 2, ∞}` and interpolates the five coefficients.
 The interpolation was derived from the Vandermonde inverse at those
 points, cross-checked against Brent & Zimmermann, *Modern Computer
-Arithmetic* §1.3.3 and Bodrato & Zanoni (WAIFI 2007); it was not
+Arithmetic* §1.3.3 and Bodrato & Zanoni (ISSAC 2007); it was not
 transcribed from GMP's `mpn_toom33_mul`. Two supporting primitives:
 
 - `divexact_by3`, exact division by three by the modular-inverse method
@@ -115,6 +115,8 @@ suite re-certifying unchanged.
   Burnikel-Ziegler divider, the other sub-quadratic limb routine).
 - Brent & Zimmermann, *Modern Computer Arithmetic*, CUP 2010, §1.3.3.
 - Bodrato & Zanoni, "Integer and Polynomial Multiplication: Towards
-  Optimal Toom-Cook...", WAIFI 2007.
+  Optimal Toom-Cook Matrices", ISSAC 2007, ACM. (Originally cited here
+  as WAIFI 2007, conflating this paper with Bodrato's solo WAIFI 2007
+  paper; corrected per `docs/references/bodrato-zanoni-2007.md`.)
 - Jebelean, "An algorithm for exact division", J. Symbolic Computation 15
   (1993).
