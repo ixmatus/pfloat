@@ -32,6 +32,7 @@
 use pfloat::{RoundingMode, Status};
 
 use crate::ball::Ball;
+use crate::mag::Mag;
 use crate::scalar::RealScalar;
 
 const NE: RoundingMode = RoundingMode::NearestEven;
@@ -47,10 +48,25 @@ pub(crate) fn half_spread<T: RealScalar>(lo: &T, hi: &T) -> T {
     spread.scale_by_pow2(-1).0 // exact ÷2
 }
 
-/// `a +↑ b` etc.: directed scalar helpers that keep the radius
-/// accumulation an upper bound.
-fn up<T: RealScalar>(x: &T, y: &T, op: fn(&T, &T, RoundingMode) -> (T, Status)) -> T {
-    op(x, y, TP).0
+/// `a +↑ b` etc.: directed scalar helper that keeps the radius
+/// accumulation an upper bound, accumulating the scalar's saturation flags. Every radius
+/// term is an UPPER bound, so an OVERFLOW saturation (the exponent
+/// clamps DOWN to i64::MAX) silently UNDER-sizes the radius — a
+/// Law-1 hole one level below the midpoint brackets (pf-m37w,
+/// ADR-0099; found by the slice's adversarial verification:
+/// `point(2^(i64::MAX−10)) × Ball::new(1, 2^20)` excluded a member
+/// of the product set with Status OK). UNDERFLOW saturation clamps
+/// UP, over-sizing the bound: sound, no action. The caller checks
+/// the collected flags and widens to `Mag::INFINITY` on OVERFLOW.
+fn up_flagged<T: RealScalar>(
+    x: &T,
+    y: &T,
+    op: fn(&T, &T, RoundingMode) -> (T, Status),
+    flags: &mut Status,
+) -> T {
+    let (v, st) = op(x, y, TP);
+    *flags |= st;
+    v
 }
 
 impl<T: RealScalar> Ball<T> {
@@ -65,8 +81,12 @@ impl<T: RealScalar> Ball<T> {
         // Propagated error for add: ra + rb.
         let ra = T::radius_to_scalar(self.radius());
         let rb = T::radius_to_scalar(other.radius());
-        let acc = up(&rad_mid, &ra, T::add);
-        let acc = up(&acc, &rb, T::add);
+        let mut rad_flags = Status::OK;
+        let acc = up_flagged(&rad_mid, &ra, T::add, &mut rad_flags);
+        let acc = up_flagged(&acc, &rb, T::add, &mut rad_flags);
+        if rad_flags.overflow() {
+            return (Self::from_parts(mid, Mag::INFINITY), status);
+        }
         (Self::from_parts(mid, acc.magnitude_to_mag()), status)
     }
 
@@ -81,29 +101,62 @@ impl<T: RealScalar> Ball<T> {
         // Propagated error for sub: ra + rb (|∂/∂x| = |∂/∂y| = 1).
         let ra = T::radius_to_scalar(self.radius());
         let rb = T::radius_to_scalar(other.radius());
-        let acc = up(&rad_mid, &ra, T::add);
-        let acc = up(&acc, &rb, T::add);
+        let mut rad_flags = Status::OK;
+        let acc = up_flagged(&rad_mid, &ra, T::add, &mut rad_flags);
+        let acc = up_flagged(&acc, &rb, T::add, &mut rad_flags);
+        if rad_flags.overflow() {
+            return (Self::from_parts(mid, Mag::INFINITY), status);
+        }
         (Self::from_parts(mid, acc.magnitude_to_mag()), status)
     }
 
     /// `self · other`. Encloses `{x · y : x ∈ self, y ∈ other}`.
+    ///
+    /// At the i64 exponent rim the scalar `mul` saturates its result
+    /// exponent (pfloat's no-emax contract): all three directed
+    /// products clamp to the same finite value, the bracket spread
+    /// vanishes, and the zero-radius "exact" ball would EXCLUDE the
+    /// truth — Law 1 unsoundness (pf-m37w, ADR-0099). The saturation
+    /// statuses, previously discarded, drive the widening: an
+    /// OVERFLOW-saturated product may exceed every representable, so
+    /// the radius goes infinite; an UNDERFLOW-saturated product
+    /// overstates the true magnitude (the exponent clamps UP toward
+    /// the floor), so the radius stretches by the clamped magnitude
+    /// itself, reaching zero on the far side of the truth.
     #[must_use]
     pub fn mul(&self, other: &Self) -> (Self, Status) {
         let (a, b) = (self.midpoint(), other.midpoint());
         let (mid, status) = a.mul(b, NE);
-        let lo = a.mul(b, TN).0;
-        let hi = a.mul(b, TP).0;
+        let (lo, st_lo) = a.mul(b, TN);
+        let (hi, st_hi) = a.mul(b, TP);
+        let saturation = status | st_lo | st_hi;
+        if saturation.overflow() {
+            return (
+                Self::from_parts(mid, Mag::INFINITY),
+                status | Status::OVERFLOW,
+            );
+        }
         let rad_mid = half_spread(&lo, &hi);
         // Propagated error for mul: |a|·rb + |b|·ra + ra·rb.
         let ra = T::radius_to_scalar(self.radius());
         let rb = T::radius_to_scalar(other.radius());
         let abs_a = a.abs();
         let abs_b = b.abs();
-        let t1 = up(&abs_a, &rb, T::mul);
-        let t2 = up(&abs_b, &ra, T::mul);
-        let t3 = up(&ra, &rb, T::mul);
-        let prop = up(&up(&t1, &t2, T::add), &t3, T::add);
-        let rad = up(&rad_mid, &prop, T::add).magnitude_to_mag();
+        let mut rad_flags = Status::OK;
+        let t1 = up_flagged(&abs_a, &rb, T::mul, &mut rad_flags);
+        let t2 = up_flagged(&abs_b, &ra, T::mul, &mut rad_flags);
+        let t3 = up_flagged(&ra, &rb, T::mul, &mut rad_flags);
+        let sum12 = up_flagged(&t1, &t2, T::add, &mut rad_flags);
+        let prop = up_flagged(&sum12, &t3, T::add, &mut rad_flags);
+        let acc = up_flagged(&rad_mid, &prop, T::add, &mut rad_flags);
+        if rad_flags.overflow() {
+            return (Self::from_parts(mid, Mag::INFINITY), status);
+        }
+        let mut rad = acc.magnitude_to_mag();
+        if saturation.underflow() {
+            rad = rad.add(mid.abs().magnitude_to_mag());
+            return (Self::from_parts(mid, rad), status | Status::UNDERFLOW);
+        }
         (Self::from_parts(mid, rad), status)
     }
 
@@ -127,17 +180,47 @@ impl<T: RealScalar> Ball<T> {
         }
 
         let (mid, status) = a.div(b, NE);
-        let lo = a.div(b, TN).0;
-        let hi = a.div(b, TP).0;
+        let (lo, st_lo) = a.div(b, TN);
+        let (hi, st_hi) = a.div(b, TP);
+        // Exponent-rim saturation widening, the mul rationale
+        // (pf-m37w, ADR-0099).
+        let saturation = status | st_lo | st_hi;
+        if saturation.overflow() {
+            return (
+                Self::from_parts(mid, Mag::INFINITY),
+                status | Status::OVERFLOW,
+            );
+        }
         let rad_mid = half_spread(&lo, &hi);
 
         // Propagated error: (|b|·ra + |a|·rb) / (blo·|b|), numerator up,
         // denominator down — both push the fraction to an upper bound.
         let abs_a = a.abs();
-        let num = up(&up(&abs_b, &ra, T::mul), &up(&abs_a, &rb, T::mul), T::add);
-        let den = blo.mul(&abs_b, TN).0; // lower bound on the denominator
-        let prop = num.div(&den, TP).0; // upper bound on the quotient
-        let rad = up(&rad_mid, &prop, T::add).magnitude_to_mag();
+        let mut rad_flags = Status::OK;
+        let n1 = up_flagged(&abs_b, &ra, T::mul, &mut rad_flags);
+        let n2 = up_flagged(&abs_a, &rb, T::mul, &mut rad_flags);
+        let num = up_flagged(&n1, &n2, T::add, &mut rad_flags);
+        // den is a LOWER bound: the unsound saturation direction is
+        // UNDERFLOW (the exponent clamps UP toward i64::MIN,
+        // over-stating the denominator and under-sizing prop) — the
+        // verifier's `1 ÷ Ball::new(2^k0, …)` reproducer excluded a
+        // representable member of the quotient set with Status OK.
+        // OVERFLOW on den clamps DOWN: sound.
+        let (den, st_den) = blo.mul(&abs_b, TN);
+        let (prop, st_prop) = num.div(&den, TP);
+        rad_flags |= st_prop;
+        if rad_flags.overflow() || st_den.underflow() {
+            return (Self::from_parts(mid, Mag::INFINITY), status);
+        }
+        let acc = up_flagged(&rad_mid, &prop, T::add, &mut rad_flags);
+        if rad_flags.overflow() {
+            return (Self::from_parts(mid, Mag::INFINITY), status);
+        }
+        let mut rad = acc.magnitude_to_mag();
+        if saturation.underflow() {
+            rad = rad.add(mid.abs().magnitude_to_mag());
+            return (Self::from_parts(mid, rad), status | Status::UNDERFLOW);
+        }
         (Self::from_parts(mid, rad), status)
     }
 

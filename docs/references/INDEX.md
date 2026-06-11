@@ -32,6 +32,7 @@ file by hand. Row format: slug (category, provenance class, rot risk).
 - [kahan-branch-cuts-1987](kahan-branch-cuts-1987.md) (paper, primary, academic-personal)
 - [knuth-taocp-v2](knuth-taocp-v2.md) (book, primary, stable-publisher)
 - [lefevre-muller-2001](lefevre-muller-2001.md) (paper, lineage, stable-publisher)
+- [marcovecchio-log2-2009](marcovecchio-log2-2009.md) (paper, primary, died-once)
 - [maxima](maxima.md) (software, oracle, community-run)
 - [mpc](mpc.md) (software, primary, community-run)
 - [mpfr](mpfr.md) (software, oracle, community-run)
@@ -46,4 +47,5 @@ file by hand. Row format: slug (category, provenance class, rot risk).
 - [stehle-lefevre-zimmermann-2005](stehle-lefevre-zimmermann-2005.md) (paper, lineage, stable-publisher)
 - [toth-gamma-2005](toth-gamma-2005.md) (web, primary, single-maintainer)
 - [vinc17-testlibm](vinc17-testlibm.md) (corpus, lineage, single-maintainer)
+- [zeilberger-zudilin-pi-2020](zeilberger-zudilin-pi-2020.md) (paper, primary, stable-publisher)
 - [ziv-1991](ziv-1991.md) (paper, primary, stable-publisher)

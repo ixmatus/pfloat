@@ -37,7 +37,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::gamma_stirling::{spouge_lgamma, stirling_lgamma};
+use super::gamma_stirling::{spouge_lgamma_scaled, stirling_lgamma};
 use super::pi_at;
 use super::ziv::ziv_round;
 use super::ziv_calibration::LGAMMA_ERROR_GUARD;
@@ -206,6 +206,22 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         // of O(1) terms; boost the working precision by the realised
         // cancellation so the Ziv half-width stays sound (review
         // 2026-05-29, root cause 2).
+        //
+        // Separately, proximity to the negative-axis POLES (the
+        // integers) is input-encoded and collapses inside π·x before
+        // sin ever sees it: at x = −3 + 2^-k the product carries the
+        // 2^-k offset only to the working width, sin's relative error
+        // grows by 2^k, and ln amplifies it into the result while the
+        // result itself stays O(k) — so the realised-cancellation
+        // probe never fires (lgamma(−3+2^-80 @p84) → 53 certified a
+        // value wrong from bit ~41; pf-pdda's deep-beta consumer hit
+        // this through the exact-sum handoff, ADR-0098; found by the
+        // slice's adversarial verification, pre-existing). The depth
+        // is exactly computable up front (the gap to the nearest
+        // integer is on x's own grid): pre-boost by it, the
+        // asin/ln pattern of ADR-0097.
+        let pole_boost = pole_proximity_depth(x).saturating_add(8);
+        let working_prec = working_prec.saturating_add(pole_boost);
         return super::ziv::cancellation_boosted(working_prec, |w| {
             let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
             // y = 1 − x, positive since x < 0.
@@ -227,7 +243,56 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         });
     }
 
-    // Positive branch.
+    // Positive branch. Near the positive roots x = 1 and x = 2 the
+    // composition (Stirling-with-shift's lgamma(z) − ln(product), or
+    // Spouge's leading-minus-ln chain) is a near-total cancellation
+    // of terms whose scale grows with z_min, while the result shrinks
+    // with the input's proximity to the root — proximity the relative
+    // half-width model cannot see. lgamma(2 + 2^-100) certified a
+    // value with relative error 2.5e-3 (pf-wmv7, ADR-0097). Mirror
+    // the negative branch: inside the root windows, boost by the
+    // realised cancellation. The window [3/4, 5/4] ∪ [7/4, 9/4]
+    // bounds |lgamma| below ~2^-3.4 outside it, so the un-boosted
+    // path's cancellation stays inside the Ziv guard there; inside,
+    // z_min must be re-derived from the boosted precision (a z_min
+    // sized for the original target caps Stirling's truncation
+    // accuracy no matter how far the working precision grows).
+    if in_positive_root_window(x) {
+        return super::ziv::cancellation_boosted(working_prec, |w| {
+            lgamma_positive_at_w(x, z_min_for_target(w), w)
+        });
+    }
+    lgamma_positive_at_w(x, z_min, working_prec).0
+}
+
+/// `x ∈ [3/4, 5/4] ∪ [7/4, 9/4]`: the windows around lgamma's
+/// positive roots at 1 and 2. Exact dyadic bounds compared on the
+/// original input, so the trigger is precision-independent.
+fn in_positive_root_window(x: &BigFloat) -> bool {
+    let quarter = |n: i64| {
+        BigFloat::try_from_i64_exact(n, 4)
+            .expect("4 bits hold 3..=9")
+            .scale_by_pow2(-2)
+            .0
+    };
+    let within = |lo: i64, hi: i64| {
+        matches!(
+            x.partial_cmp(&quarter(lo)).0,
+            Some(Ordering::Greater | Ordering::Equal)
+        ) && matches!(
+            x.partial_cmp(&quarter(hi)).0,
+            Some(Ordering::Less | Ordering::Equal)
+        )
+    };
+    within(3, 5) || within(7, 9)
+}
+
+/// The positive-branch evaluation at one working precision,
+/// returning `(value, operand_scale)` — the scale of the largest
+/// term that cancelled to form the value, which is what
+/// `cancellation_boosted` charges the realised cancellation
+/// against. Callers outside the root windows discard the scale.
+fn lgamma_positive_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> (BigFloat, i64) {
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -240,7 +305,7 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     // parameter `a`. The 600-bit threshold leaves Stirling room for
     // its `+32`-bit margin from z_min_for_target and the Ziv guard.
     if working_prec > STIRLING_REACH_THRESHOLD {
-        return spouge_lgamma(&x_w, working_prec);
+        return spouge_lgamma_scaled(&x_w, working_prec);
     }
 
     // Decide whether to shift. We want z = x + n ≥ z_min.
@@ -260,7 +325,9 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     };
 
     if approx_x >= z_min {
-        stirling_lgamma(&x_w, working_prec)
+        let v = stirling_lgamma(&x_w, working_prec);
+        let scale = super::ziv::value_exponent(&v);
+        (v, scale)
     } else {
         // Number of upward shifts so x + n ≥ z_min.
         let shifts = z_min - approx_x;
@@ -268,7 +335,8 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         let lgamma_z = stirling_lgamma(&shifted, working_prec);
         let ln_prod = product_ln(&x_w, shifts, working_prec);
         let (diff, _) = lgamma_z.sub(&ln_prod, RoundingMode::NearestEven);
-        diff
+        let scale = super::ziv::value_exponent(&lgamma_z).max(super::ziv::value_exponent(&ln_prod));
+        (diff, scale)
     }
 }
 
@@ -318,6 +386,51 @@ fn product_ln(x: &BigFloat, n: u32, working_prec: u32) -> BigFloat {
         product = next;
     }
     product.ln(RoundingMode::NearestEven).0
+}
+
+/// Bits of proximity from `x` to its nearest integer: `−exponent`
+/// of the (exactly computed) gap, or 0 when `x` is at least 2^-1
+/// away or sits exactly on an integer (the caller dispatched the
+/// poles already). The gap lives on `x`'s own grid, so the
+/// subtraction is exact; for `|x| < 1` both neighbouring integers
+/// (0 and ±1) are checked. `pub(super)`: digamma's reflection has
+/// the same pole structure (ADR-0098).
+pub(super) fn pole_proximity_depth(x: &BigFloat) -> u32 {
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => return 0,
+    };
+    let gap_exponent = if e_x < 0 {
+        // |x| < 1: nearest integers are 0 (gap |x|, exponent e_x)
+        // and ±1 (gap 1 − |x|, Sterbenz-exact).
+        let one = BigFloat::try_from_i64_exact(1, x.precision()).expect("precision >= 1");
+        let (gap_to_one, _) = one.sub(&x.abs(), RoundingMode::NearestEven);
+        match &gap_to_one.class {
+            Class::Normal { exponent, .. } => e_x.min(*exponent),
+            // x = ±1 exactly: a pole/root, dispatched upstream.
+            _ => return 0,
+        }
+    } else {
+        if e_x >= i64::from(x.precision()) {
+            // ulp(x) ≥ 1: x is itself an integer (dispatched).
+            return 0;
+        }
+        // Nearest integer: round x to e_x + 1 mantissa bits (ulp 1).
+        let int_bits = u32::try_from(e_x + 1).expect("e_x < precision <= u32::MAX");
+        let n = x
+            .round_to_precision(int_bits, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let (gap, _) = x.sub(&n, RoundingMode::NearestEven);
+        match &gap.class {
+            Class::Normal { exponent, .. } => *exponent,
+            _ => return 0,
+        }
+    };
+    if gap_exponent >= -1 {
+        return 0;
+    }
+    u32::try_from(gap_exponent.saturating_neg()).unwrap_or(u32::MAX)
 }
 
 /// Returns `true` if `x` is a finite integer.

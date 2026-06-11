@@ -231,8 +231,16 @@ pub(super) fn stirling_digamma(z: &BigFloat, working_prec: u32) -> BigFloat {
 ///   `PhD` thesis, UBC (2004), §3 (error analysis for Spouge).
 /// - Toth, V.T. "Programmable Calculators: The Gamma Function"
 ///   (2005), reference implementation pattern.
+///
+/// Returns `(value, operand_scale)`: the operand scale is the
+/// binary exponent of the largest term in the
+/// `(z + 1/2)·ln(z + a) − (z + a) + ln S − ln z` chain, which is
+/// what cancels near lgamma's positive roots and what
+/// `cancellation_boosted` charges the realised cancellation
+/// against (pf-wmv7, ADR-0097). Callers away from the roots
+/// discard it.
 #[allow(dead_code)]
-pub(super) fn spouge_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
+pub(super) fn spouge_lgamma_scaled(z: &BigFloat, working_prec: u32) -> (BigFloat, i64) {
     let a = spouge_a_for(working_prec);
     let z_w = z
         .round_to_precision(working_prec, RoundingMode::NearestEven)
@@ -254,12 +262,23 @@ pub(super) fn spouge_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
     // accumulation plus the leading-factor evaluation below.
     let coefficients = spouge_coefficients(working_prec, a);
     let mut sum = sqrt_2pi;
+    // The Spouge series alternates in sign and its largest term
+    // exceeds the sum S by ~0.1·working_prec bits (the internal
+    // cancellation grows with a ∝ working_prec). Each term carries
+    // ~2^-w relative error at the TERM's scale, so ln S — and hence
+    // the result — is short by exactly that hidden depth; track the
+    // largest term magnitude so the reported operand scale can
+    // charge it (pf-wmv7, ADR-0097: lgamma(2 + 2^-500 @p520) → 400
+    // certified a value 2^21 ulps wrong with the scale unreported;
+    // found by the slice's adversarial verification).
+    let mut max_term_exponent = super::ziv::value_exponent(&sum);
     for (k_minus_1, c_k) in coefficients.iter().enumerate() {
         let k = (k_minus_1 + 1) as u32;
         let k_bf =
             BigFloat::try_from_i64_exact(i64::from(k), working_prec).expect("precision >= 1");
         let (z_plus_k, _) = z_w.add(&k_bf, RoundingMode::NearestEven);
         let (term, _) = c_k.div(&z_plus_k, RoundingMode::NearestEven);
+        max_term_exponent = max_term_exponent.max(super::ziv::value_exponent(&term));
         let (next_sum, _) = sum.add(&term, RoundingMode::NearestEven);
         sum = next_sum;
     }
@@ -280,7 +299,27 @@ pub(super) fn spouge_lgamma(z: &BigFloat, working_prec: u32) -> BigFloat {
     let (ln_z, _) = z_w.ln(RoundingMode::NearestEven);
     let (ln_gamma_z, _) = ln_gamma_z_plus_1.sub(&ln_z, RoundingMode::NearestEven);
 
-    ln_gamma_z
+    // The cancelling magnitudes near the positive roots: term1 and
+    // z_plus_a inside `leading`, the leading/ln chain itself, PLUS
+    // the Spouge sum's internal alternating cancellation
+    // (max term over S) — a depth hidden behind the ln that the
+    // chain exponents cannot see. A degenerate (non-Normal) sum
+    // charges nothing extra: the boosted retry re-measures, and a
+    // collapse is already handled by cancellation_boosted's
+    // non-Normal arm.
+    let sum_internal_cancel = match &sum.class {
+        crate::class::Class::Normal { exponent, .. } => {
+            max_term_exponent.saturating_sub(*exponent).max(0)
+        }
+        _ => 0,
+    };
+    let scale = super::ziv::value_exponent(&term1)
+        .max(super::ziv::value_exponent(&z_plus_a))
+        .max(super::ziv::value_exponent(&ln_gamma_z_plus_1))
+        .max(super::ziv::value_exponent(&ln_z))
+        .saturating_add(sum_internal_cancel);
+
+    (ln_gamma_z, scale)
 }
 
 /// Compute the Spouge coefficient vector `[c_1, c_2, …, c_{a-1}]`

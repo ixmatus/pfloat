@@ -17,6 +17,8 @@
 //! the same measure-zero cap caveat the divide carries. `clog(1 + 0i) = +0`
 //! falls out exactly, because `hypot(1, 0) = 1` and the scalar `ln(1) = +0`.
 
+use core::cmp::Ordering;
+
 use pfloat::{BigFloat, RoundingMode, Sign, Status};
 
 use crate::enclosure::{resolve_bracket, GUARDS};
@@ -71,21 +73,91 @@ fn ln_hypot_enclosure(
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
     use RoundingMode::{TowardNegative as TN, TowardPositive as TP};
+    // Near |z| = 1 the bracket straddles ln(1) = 0 to a depth set by
+    // the INPUT structure, not the output precision: for z = 1 + εi
+    // the real part is ~ε²/2, so a static guard schedule topping out
+    // at p + 1024 cannot resolve ε deeper than ~512 bits and the
+    // exhausted fall-through silently returned a collapsed +0 with
+    // INEXACT (pf-qm8a, ADR-0100: clog(1 + 2^-545 i) at p64; the
+    // constructible positive-measure band past ADR-0091's
+    // measure-zero caveat). The depth is bounded by the components'
+    // own grids: a² + b² − 1, if nonzero, is a dyadic no smaller
+    // than 2^bot with bot = min(2(e_a − p_a + 1), 2(e_b − p_b + 1)),
+    // so growing the guard to −bot + 64 always either resolves the
+    // bracket or hits the exactly-Pythagorean case (a² + b² = 1),
+    // where the directed hypot pair collapses onto exactly 1 and
+    // ln(1) = 0 converges exactly. The schedule is unchanged for
+    // everything the old GUARDS already handled.
+    let sq_bot = |v: &BigFloat| match v.parts() {
+        pfloat::Parts::Normal { exponent, .. } => exponent
+            .saturating_sub(i64::from(v.precision()))
+            .saturating_add(1)
+            .saturating_mul(2),
+        _ => 0i64,
+    };
+    let bot = sq_bot(a).min(sq_bot(b));
+    // bot > 0 (both components' grids sit above 2^0) means |z| is far
+    // from 1 and the first guard resolves; clamp instead of feeding a
+    // negative through the conversion (the unclamped form silently
+    // produced a u32::MAX cap — caught by the slice's adversarial
+    // verification).
+    let guard_cap = u32::try_from(bot.saturating_neg().saturating_add(64).max(0))
+        .unwrap_or(u32::MAX)
+        .max(GUARDS[GUARDS.len() - 1]);
+
     let mut last = None;
-    for &guard in &GUARDS {
+    let mut guard = GUARDS[0];
+    loop {
         let w = p.saturating_add(guard);
         let h_lo = a.hypot_round(b, w, TN).expect("w >= 1").0;
         let h_hi = a.hypot_round(b, w, TP).expect("w >= 1").0;
-        let re_lo = h_lo.ln_round(w, TN).expect("w >= 1").0;
-        let re_hi = h_hi.ln_round(w, TP).expect("w >= 1").0;
-        let r = resolve_bracket(&re_lo, &re_hi, p, mode);
-        if r.converged {
-            return (r.value, r.status);
+
+        // A bracket whose BOTH ends are exactly 1 with both components
+        // nonzero is always a lie: no nontrivial dyadic point lies on
+        // the unit circle (x² + y² = 2^2k has only the trivial
+        // Gaussian-integer solutions), so the truth is strictly off 1
+        // and the scalar hypot has merely exhausted its own Ziv cap,
+        // returning a falsely-exact 1 (its target was too small to see
+        // the 2^-2d offset). Accepting it would let ln(1) = 0 converge
+        // "exactly" on the first iteration and bypass the depth-scaled
+        // growth below entirely — the slice's adversarial verification
+        // reproduced exactly that at depth ≥ 576 (component status OK,
+        // worse than the original defect). Treat it as unresolved and
+        // keep growing; by depth ≤ −bot/2 the widened target lets
+        // hypot resolve genuinely.
+        let one = BigFloat::try_from_i64_exact(1, 1).expect("precision >= 1");
+        let both_ends_one = matches!(h_lo.partial_cmp(&one).0, Some(Ordering::Equal))
+            && matches!(h_hi.partial_cmp(&one).0, Some(Ordering::Equal));
+        let collapsed_lie = both_ends_one && !a.is_zero() && !b.is_zero();
+
+        if !collapsed_lie {
+            let re_lo = h_lo.ln_round(w, TN).expect("w >= 1").0;
+            let re_hi = h_hi.ln_round(w, TP).expect("w >= 1").0;
+            let r = resolve_bracket(&re_lo, &re_hi, p, mode);
+            if r.converged {
+                return (r.value, r.status);
+            }
+            last = Some(r);
         }
-        last = Some(r);
+        if guard >= guard_cap {
+            break;
+        }
+        guard = guard.saturating_mul(2).min(guard_cap);
     }
-    let r = last.expect("GUARDS is non-empty");
-    (r.value, r.status)
+    // Past the structure-derived cap: unreachable for finite-precision
+    // inputs by the bound above; the residual is the documented
+    // measure-zero caveat (ADR-0091 posture), reported INEXACT —
+    // never OK. `last` is None only if every iteration was the
+    // collapsed-lie bracket (equally unreachable: the cap exceeds the
+    // depth the lie requires); return an explicit INEXACT zero rather
+    // than panic or claim exactness.
+    match last {
+        Some(r) => (r.value, r.status),
+        None => (
+            BigFloat::try_new_zero(Sign::Positive, p).expect("p >= 1"),
+            Status::INEXACT,
+        ),
+    }
 }
 
 fn pos_inf(p: u32) -> BigFloat {

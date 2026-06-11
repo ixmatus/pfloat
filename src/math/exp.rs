@@ -3,8 +3,13 @@
 //! Algorithm:
 //!
 //! 1. Special cases: NaN propagates; `exp(±0) = 1`;
-//!    `exp(+∞) = +∞`; `exp(-∞) = +0`; very large `x` overflows
-//!    to `+∞`; very negative `x` underflows to `+0`.
+//!    `exp(+∞) = +∞`; `exp(-∞) = +0`. Past the exponent rim
+//!    (ADR-0096): certain overflow gives `+∞` (`MaxFinite` under the
+//!    inward modes) with `OVERFLOW|INEXACT`; results below
+//!    representability give `+0` (`MinPos` under `TowardPositive`, and
+//!    in the `[MinPos/2, MinPos)` sliver also under the nearest
+//!    modes) with `UNDERFLOW|INEXACT`. Inputs whose result exponent
+//!    lands inside the rim compute exactly like any other.
 //! 2. Range reduce: choose integer `k = round(x / ln(2))`, then
 //!    `r = x − k · ln(2)`. After reduction `|r| ≤ ln(2)/2 ≈ 0.347`.
 //!    `ln(2)` is hardcoded at 1024-bit precision (see
@@ -126,6 +131,22 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
+    // Exponent-ceiling triage (pf-7z66, ADR-0096). For |x| ≥ 2^62,
+    // exp(x) sits outside or at the rim of the representable
+    // exponent range, and the generic reduction below would wrap or
+    // saturate its k = round(x/ln2): the review confirmed garbage
+    // Normals (one with Status OK certified) and a spurious +inf on
+    // representable results. e_x ≤ 61 keeps the established path
+    // bit-for-bit untouched (|x|/ln2 < 2^62.6 there, so k and the
+    // result exponent stay far from the i64 rim).
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials handled above"),
+    };
+    if e_x >= 62 {
+        return exp_extreme(x, target_precision, mode);
+    }
+
     // Correctly rounded under `mode` via the Ziv interval test
     // (ADR-0022). The driver supplies a working precision, the
     // closure evaluates exp at that precision, and the driver grows
@@ -175,16 +196,21 @@ fn exp_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
     let (k_ln2, _) = k_big.mul(&ln_2, RoundingMode::NearestEven);
     let (r, _) = x_w.sub(&k_ln2, RoundingMode::NearestEven);
 
-    // Taylor series: exp(r) = 1 + r + r²/2! + r³/3! + ...
+    // exp(x) = exp(r) × 2^k. Apply k as a free exponent shift.
+    shift_exponent(exp_taylor(&r, working_prec), k)
+}
+
+/// Taylor series `exp(r) = 1 + r + r²/2! + r³/3! + …` at the
+/// supplied working precision. `|r| ≲ 1.4` (the reduced argument of
+/// either reduction path); the series converges geometrically once
+/// `n > |r|`, and the iteration cap covers pathological stalls.
+fn exp_taylor(r: &BigFloat, working_prec: u32) -> BigFloat {
     let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     let mut sum = one.clone();
     let mut term = one;
-    // Convergence: |term_n| ≈ |r|^n / n!, which for |r| < 0.5 falls below
-    // 2^(-working_prec) by roughly working_prec / log2(1/|r|) ≈ 2 * working_prec terms.
-    // Cap iterations to avoid runaway in pathological cases.
     let max_iter = 4u32.saturating_mul(working_prec).max(256);
     for n in 1u32..=max_iter {
-        let (new_numer, _) = term.mul(&r, RoundingMode::NearestEven);
+        let (new_numer, _) = term.mul(r, RoundingMode::NearestEven);
         let n_big =
             BigFloat::try_from_i64_exact(i64::from(n), working_prec).expect("precision >= 1");
         let (new_term, _) = new_numer.div(&n_big, RoundingMode::NearestEven);
@@ -200,9 +226,339 @@ fn exp_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
             break;
         }
     }
+    sum
+}
 
-    // exp(x) = sum × 2^k. Apply k as a free exponent shift.
-    shift_exponent(sum, k)
+/// `exp(x)` for `|x| ≥ 2^62` (pf-7z66, ADR-0096): the exponent-rim
+/// band. Classifies `n = floor(x/ln2)` — the result's binary
+/// exponent — against the representable i64 range and dispatches:
+///
+/// - `n ≥ 2^63`: the truth is at least `2^(i64::MAX + 1)`, past
+///   `MaxFinite` by more than an ulp: certain overflow, mode-aware
+///   (+∞ for nearest/upward, `MaxFinite` inward), `OVERFLOW|INEXACT`.
+/// - `n ≤ i64::MIN − 2`: the truth is below half of `MinPos`: +0 for
+///   every mode except `TowardPositive` (`MinPos`), `UNDERFLOW|INEXACT`.
+/// - `n = i64::MIN − 1` (the sliver): the truth lies in
+///   `[MinPos/2, MinPos)`, strictly above the to-nearest midpoint
+///   (its mantissa `2^{x/ln2 − n} ∈ (1, 2)` strictly, since `x/ln2`
+///   is irrational): `MinPos` for nearest/upward, +0 inward,
+///   `UNDERFLOW|INEXACT`.
+/// - otherwise the truth is representable: Ziv-certify the unscaled
+///   `s = exp(x − k·ln2)` and compose with the exact
+///   `scale_by_pow2(k)`. Exact power-of-two scaling commutes with
+///   rounding, so rounding `s` at the target under `mode` rounds
+///   the result; only a genuine carry across the top binade can
+///   saturate, and `scale_by_pow2` flags that honestly.
+///
+/// For `e_x ≥ 63`, `|x|/ln2 > 2^63.5` clears both rims with margin
+/// and the sign decides directly; only `e_x = 62` (where `|x|/ln2`
+/// spans `[2^62.5, 2^63.5)`) needs the certified floor.
+fn exp_extreme(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let positive = matches!(x.sign(), Sign::Positive);
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("caller dispatches on Normal"),
+    };
+    if e_x >= 63 {
+        return if positive {
+            exp_certain_overflow(target_precision, mode)
+        } else {
+            exp_deep_underflow(target_precision, mode)
+        };
+    }
+
+    let n = certified_floor_x_over_ln2(x);
+    if n >= 1i128 << 63 {
+        return exp_certain_overflow(target_precision, mode);
+    }
+    if n < i128::from(i64::MIN) - 1 {
+        return exp_deep_underflow(target_precision, mode);
+    }
+    if n == i128::from(i64::MIN) - 1 {
+        return exp_underflow_sliver(target_precision, mode);
+    }
+
+    // Representable window. Clamp k one step inside the rim so the
+    // unscaled value s = exp(x − k·ln2) ∈ (0.5, 4) composes without
+    // saturating for in-range truths: at k = n the bottom-window
+    // s ∈ [1, 2) can round down across the binade and the top-window
+    // s can carry to 2.0, either of which would push the exact
+    // compose onto the rim. With the clamp, exponent(s) ∈ {−1, 0, 1}
+    // and k + exponent(s) ∈ [i64::MIN, i64::MAX] always; only a
+    // target-rounding carry past the true top binade reaches
+    // scale_by_pow2's saturation contract, which flags it.
+    let k = n
+        .max(i128::from(i64::MIN) + 1)
+        .min(i128::from(i64::MAX) - 1) as i64;
+    let (s, ziv_status) = ziv_round(
+        |w| exp_reduced_pinned(x, k, w),
+        target_precision,
+        mode,
+        EXP_ERROR_GUARD,
+    );
+    let (result, scale_status) = s.scale_by_pow2(k);
+    // A carry in the certified rounding of s (e.g. s → 4.0 at
+    // k = i64::MAX − 1) means the infinitely-precise rounding of
+    // exp(x) under `mode` lands at 2^(i64::MAX + 1): a genuine IEEE
+    // §7.4 overflow. scale_by_pow2 clamps the exponent AFTER the
+    // carry has already replaced the mantissa with 1.0, which would
+    // return a non-monotone 2^(i64::MAX) (about half the truth and
+    // below the same input's TowardZero answer) — route to the
+    // mode-aware overflow result instead. The inward modes cannot
+    // carry upward (their certified rounding never exceeds the true
+    // s < 4), and the bottom compose cannot saturate at all
+    // (k ≥ i64::MIN + 1 and exponent(s) ≥ −1), so no underflow
+    // analogue exists. Caught by the slice's adversarial
+    // verification (x = 2^63·RD_130(ln2), truth (2 − 2^-65)·2^MAX).
+    if scale_status.overflow() {
+        return exp_certain_overflow(target_precision, mode);
+    }
+    // exp of a nonzero finite x is transcendental (the ADR-0060
+    // posture of the main path), so INEXACT is unconditional.
+    let status = ziv_status | scale_status | Status::INEXACT;
+    auto_raise(status);
+    (result, status)
+}
+
+/// Mode-aware certain-overflow result: IEEE 754-2019 §7.4 shape.
+/// The truth exceeds `2^(i64::MAX+1)`, i.e. more than an ulp past
+/// `MaxFinite`, so the to-nearest modes give +∞ and the inward modes
+/// give `MaxFinite`. This is a deliberate divergence from the ops'
+/// saturate-to-finite exponent contract (mul/div/fma): their
+/// saturated mantissa still carries the true leading bits, while a
+/// deep exp overflow has no representable approximation within any
+/// bounded relative error, so +∞ + OVERFLOW is the honest §7.4
+/// answer and matches this module's documented promise.
+fn exp_certain_overflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let value = match mode {
+        RoundingMode::TowardZero | RoundingMode::TowardNegative => {
+            BigFloat::try_new_infinity(Sign::Positive, target_precision)
+                .expect("precision >= 1")
+                .next_down()
+                .0
+        }
+        _ => BigFloat::try_new_infinity(Sign::Positive, target_precision).expect("precision >= 1"),
+    };
+    let status = Status::OVERFLOW | Status::INEXACT;
+    auto_raise(status);
+    (value, status)
+}
+
+/// Mode-aware deep-underflow result: the truth is strictly below
+/// `MinPos/2` (= `2^(i64::MIN − 1)`), so every mode except
+/// `TowardPositive` rounds to +0, and `TowardPositive` rounds up to
+/// `MinPos`.
+fn exp_deep_underflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let value = if matches!(mode, RoundingMode::TowardPositive) {
+        BigFloat::try_new_zero(Sign::Positive, target_precision)
+            .expect("precision >= 1")
+            .next_up()
+            .0
+    } else {
+        BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1")
+    };
+    let status = Status::UNDERFLOW | Status::INEXACT;
+    auto_raise(status);
+    (value, status)
+}
+
+/// Mode-aware sliver result for `floor(x/ln2) = i64::MIN − 1`: the
+/// truth lies in `(MinPos/2, MinPos)` strictly, so nearest modes and
+/// `TowardPositive` give `MinPos` while the inward modes give +0.
+fn exp_underflow_sliver(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+    let value = match mode {
+        RoundingMode::TowardZero | RoundingMode::TowardNegative => {
+            BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1")
+        }
+        _ => {
+            BigFloat::try_new_zero(Sign::Positive, target_precision)
+                .expect("precision >= 1")
+                .next_up()
+                .0
+        }
+    };
+    let status = Status::UNDERFLOW | Status::INEXACT;
+    auto_raise(status);
+    (value, status)
+}
+
+/// `floor(x/ln2)` certified by interval arithmetic, for
+/// `|x| ∈ [2^62, 2^63)` (so the result magnitude is below `2^64`
+/// and fits i128 with room). Brackets `ln2` by the neighbours of
+/// its correctly rounded value, brackets `x` by directed rounding,
+/// takes the min/max over all directed quotients, and accepts when
+/// both ends floor to the same integer; otherwise the precision
+/// doubles up to a cap that SCALES WITH x's PRECISION: by the
+/// irrationality measure of `ln 2` (`μ(ln 2) ≤ 3.57455`,
+/// Marcovecchio 2009; `docs/references/`), a dyadic `x` of
+/// precision `px` cannot place `x/ln2` closer to an integer than
+/// `~2^(64 − μ·(px + 64))`, so a cap of `4·(px + 64) + 1024`
+/// bracket bits always certifies (`4 > μ` with slack — the same
+/// derivation as `exp_reduced_pinned`'s retry cap). A fixed
+/// `q = 1024` cap was REFUTED by this slice's adversarial
+/// verification: an 1100-bit `x` one part in `2^1037` from
+/// `i64::MIN·ln2` defeated the bracket, and the fall-through
+/// crossed a DISPATCH rim (sliver instead of window), returning a
+/// wrong `TowardZero` value and a spurious UNDERFLOW — unlike a
+/// one-off `k` in the window path, which is self-correcting. The
+/// fall-through return of the lower floor remains as the defensive
+/// total fallback, now genuinely unreachable by the measure bound.
+fn certified_floor_x_over_ln2(x: &BigFloat) -> i128 {
+    use core::cmp::Ordering;
+    let q_cap = 4u32
+        .saturating_mul(x.precision().saturating_add(64))
+        .saturating_add(1024);
+    let mut q = 128u32;
+    loop {
+        let ln_2 = ln_2_at(q);
+        let ln2_ends = [ln_2.next_down().0, ln_2.next_up().0];
+        let x_ends = [
+            x.round_to_precision(q, RoundingMode::TowardNegative)
+                .expect("q >= 1")
+                .0,
+            x.round_to_precision(q, RoundingMode::TowardPositive)
+                .expect("q >= 1")
+                .0,
+        ];
+        let mut t_lo: Option<BigFloat> = None;
+        let mut t_hi: Option<BigFloat> = None;
+        for xb in &x_ends {
+            for lb in &ln2_ends {
+                for m in [RoundingMode::TowardNegative, RoundingMode::TowardPositive] {
+                    let t = xb.div_round(lb, q, m).expect("q >= 1").0;
+                    let lower = t_lo
+                        .as_ref()
+                        .is_none_or(|c| matches!(t.partial_cmp(c).0, Some(Ordering::Less)));
+                    if lower {
+                        t_lo = Some(t.clone());
+                    }
+                    let higher = t_hi
+                        .as_ref()
+                        .is_none_or(|c| matches!(t.partial_cmp(c).0, Some(Ordering::Greater)));
+                    if higher {
+                        t_hi = Some(t);
+                    }
+                }
+            }
+        }
+        let f_lo = floor_to_i128(&t_lo.expect("loop ran"));
+        let f_hi = floor_to_i128(&t_hi.expect("loop ran"));
+        if f_lo == f_hi || q >= q_cap {
+            return f_lo;
+        }
+        q = q.saturating_mul(2).min(q_cap);
+    }
+}
+
+/// `floor(v)` as i128 for `|v| < 2^100` (caller domain: quotients of
+/// magnitude below `2^64`). Reads the integer part straight off the
+/// mantissa limbs.
+fn floor_to_i128(v: &BigFloat) -> i128 {
+    let (sign, e, mantissa) = match &v.class {
+        Class::Normal {
+            sign,
+            exponent,
+            mantissa,
+        } => (*sign, *exponent, mantissa),
+        _ => return 0,
+    };
+    if e < 0 {
+        // |v| < 1: floor is 0 (positive) or −1 (negative non-zero).
+        return if matches!(sign, Sign::Positive) {
+            0
+        } else {
+            -1
+        };
+    }
+    debug_assert!(e < 100, "floor_to_i128 caller domain");
+    let p = v.precision;
+    let m_int = extract_as_integer(mantissa, p);
+    // value = m · 2^(e − p + 1); integer part = m >> (p − 1 − e).
+    // p (≥ 128 in the caller) exceeds e + 1, so the shift is
+    // non-negative.
+    let s = p - 1 - (e as u32);
+    let int_part = shifted_low_u128(&m_int, s);
+    let frac_nonzero = low_bits_nonzero(&m_int, s);
+    if matches!(sign, Sign::Positive) {
+        int_part as i128
+    } else {
+        -(int_part as i128) - i128::from(frac_nonzero)
+    }
+}
+
+/// Bits `s..s+128` of a little-endian limb integer, as u128. The
+/// caller guarantees the value `m >> s` fits (its top set bit is
+/// below position 100).
+fn shifted_low_u128(m: &[u64], s: u32) -> u128 {
+    let limb = (s / 64) as usize;
+    let bit = s % 64;
+    let g = |i: usize| u128::from(m.get(i).copied().unwrap_or(0));
+    if bit == 0 {
+        g(limb) | (g(limb + 1) << 64)
+    } else {
+        (g(limb) >> bit) | (g(limb + 1) << (64 - bit)) | (g(limb + 2) << (128 - bit))
+    }
+}
+
+/// Any set bit strictly below position `s` of a little-endian limb
+/// integer.
+fn low_bits_nonzero(m: &[u64], s: u32) -> bool {
+    let limb = (s / 64) as usize;
+    let bit = s % 64;
+    if m.iter().take(limb.min(m.len())).any(|&l| l != 0) {
+        return true;
+    }
+    bit > 0 && limb < m.len() && (m[limb] & ((1u64 << bit) - 1)) != 0
+}
+
+/// The unscaled `exp(x − k·ln2)` at working precision `w`, with the
+/// reduction carried at a precision that absorbs the realized
+/// cancellation. `x` agrees with `k·ln2` in its leading ~63 bits by
+/// construction; an adversarial `x` (one built as a high-precision
+/// rounding of `k·ln2`) can agree far deeper, bounded by the
+/// irrationality measure of `ln 2` at roughly `μ·(precision(x) +
+/// 64)` bits (`μ(ln 2) ≤ 3.57455`, Marcovecchio 2009;
+/// `docs/references/`). Start with a 256-bit allowance (covers
+/// every `x` up to ~70 bits of precision outright) and grow on
+/// realized collapse up to the measure-derived cap; past the cap —
+/// unreachable by the bound — the collapsed reduction reproduces
+/// the Ziv-cap measure-zero caveat (a possible final-ulp error in
+/// directed modes) rather than a certified-garbage value.
+fn exp_reduced_pinned(x: &BigFloat, k: i64, w: u32) -> BigFloat {
+    let px = x.precision();
+    let cap = w
+        .saturating_add(4u32.saturating_mul(px.saturating_add(64)))
+        .saturating_add(1024);
+    let mut wr = w.saturating_add(256);
+    loop {
+        let x_w = x
+            .round_to_precision(wr, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let ln_2 = ln_2_at(wr);
+        let k_big = BigFloat::try_from_i64_exact(k, wr).expect("wr >= 64 holds any i64");
+        let (k_ln2, _) = k_big.mul(&ln_2, RoundingMode::NearestEven);
+        let (r_wide, _) = x_w.sub(&k_ln2, RoundingMode::NearestEven);
+
+        // Resolved when r clears the reduction's absolute noise
+        // floor 2^(e(k·ln2) + 1 − wr) by w + 8 bits.
+        let noise = match &k_ln2.class {
+            Class::Normal { exponent, .. } => exponent.saturating_sub(i64::from(wr)) + 1,
+            _ => i64::MIN,
+        };
+        let resolved = match &r_wide.class {
+            Class::Normal { exponent, .. } => *exponent >= noise.saturating_add(i64::from(w) + 8),
+            _ => false,
+        };
+        if resolved || wr >= cap {
+            let r = r_wide
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            return exp_taylor(&r, w);
+        }
+        wr = wr.saturating_mul(2).min(cap);
+    }
 }
 
 /// Round a `BigFloat` to the nearest `i64` (banker's rounding for
@@ -243,11 +599,21 @@ fn round_bigfloat_to_i64(v: &BigFloat) -> i64 {
         shift_right_round_to_u64(&m_int, (-scale) as u32)
     };
 
-    let signed = magnitude as i64;
+    // Saturate instead of `as i64`: a magnitude that rounded up to
+    // exactly 2^63 wrapped to i64::MIN here (pf-7z66 failure (b),
+    // the k-wrap window). The exponent-ceiling triage now keeps
+    // such magnitudes out of this path, but the helper's contract
+    // is saturating regardless.
     if matches!(sign, Sign::Negative) {
-        signed.wrapping_neg()
+        if magnitude >= 1u64 << 63 {
+            i64::MIN
+        } else {
+            -(magnitude as i64)
+        }
+    } else if magnitude > i64::MAX as u64 {
+        i64::MAX
     } else {
-        signed
+        magnitude as i64
     }
 }
 

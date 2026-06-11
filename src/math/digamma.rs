@@ -15,6 +15,8 @@
 //! - For `x ≥ z_min`: direct Stirling-like asymptotic via
 //!   [`super::gamma_stirling::stirling_digamma`].
 
+use core::cmp::Ordering;
+
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::rounding::RoundingMode;
@@ -167,7 +169,12 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         // ψ(1 − x) − π·cot(πx) is a near-total cancellation of O(1)
         // terms; boost the working precision by the realised
         // cancellation so the Ziv half-width stays sound (review
-        // 2026-05-29, root cause 2).
+        // 2026-05-29, root cause 2). Proximity to the negative-axis
+        // POLES additionally collapses inside π·x before sin/cos see
+        // it (the lgamma reflection analog, ADR-0098): pre-boost by
+        // the exactly-computed depth to the nearest integer.
+        let pole_boost = super::lgamma::pole_proximity_depth(x).saturating_add(8);
+        let working_prec = working_prec.saturating_add(pole_boost);
         return super::ziv::cancellation_boosted(working_prec, |w| {
             // Reflection: ψ(x) = ψ(1 − x) − π·cot(πx).
             let one = BigFloat::try_from_i64_exact(1, w).expect("precision >= 1");
@@ -188,7 +195,49 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         });
     }
 
-    // Positive branch: shift up if needed, then apply Stirling.
+    // Positive branch. Near ψ's positive root (1.46163…) the shift
+    // composition ψ(z) − Σ 1/(x+k) is a near-total cancellation
+    // whose depth is the input's proximity to the irrational root —
+    // bounded by the input precision and invisible to the relative
+    // half-width model (pf-wmv7, ADR-0097): the p100 rounding of the
+    // root certified garbage at target 53. Mirror the negative
+    // branch: inside the window [5/4, 7/4] boost by the realised
+    // cancellation, re-deriving z_min from the boosted precision (a
+    // z_min sized for the original target caps the asymptotic's
+    // truncation accuracy no matter the working precision). Outside
+    // the window |ψ| ≥ |ψ(5/4)| ≈ 2^-2.1, inside the guard's
+    // reach.
+    if in_positive_root_window(x) {
+        return super::ziv::cancellation_boosted(working_prec, |w| {
+            digamma_positive_at_w(x, z_min_for_target(w), w)
+        });
+    }
+    digamma_positive_at_w(x, z_min, working_prec).0
+}
+
+/// `x ∈ [5/4, 7/4]`: the window around ψ's positive root. Exact
+/// dyadic bounds compared on the original input, so the trigger is
+/// precision-independent.
+fn in_positive_root_window(x: &BigFloat) -> bool {
+    let quarter = |n: i64| {
+        BigFloat::try_from_i64_exact(n, 3)
+            .expect("3 bits hold 5 and 7")
+            .scale_by_pow2(-2)
+            .0
+    };
+    matches!(
+        x.partial_cmp(&quarter(5)).0,
+        Some(Ordering::Greater | Ordering::Equal)
+    ) && matches!(
+        x.partial_cmp(&quarter(7)).0,
+        Some(Ordering::Less | Ordering::Equal)
+    )
+}
+
+/// The positive-branch evaluation at one working precision,
+/// returning `(value, operand_scale)` for `cancellation_boosted`;
+/// callers outside the root window discard the scale.
+fn digamma_positive_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> (BigFloat, i64) {
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -207,7 +256,9 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     };
 
     if approx_x >= z_min {
-        stirling_digamma(&x_w, working_prec)
+        let v = stirling_digamma(&x_w, working_prec);
+        let scale = super::ziv::value_exponent(&v);
+        (v, scale)
     } else {
         let shifts = z_min - approx_x;
         let n_big =
@@ -226,7 +277,9 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
             let (next_sum, _) = sum_recip.add(&term, RoundingMode::NearestEven);
             sum_recip = next_sum;
         }
-        psi_z.sub(&sum_recip, RoundingMode::NearestEven).0
+        let (diff, _) = psi_z.sub(&sum_recip, RoundingMode::NearestEven);
+        let scale = super::ziv::value_exponent(&psi_z).max(super::ziv::value_exponent(&sum_recip));
+        (diff, scale)
     }
 }
 

@@ -499,6 +499,15 @@ name = "regression_review_2026_05_29"
 path = "tests/regression_review_2026_05_29.rs"
 required-features = ["std", "fmt", "big", "integrals", "airy", "bessel"]
 
+# Failing regression tests for the 2026-06-10 workspace deep review
+# (epic pf-8iji, arc R1: certified wrong answers when input-encoded
+# structure exceeds working precision). Same posture as the 05-29
+# lane: each test lands red in the same commit as its fix.
+[[test]]
+name = "regression_review_2026_06_10"
+path = "tests/regression_review_2026_06_10.rs"
+required-features = ["std", "fmt", "big", "agm", "trig", "specials", "zeta"]
+
 # Slice p1.3.8: Phase 1 Oracle sweep runner. Manual / release CI
 # only; not built per push. Per ADR-0034 this is the artifact for
 # the long-running exhaustive sweep that produces the v1.0

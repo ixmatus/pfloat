@@ -163,10 +163,38 @@ fn ln_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         return (zero, Status::OK);
     }
 
-    // x is finite positive normal, x ≠ 1. Correctly rounded under
-    // `mode` via the Ziv interval test (ADR-0022).
+    // x is finite positive normal, x ≠ 1. When x carries proximity
+    // to 1 deeper than the working precision, round_to_precision
+    // collapses x_w to exactly 1.0, the series returns exact 0, and
+    // half_width(0) = 0 certifies +0 on the first iteration —
+    // ln(1 − 2^-200 @p400) → 53 returned +0 with INEXACT (the
+    // residual pf-smcb family, found by this slice's adversarial
+    // verification; the tanh cancellation-to-zero class of
+    // ADR-0050). The depth is input-encoded and exactly computable
+    // (x − 1 is Sterbenz-exact for x ∈ [0.5, 2)): boost every Ziv
+    // working precision past it, the asin pattern of ADR-0097.
+    // Inputs without deep proximity pay nothing.
+    let proximity_boost = match &x.class {
+        Class::Normal { exponent: e, .. } if (-1..=0).contains(e) => {
+            let one_at_x =
+                BigFloat::try_from_i64_exact(1, x.precision.max(1)).expect("precision >= 1");
+            let (gap, _) = x.sub(&one_at_x, RoundingMode::NearestEven);
+            match &gap.class {
+                Class::Normal { exponent, .. } if *exponent <= -2 => {
+                    u32::try_from(exponent.saturating_neg())
+                        .unwrap_or(0)
+                        .saturating_add(8)
+                }
+                _ => 0,
+            }
+        }
+        _ => 0,
+    };
+
+    // Correctly rounded under `mode` via the Ziv interval test
+    // (ADR-0022).
     let (result, status) = ziv_round(
-        |working_prec| ln_at_w(x, working_prec),
+        |working_prec| ln_at_w(x, working_prec.saturating_add(proximity_boost)),
         target_precision,
         mode,
         LN_ERROR_GUARD,
@@ -201,14 +229,33 @@ fn ln_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
         _ => unreachable!("x_w is finite positive normal"),
     };
 
-    // Build m = x_w with exponent rewritten to 0. m ∈ [1, 2).
-    let m = BigFloat {
-        class: Class::Normal {
-            sign: Sign::Positive,
-            exponent: 0,
-            mantissa,
-        },
-        precision: prec_w,
+    // Build m and the binary exponent for the ln(x) = ln(m) + e·ln2
+    // composition. For x ∈ [0.5, 1) — e = −1 — the composition
+    // ln(2x) − ln2 is a catastrophic cancellation whose depth is the
+    // input's proximity to 1, invisible to the Ziv relative
+    // half-width model: ln(1 − 2^-80) at target 53 certified a value
+    // 2^15 ulps wrong (pf-smcb, ADR-0097). The atanh-series argument
+    // u = (x − 1)/(x + 1) is already inside the convergent range
+    // [−1/3, 0) there, so skip the reduction entirely: use m = x
+    // itself with e = 0, which removes the ln2 term — and with it
+    // the cancellation — instead of boosting precision to absorb it.
+    // (For e = 0 the reduction is already the identity; only e = −1
+    // manufactures cancellation, and every other e keeps |ln(x)|
+    // ≥ ln2·|e| − ln2 away from 0.)
+    let (m, e) = if e == -1 {
+        (x_w.clone(), 0)
+    } else {
+        (
+            BigFloat {
+                class: Class::Normal {
+                    sign: Sign::Positive,
+                    exponent: 0,
+                    mantissa,
+                },
+                precision: prec_w,
+            },
+            e,
+        )
     };
 
     // Compute u = (m - 1) / (m + 1) ∈ [0, 1/3].

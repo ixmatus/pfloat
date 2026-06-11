@@ -381,7 +381,14 @@ fn zeta_borwein(x: &BigFloat, target_precision: u32) -> BigFloat {
     // Conditioning: 1/(1−2^{1−s}) loses ≈ −log₂|s−1| bits near
     // s = 1. |s−1| ≥ 2^{exponent_of(s−1)}, so boost by that many
     // bits (plus slack). s = 1 itself is special-cased upstream.
-    let probe = target_precision.saturating_add(8);
+    // The probe must see the INPUT's full precision (pf-gg96,
+    // ADR-0098): rounding s to target+8 bits first collapsed
+    // s = 1 + 2^-5000 (p5001) to exactly 1, the boost came out 0,
+    // the working round then made 1 − 2^{1−s} exactly 0, and the
+    // discarded DIV_BY_ZERO became a certified +Inf with Status OK.
+    // s − 1 at max(input precision, probe) is Sterbenz-exact near 1
+    // and its exponent is what the boost needs everywhere else.
+    let probe = x.precision().max(target_precision.saturating_add(8));
     let one_probe = ci(1, probe);
     let (s_minus_1, _) = x
         .round_to_precision(probe, RoundingMode::NearestEven)
@@ -392,12 +399,21 @@ fn zeta_borwein(x: &BigFloat, target_precision: u32) -> BigFloat {
 
     // d_n ≈ 2^{2.543 n}; intermediate ≈ d_n·ζ, so absolute bits
     // needed ≈ p + log₂ d_n ≈ 2p. 2·target + 96 + the conditioning
-    // boost is the derived working precision.
+    // boost is the derived working precision. The cap scales with
+    // the input precision: the conditioning boost is bounded by the
+    // input-encoded proximity to 1, itself bounded by the input
+    // precision, so the cost stays proportional to what the caller
+    // already supplied (a fixed cap re-collapses deep inputs).
     let working = target_precision
         .saturating_mul(2)
         .saturating_add(96)
         .saturating_add(cond_boost)
-        .min(target_precision.saturating_mul(2).saturating_add(8192));
+        .min(
+            target_precision
+                .saturating_mul(2)
+                .saturating_add(8192)
+                .saturating_add(x.precision()),
+        );
 
     let sw = x
         .round_to_precision(working, RoundingMode::NearestEven)
@@ -452,6 +468,16 @@ fn zeta_borwein(x: &BigFloat, target_precision: u32) -> BigFloat {
     let (one_minus_s, _) = one.sub(&sw, RoundingMode::NearestEven);
     let (two_pow, _) = two.pow(&one_minus_s, RoundingMode::NearestEven);
     let (factor, _) = one.sub(&two_pow, RoundingMode::NearestEven);
+    // Defensive belt (pf-gg96, ADR-0098): a factor of exactly 0
+    // would make eta/factor an infinity whose half_width(inf) = 0
+    // the Ziv driver certifies silently — the collapsed-special
+    // trap. The input-precision conditioning boost above makes this
+    // unreachable (s ≠ 1 is dispatched upstream and the working
+    // precision now resolves 2^{1−s} ≠ 1), so refuse loudly with a
+    // NaN the driver cannot certify rather than divide.
+    if factor.is_zero() {
+        return BigFloat::try_new_quiet_nan(Sign::Positive, working, &[]).expect("precision >= 1");
+    }
     let (zeta, _) = eta.div(&factor, RoundingMode::NearestEven);
     zeta
 }
