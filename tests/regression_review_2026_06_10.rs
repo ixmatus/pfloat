@@ -433,3 +433,250 @@ fn exp_top_window_carry_overflows_mode_aware() {
         "monotonicity: exp(smaller) {r5} must be < exp(larger) {r_big}"
     );
 }
+
+// ---------------------------------------------------------------
+// pf-smcb / pf-rylv / pf-wmv7: one mechanism, three kernels. The
+// Ziv first-iteration error model (relative half-width
+// 2^-(w-guard)) is violated when the evaluation cancels against
+// structure carried in the input, and the interval test certifies
+// a wrong value. ln just below 1 cancelled ln(2x) against ln2
+// (2^15 ulps wrong); asin near 1 amplified the x^2 rounding error
+// through 1-x^2 (1.3e29 ulps@400 wrong); lgamma/digamma had the
+// RC2 cancellation boost on the negative reflection branch only,
+// leaving the positive-branch roots (1, 2, and digamma's 1.46...)
+// unprotected. All references mpmath 1.4.1 @4000 bits at the exact
+// dyadic inputs; expected values are bit-exact (parse the quoted
+// decimal at the target precision under the same mode).
+// ---------------------------------------------------------------
+
+/// Bit-exact comparison against a quoted high-precision decimal:
+/// parsing it at `p` under `mode` yields the correctly rounded
+/// target value (the quoted digits carry ~3x the target bits).
+fn assert_bit_exact(label: &str, got: &BigFloat, reference: &str, p: u32, mode: RoundingMode) {
+    let expected = BigFloat::parse_str(reference, p, mode).unwrap().0;
+    assert_eq!(
+        got.total_cmp(&expected),
+        Ordering::Equal,
+        "{label}: got {got}, want {expected}"
+    );
+}
+
+/// pf-smcb: ln(1 - 2^-80) at p100 -> 53. The broken kernel
+/// returned -8.2718061255904621e-25 (2^15 ulps wrong, certified).
+#[test]
+fn ln_just_below_one_resolves_the_cancellation() {
+    let one = BigFloat::try_from_i64_exact(1, 100).unwrap();
+    let (t, _) = scaled(1, 100, -80).round_to_precision(100, NE).unwrap();
+    let (x, sx) = one.sub(&t, NE);
+    assert!(sx.is_ok(), "1 - 2^-80 must be exact at p100");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = x.ln_round(53, mode).unwrap();
+        assert_bit_exact(
+            "ln(1-2^-80)",
+            &r,
+            "-8.27180612553027674871409034183845745366854817e-25",
+            53,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+    // Control on the other side of 1 (the e = 0 path, already
+    // correct before the fix): ln(1 + 2^-80).
+    let (xp, _) = one.add(&t, NE);
+    let (rp, _) = xp.ln_round(53, NE).unwrap();
+    assert_bit_exact(
+        "ln(1+2^-80)",
+        &rp,
+        "8.27180612553027674871408349956079961764769405e-25",
+        53,
+        NE,
+    );
+}
+
+/// pf-rylv, the REAL reproducer: the 1-x^2 amplification needs a
+/// DENSE delta. x = 1 − RN150(π)·2^-202 (exact at p400, span 350
+/// bits) makes x² span ~701 bits, past every early Ziv working
+/// precision; the x² rounding error, amplified ~2^100 through the
+/// 1−x² cancellation, certified a value ~2^18 ulps@400 wrong with
+/// INEXACT (verified by run pre-fix). The review's named input
+/// 1 − 2^-200 was a misadjudication: a single-bit delta gives the
+/// sparse x² = 1 − 2^-199 + 2^-400, exactly representable at the
+/// first working precision, and the recorded review output was in
+/// fact correctly rounded (limb-exact vs mpmath RN400) — the
+/// reviewer compared Display-truncated digits. That input stays
+/// below as a control. References: mpmath 1.4.1 @4000 bits at the
+/// exact dyadic inputs, quoted to 140 digits.
+#[test]
+fn asin_near_one_resolves_the_amplification() {
+    // RN150(pi) = 1120957716564506572603712206968581818470252692 · 2^-148.
+    let (pi150, sp) =
+        BigFloat::parse_str("1120957716564506572603712206968581818470252692", 150, NE).unwrap();
+    assert!(sp.is_ok());
+    let (delta, sd) = pi150.scale_by_pow2(-148 - 202);
+    assert!(sd.is_ok());
+    let one = BigFloat::try_from_i64_exact(1, 400).unwrap();
+    let (x, sx) = one.sub(&delta, NE);
+    assert!(sx.is_ok(), "1 - RN150(pi)*2^-202 must be exact at p400");
+    let (r, st) = x.asin_round(400, NE).unwrap();
+    assert_bit_exact(
+        "asin(1 - RN150(pi)*2^-202)",
+        &r,
+        "1.5707963267948966192313216916387627515736957026686211910464475327745659276006879479084314382208390440733644072398300969833046812798815176663",
+        400,
+        NE,
+    );
+    assert!(st.inexact());
+    // And the negative side mirrors through the sign flip.
+    let (rn, _) = x.negated().asin_round(400, NE).unwrap();
+    assert_eq!(rn.total_cmp(&r.negated()), Ordering::Equal);
+}
+
+/// Control (the review's named input): a single-bit delta is saved
+/// by sparseness and was never broken; it must stay correct.
+#[test]
+fn asin_near_one_sparse_delta_control() {
+    let one = BigFloat::try_from_i64_exact(1, 400).unwrap();
+    let (t, _) = scaled(1, 400, -200).round_to_precision(400, NE).unwrap();
+    let (x, sx) = one.sub(&t, NE);
+    assert!(sx.is_ok());
+    let (r, _) = x.asin_round(400, NE).unwrap();
+    assert_bit_exact(
+        "asin(1-2^-200)",
+        &r,
+        "1.5707963267948966192313216916386358243075952280870463612137523814655773123323791142996378956929584997632418679662861247156808759054053569442",
+        400,
+        NE,
+    );
+}
+
+/// pf-wmv7 (lgamma at the root x = 2): lgamma(2 + 2^-100) at
+/// p120 -> 53 returned a value with relative error 2.5e-3.
+#[test]
+fn lgamma_positive_root_at_two_is_boosted() {
+    let two = BigFloat::try_from_i64_exact(2, 120).unwrap();
+    let (t, _) = scaled(1, 120, -100).round_to_precision(120, NE).unwrap();
+    let (x, sx) = two.add(&t, NE);
+    assert!(sx.is_ok());
+    let (r, st) = x.lgamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "lgamma(2+2^-100)",
+        &r,
+        "3.33518033299040380894617486649025130707532963e-31",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// pf-wmv7 (lgamma at the root x = 1): lgamma(1 + 2^-90) at
+/// p100 -> 53, same mechanism at the other positive root.
+#[test]
+fn lgamma_positive_root_at_one_is_boosted() {
+    let one = BigFloat::try_from_i64_exact(1, 100).unwrap();
+    let (t, _) = scaled(1, 100, -90).round_to_precision(100, NE).unwrap();
+    let (x, sx) = one.add(&t, NE);
+    assert!(sx.is_ok());
+    let (r, _) = x.lgamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "lgamma(1+2^-90)",
+        &r,
+        "-4.66271100848098738705521743984492072391485789e-28",
+        53,
+        NE,
+    );
+}
+
+/// pf-wmv7 (digamma at its positive root 1.46163...): the p100
+/// parse of the root's 45-digit decimal sits ~2^-100.6 from the
+/// root, a ~103-bit cancellation against the O(1) composition
+/// terms — past what the first Ziv iteration's error model absorbs
+/// at target 53, so the broken kernel certified garbage.
+#[test]
+fn digamma_positive_root_is_boosted() {
+    let (x, _) =
+        BigFloat::parse_str("1.4616321449683623412626595423257213284681962", 100, NE).unwrap();
+    let (r, st) = x.digamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "digamma(RN100(root))",
+        &r,
+        "-4.91827109164659661351319016418437012176874373e-31",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// Shallow control at the same root: a 53-bit dyadic ~2^-53.3 away
+/// (psi = -9.24e-17). The ~57-bit cancellation stays inside the
+/// first iteration's headroom at target 53, so this was correct
+/// before the fix and must stay correct.
+#[test]
+fn digamma_positive_root_shallow_control() {
+    let (x, sx) = BigFloat::try_from_i64_exact(6582605983432255, 53)
+        .unwrap()
+        .scale_by_pow2(-52);
+    assert!(sx.is_ok());
+    let (r, _) = x.digamma_round(53, NE).unwrap();
+    assert_bit_exact(
+        "digamma(6582605983432255*2^-52)",
+        &r,
+        "-9.24126552172942751679235141515988768650772057e-17",
+        53,
+        NE,
+    );
+}
+
+/// Residual pf-smcb family found by the slice's adversarial
+/// verification: when the input's proximity-to-1 depth exceeds the
+/// working precision, `round_to_precision(x, w)` collapses `x_w` to
+/// exactly 1, the series returns exact 0, and `half_width(0) = 0`
+/// certifies +0 on the first iteration. Both sides of 1.
+#[test]
+fn ln_deep_proximity_to_one_does_not_collapse() {
+    let one = BigFloat::try_from_i64_exact(1, 400).unwrap();
+    let t = scaled(1, 400, -200);
+    let (below, sb) = one.sub(&t, NE);
+    assert!(sb.is_ok());
+    let (r_below, st_b) = below.ln_round(53, NE).unwrap();
+    assert_bit_exact(
+        "ln(1-2^-200 @p400 -> 53)",
+        &r_below,
+        "-6.22301527786114170714406405378012424059025217e-61",
+        53,
+        NE,
+    );
+    assert!(st_b.inexact());
+    let (above, sa) = one.add(&t, NE);
+    assert!(sa.is_ok());
+    let (r_above, _) = above.ln_round(53, NE).unwrap();
+    assert_bit_exact(
+        "ln(1+2^-200 @p400 -> 53)",
+        &r_above,
+        "6.22301527786114170714406405378012424059025217e-61",
+        53,
+        NE,
+    );
+}
+
+/// Residual pf-wmv7 family found by the slice's adversarial
+/// verification: the Spouge sum's internal alternating cancellation
+/// (~0.1·w bits, hidden behind the ln) was not charged into the
+/// reported operand scale, so the boost stopped short and
+/// lgamma(2 + 2^-500 @p520) -> 400 certified a value ~2^21 ulps
+/// wrong. Reference: mpmath 1.4.1 @4000 bits, 140 digits.
+#[test]
+fn lgamma_deep_root_charges_spouge_sum_cancellation() {
+    let two = BigFloat::try_from_i64_exact(2, 520).unwrap();
+    let (t, _) = scaled(1, 520, -500).round_to_precision(520, NE).unwrap();
+    let (x, sx) = two.add(&t, NE);
+    assert!(sx.is_ok());
+    let (r, st) = x.lgamma_round(400, NE).unwrap();
+    assert_bit_exact(
+        "lgamma(2+2^-500 @p520 -> 400)",
+        &r,
+        "1.2915792392103094830071831684709114814217799294928330931850290029682202696010604343104894315468756662115269681485459002743903561637456534562e-151",
+        400,
+        NE,
+    );
+    assert!(st.inexact());
+}

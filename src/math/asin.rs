@@ -129,6 +129,32 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         _ => {}
     }
 
+    // Near |x| = 1 the composition amplifies rounding error: x² is
+    // rounded to the working precision, and the subtraction 1 − x²
+    // promotes that absolute error to a relative error 2^d times
+    // larger (d = −exponent(1 − x²) ≈ the input's proximity depth
+    // to 1). The Ziv half-width model never sees the amplification
+    // and certifies a wrong value (pf-wmv7's sibling pf-rylv,
+    // ADR-0097): a dense 150-bit delta at depth 200 was ~2^18
+    // ulps@400 wrong. The depth is input-encoded and computable
+    // exactly up front — 1 − |x| is Sterbenz-exact at the input's
+    // precision for |x| ∈ [0.5, 1] — so boost the whole evaluation
+    // deterministically by d + 8 bits; no probing re-evaluation is
+    // needed, the boost is bounded by the input precision, and
+    // inputs away from ±1 (the overwhelming majority) pay nothing.
+    let one_at_x = BigFloat::try_from_i64_exact(1, x.precision().max(1)).expect("precision >= 1");
+    let (gap, _) = one_at_x.sub(&abs_x, RoundingMode::NearestEven);
+    let amplification_boost = match &gap.class {
+        Class::Normal { exponent, .. } if *exponent <= -2 => {
+            // d = −exponent(1 − x²) = −exponent((1−|x|)(1+|x|))
+            // ≈ −exponent(gap) − 1; +8 margin.
+            u32::try_from(exponent.saturating_neg().saturating_sub(1))
+                .unwrap_or(0)
+                .saturating_add(8)
+        }
+        _ => 0,
+    };
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the existing identity
     // `asin(|x|) = 2 · atan(|x| / (1 + sqrt(1 − |x|²)))` at working
@@ -138,6 +164,7 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // returned value's class matches the kernel's domain.
     let (result, status) = ziv_round(
         |w| {
+            let w = w.saturating_add(amplification_boost);
             let abs_x_w = abs_x
                 .round_to_precision(w, RoundingMode::NearestEven)
                 .expect("precision >= 1")

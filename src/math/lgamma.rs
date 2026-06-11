@@ -37,7 +37,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::gamma_stirling::{spouge_lgamma, stirling_lgamma};
+use super::gamma_stirling::{spouge_lgamma_scaled, stirling_lgamma};
 use super::pi_at;
 use super::ziv::ziv_round;
 use super::ziv_calibration::LGAMMA_ERROR_GUARD;
@@ -227,7 +227,56 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         });
     }
 
-    // Positive branch.
+    // Positive branch. Near the positive roots x = 1 and x = 2 the
+    // composition (Stirling-with-shift's lgamma(z) − ln(product), or
+    // Spouge's leading-minus-ln chain) is a near-total cancellation
+    // of terms whose scale grows with z_min, while the result shrinks
+    // with the input's proximity to the root — proximity the relative
+    // half-width model cannot see. lgamma(2 + 2^-100) certified a
+    // value with relative error 2.5e-3 (pf-wmv7, ADR-0097). Mirror
+    // the negative branch: inside the root windows, boost by the
+    // realised cancellation. The window [3/4, 5/4] ∪ [7/4, 9/4]
+    // bounds |lgamma| below ~2^-3.4 outside it, so the un-boosted
+    // path's cancellation stays inside the Ziv guard there; inside,
+    // z_min must be re-derived from the boosted precision (a z_min
+    // sized for the original target caps Stirling's truncation
+    // accuracy no matter how far the working precision grows).
+    if in_positive_root_window(x) {
+        return super::ziv::cancellation_boosted(working_prec, |w| {
+            lgamma_positive_at_w(x, z_min_for_target(w), w)
+        });
+    }
+    lgamma_positive_at_w(x, z_min, working_prec).0
+}
+
+/// `x ∈ [3/4, 5/4] ∪ [7/4, 9/4]`: the windows around lgamma's
+/// positive roots at 1 and 2. Exact dyadic bounds compared on the
+/// original input, so the trigger is precision-independent.
+fn in_positive_root_window(x: &BigFloat) -> bool {
+    let quarter = |n: i64| {
+        BigFloat::try_from_i64_exact(n, 4)
+            .expect("4 bits hold 3..=9")
+            .scale_by_pow2(-2)
+            .0
+    };
+    let within = |lo: i64, hi: i64| {
+        matches!(
+            x.partial_cmp(&quarter(lo)).0,
+            Some(Ordering::Greater | Ordering::Equal)
+        ) && matches!(
+            x.partial_cmp(&quarter(hi)).0,
+            Some(Ordering::Less | Ordering::Equal)
+        )
+    };
+    within(3, 5) || within(7, 9)
+}
+
+/// The positive-branch evaluation at one working precision,
+/// returning `(value, operand_scale)` — the scale of the largest
+/// term that cancelled to form the value, which is what
+/// `cancellation_boosted` charges the realised cancellation
+/// against. Callers outside the root windows discard the scale.
+fn lgamma_positive_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> (BigFloat, i64) {
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -240,7 +289,7 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     // parameter `a`. The 600-bit threshold leaves Stirling room for
     // its `+32`-bit margin from z_min_for_target and the Ziv guard.
     if working_prec > STIRLING_REACH_THRESHOLD {
-        return spouge_lgamma(&x_w, working_prec);
+        return spouge_lgamma_scaled(&x_w, working_prec);
     }
 
     // Decide whether to shift. We want z = x + n ≥ z_min.
@@ -260,7 +309,9 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     };
 
     if approx_x >= z_min {
-        stirling_lgamma(&x_w, working_prec)
+        let v = stirling_lgamma(&x_w, working_prec);
+        let scale = super::ziv::value_exponent(&v);
+        (v, scale)
     } else {
         // Number of upward shifts so x + n ≥ z_min.
         let shifts = z_min - approx_x;
@@ -268,7 +319,8 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
         let lgamma_z = stirling_lgamma(&shifted, working_prec);
         let ln_prod = product_ln(&x_w, shifts, working_prec);
         let (diff, _) = lgamma_z.sub(&ln_prod, RoundingMode::NearestEven);
-        diff
+        let scale = super::ziv::value_exponent(&lgamma_z).max(super::ziv::value_exponent(&ln_prod));
+        (diff, scale)
     }
 }
 
