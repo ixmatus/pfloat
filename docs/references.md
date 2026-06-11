@@ -17,8 +17,10 @@ method.
 
 ## Standards
 
-pfloat implements IEEE 754-2019. The clauses below are the ones the source
-cites; each governs a load bearing behavior.
+pfloat implements IEEE 754-2019
+([registry entry](references/ieee-754-2019.md): pointer only, paywalled,
+with the free proxy literature named). The clauses below are the ones
+the source cites; each governs a load bearing behavior.
 
 | Clause | Governs | Cited in |
 |---|---|---|
@@ -32,48 +34,67 @@ cites; each governs a load bearing behavior.
 | 9.2, 9.2.1 | Recommended function special cases; `hypot`, `rootn`, `cbrt` | the elementary modules, `pfloat-libm` |
 | 9.4, 9.4.3 | `gamma` special cases; `erf` and `erfc` special cases | `gamma.rs`, `erf.rs`, `erfc.rs` |
 
-IEEE 1788-2015 is the interval arithmetic standard. pfloat-ball v1.0 does not
-implement its unbounded inf sup interval face; 1788 is named only as the
-boundary marker for that future work (ADR-0076), and no 1788 clause numbers are
-in tree.
+IEEE 1788-2015 ([registry entry](references/ieee-1788-2015.md)) is the
+interval arithmetic standard. pfloat-ball v1.0 does not implement its
+unbounded inf sup interval face; 1788 is named only as the boundary
+marker for that future work (ADR-0076), and no 1788 clause numbers are
+in tree. The complex surface anchors its branch cut and special value
+behavior to C11 Annex G ([registry entry](references/iso-c-annex-g.md));
+the special function methods trace to the DLMF
+([registry entry](references/dlmf.md)).
 
 ## Algorithms and papers
 
-Each named external work, with the citation as it appears in tree.
+Each named external work has a registry entry under `docs/references/`
+carrying its full provenance: the verified citation, canonical and
+archived URLs, license, rot risk class, and the code paths that consume
+it. This list is the crosswalk; the entry is the record.
 
-- Spouge, J.L. "Computation of the Gamma, Digamma, and Trigamma Functions",
-  SIAM J. Numer. Anal. 31:1 (1994). The Spouge approximation, `gamma_stirling.rs`.
-- Pugh, G.R. "An Analysis of the Lanczos Gamma Approximation", PhD thesis, UBC
-  (2004), section 3. The Spouge error analysis, `gamma_stirling.rs`.
-- Toth, V.T. "Programmable Calculators: The Gamma Function" (2005). A reference
-  implementation pattern, `gamma_stirling.rs`.
-- Cohen, Rodriguez-Villegas, Zagier. "Convergence Acceleration of Alternating
-  Series", Experiment. Math. 9 (2000), 3 to 12. The zeta series acceleration,
-  `zeta.rs`, ADR-0026.
-- Borwein, P. "An Efficient Algorithm for the Riemann Zeta Function". `zeta.rs`,
-  ADR-0026.
-- Brent and Zimmermann. Modern Computer Arithmetic, Cambridge University Press
-  2010, section 1.3.3. Toom-3 interpolation, `ops/limbs.rs`, ADR-0061.
-- Bodrato and Zanoni. "Integer and Polynomial Multiplication: Towards Optimal
-  Toom-Cook Multiplication for Various Bases", WAIFI 2007. `ops/limbs.rs`,
-  ADR-0061.
-- Jebelean. "An algorithm for exact division", J. Symbolic Computation 15
-  (1993). Exact division by three, ADR-0061.
-- Knuth. The Art of Computer Programming, vol. 2, section 4.3.1, Algorithm D.
-  Base case division, `ops/limbs.rs`.
-- Burnikel and Ziegler. Recursive division (cited by name in tree; no title
-  quoted). `ops/limbs.rs`, ADR-0052.
-- Steele and White. "How to Print Floating-Point Numbers Accurately", PLDI 1990;
-  Burger and Dybvig. "Printing Floating-Point Numbers Quickly and Accurately",
-  PLDI 1996. The shortest decimal formatter, `fmt.rs`, ADR-0071.
-- Lefèvre and Muller. "Worst Cases for Correct Rounding of the Elementary
-  Functions in Double Precision", ARITH-15 (2001), preprint INRIA RR2000-35;
-  Muller et al. Handbook of Floating-Point Arithmetic, 2nd ed., Birkhäuser 2018;
-  Sibidanov and Zimmermann. CORE-MATH progress report, FPBench 2023. The hard to
-  round corpus, `docs/lefevre-muller-corpus-provenance.md`, ADR-0083.
-- Baker. Transcendental Number Theory, Cambridge University Press 1975, chapters
-  1 and 2. The Lindemann Weierstrass and Gelfond Schneider anchor for the
-  INEXACT discipline, ADR-0060, ADR-0063, ADR-0064.
+- Ziv's correct rounding strategy, the driver every transcendental lane
+  runs through: [ziv-1991](references/ziv-1991.md). `math/ziv.rs`.
+- The gamma family approximation: [spouge-1994](references/spouge-1994.md),
+  with the error analysis in [pugh-2004](references/pugh-2004.md) and the
+  evaluation pattern from [toth-gamma-2005](references/toth-gamma-2005.md).
+  `gamma_stirling.rs`.
+- Zeta acceleration:
+  [cohen-rodriguez-villegas-zagier-2000](references/cohen-rodriguez-villegas-zagier-2000.md)
+  and [borwein-zeta-1995](references/borwein-zeta-1995.md). `zeta.rs`, ADR-0026.
+- Multiplication and division kernels:
+  [brent-zimmermann-mca-2010](references/brent-zimmermann-mca-2010.md),
+  [bodrato-zanoni-2007](references/bodrato-zanoni-2007.md) (the registry entry
+  corrects a venue conflation the tree carried),
+  [jebelean-1993](references/jebelean-1993.md),
+  [knuth-taocp-v2](references/knuth-taocp-v2.md), and
+  [burnikel-ziegler-1998](references/burnikel-ziegler-1998.md).
+  `ops/limbs.rs`, ADR-0052, ADR-0061.
+- Trig argument reduction: [payne-hanek-1983](references/payne-hanek-1983.md).
+  `math/trig_reduce.rs`.
+- AGM constants: [brent-1976](references/brent-1976.md) (with Salamin's
+  companion result) and [brent-mcmillan-1980](references/brent-mcmillan-1980.md).
+  `math/agm.rs`, `math/agm_constants.rs`, ADR-0015, ADR-0017, ADR-0018.
+- The shortest decimal formatter:
+  [steele-white-1990](references/steele-white-1990.md) and
+  [burger-dybvig-1996](references/burger-dybvig-1996.md). `fmt.rs`, ADR-0071.
+- The hard to round corpus and its lineage:
+  [core-math-wc-corpus](references/core-math-wc-corpus.md) (the data pfloat
+  samples), descending from
+  [lefevre-muller-2001](references/lefevre-muller-2001.md) through
+  [vinc17-testlibm](references/vinc17-testlibm.md) and
+  [stehle-lefevre-zimmermann-2005](references/stehle-lefevre-zimmermann-2005.md),
+  surveyed in
+  [sibidanov-zimmermann-core-math-2023](references/sibidanov-zimmermann-core-math-2023.md)
+  and consolidated in print in
+  [muller-handbook-fp-2018](references/muller-handbook-fp-2018.md).
+  `docs/lefevre-muller-corpus-provenance.md`, ADR-0083.
+- The INEXACT discipline's transcendence anchor:
+  [baker-transcendental-1975](references/baker-transcendental-1975.md).
+  ADR-0060, ADR-0063, ADR-0064.
+- The verification oracles: [mpfr](references/mpfr.md),
+  [arb](references/arb.md), [mpmath](references/mpmath.md),
+  [maxima](references/maxima.md); the complex design reference
+  [mpc](references/mpc.md); and the deliberately absent conformance suite
+  [berkeley-testfloat](references/berkeley-testfloat.md), whose entry records
+  why no third party vector set applies at arbitrary precision.
 
 ## Special functions
 
@@ -133,9 +154,11 @@ The ball references are theorems and a design oracle, not equation numbers.
   cite; the in tree spec is the canonical statement.
 - Arb is the principal midpoint and radius design reference (Fredrik Johansson,
   "Arb: Efficient Arbitrary-Precision Midpoint-Radius Interval Arithmetic", IEEE
-  Transactions on Computers, 2017). The source names Johansson's work by its
-  behavior and identifiers (`mag_t`, relative accuracy bits, `printn`) rather
-  than by a transcribed title; the bibliographic anchor is supplied here.
+  Transactions on Computers, 2017;
+  [registry entry](references/johansson-arb-2017.md)). The source names
+  Johansson's work by its behavior and identifiers (`mag_t`, relative accuracy
+  bits, `printn`) rather than by a transcribed title; the bibliographic anchor
+  is supplied here.
   pfloat-ball diverges from Arb deliberately: a 64 bit radius significand where
   Arb uses 30 bits, for tightness and Kani verifiability (ADR-0074).
 - The transcendence theorems (Lindemann Weierstrass, Gelfond Schneider; Baker
@@ -145,6 +168,12 @@ The ball references are theorems and a design oracle, not equation numbers.
 
 ## See also
 
+- `docs/references/INDEX.md` for the per source registry this file links
+  into (one entry per external source, with archived URLs, licenses, rot
+  risk, and consumers; schema in `docs/references/README.md`, decision in
+  ADR-0094).
+- `docs/references/coverage-gaps.md` for the reconciliation of the README
+  disclosures' named failure modes against the recorded vector coverage.
 - `docs/algorithms.md` for the narrative reading guide into these algorithms.
 - `docs/decisions/` for the architecture decision records cited above.
 - `docs/lefevre-muller-corpus-provenance.md` for the hard to round corpus

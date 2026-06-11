@@ -5,7 +5,9 @@ does, the one idea that makes it work, the primary source it derives from, and
 the architecture decision record that holds the full rationale. The ADRs under
 `docs/decisions/` are the durable account; this page orients you into them and
 points at the module that implements each piece. ADR numbers are stable; file
-paths are a convenience and may drift.
+paths are a convenience and may drift. Every primary source named here has a
+provenance record (verified citation, archived URL, license, rot risk) in the
+reference registry at `docs/references/` (see its `INDEX.md`).
 
 The three crates share one engine. `pfloat` is the scalar arithmetic and the
 correctly rounded function kernels; `pfloat-ball` wraps a pfloat scalar in a

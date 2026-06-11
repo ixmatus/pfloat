@@ -284,3 +284,8 @@ jobs:
       # surface, so a new ball operation cannot ship without a declared
       # posture. ADR-0087.
       - run: ./scripts/ball-enclosure-status.sh --check
+      # Keep the reference registry (docs/references/) schema-complete
+      # and its INDEX.md in lockstep with the entry files: frontmatter
+      # keys, enums, consumer-path existence, fixity hashes. Offline
+      # only; Wayback archiving is a mining-time action. ADR-0094.
+      - run: ./scripts/references-index.sh --check
