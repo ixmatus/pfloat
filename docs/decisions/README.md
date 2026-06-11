@@ -148,3 +148,5 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0096: exp at the exponent rim — certified dispatch and pinned reduction](0096-exp-exponent-ceiling.md) (accepted)
 - [ADR-0097: input-encoded cancellation at ln/asin/lgamma/digamma — three fixes, one mechanism](0097-cancellation-boost-positive-roots.md) (accepted)
 - [ADR-0098: input-structure-aware resolution for zeta, trig reduction, and beta](0098-input-structure-aware-dispatch.md) (accepted)
+- [ADR-0099: Ball widening at the exponent rim and the parse-budget collapse](0099-ball-rim-saturation-soundness.md) (accepted)
+- [ADR-0100: clog's enclosure guard derives its cap from the input structure](0100-clog-structure-derived-enclosure-cap.md) (accepted)

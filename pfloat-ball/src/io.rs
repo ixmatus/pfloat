@@ -106,17 +106,71 @@ impl Ball<BigFloat> {
 
         // Bracket the exact decimal value: round it toward −∞ and +∞ to
         // `precision` bits. lo ≤ value ≤ hi.
-        let (lo, _) = BigFloat::parse_str(s, precision.max(1), RoundingMode::TowardNegative)
-            .map_err(|_| BallParseError::Invalid)?;
-        let (hi, _) = BigFloat::parse_str(s, precision.max(1), RoundingMode::TowardPositive)
-            .map_err(|_| BallParseError::Invalid)?;
+        let (mut lo, st_lo) =
+            BigFloat::parse_str(s, precision.max(1), RoundingMode::TowardNegative)
+                .map_err(|_| BallParseError::Invalid)?;
+        let (mut hi, st_hi) =
+            BigFloat::parse_str(s, precision.max(1), RoundingMode::TowardPositive)
+                .map_err(|_| BallParseError::Invalid)?;
         if !lo.is_finite() || !hi.is_finite() {
             return Err(BallParseError::NonFinite);
+        }
+        // pfloat's parser saturates past-budget tiny magnitudes to ±0
+        // mode-blind (pf-mw6u) but flags UNDERFLOW; the directed pair
+        // then collapses to the exact [0, 0] ball, excluding the
+        // nonzero truth — Law 1 unsoundness (pf-1bqy, ADR-0099).
+        // Route the flagged collapse through a containing interval by
+        // replacing the collapsed end with a cheap decimal-magnitude
+        // bound: |value| < 10^(E + D + 1) ≤ 2^bound_exp for E the
+        // literal's decimal exponent and D its digit count. Loose
+        // (the truth is far below the bound) but sound; tightness
+        // returns when pf-mw6u lands a mode-aware parse.
+        if st_lo.underflow() || st_hi.underflow() {
+            let bound = decimal_magnitude_bound(s, precision.max(1))?;
+            let negative = s.trim_start().starts_with('-');
+            if negative && lo.is_zero() {
+                lo = bound.negated();
+            }
+            if !negative && hi.is_zero() {
+                hi = bound;
+            }
         }
         // from_interval builds the sound enclosing ball; lo ≤ hi by the
         // directed-rounding order, so it cannot be reversed.
         Self::from_interval(&lo, &hi).map_err(|_| BallParseError::Invalid)
     }
+}
+
+/// A cheap power-of-two upper bound on a decimal literal's magnitude:
+/// `|value| < 10^(E + D + 1) ≤ 2^⌈(E + D + 1)·log2(10)⌉ + 1` with `E`
+/// the (already budget-checked) exponent field and `D` the digit
+/// count. The rational over/under-estimates of `log2(10)` are chosen
+/// per sign so integer arithmetic never rounds the bound downward.
+fn decimal_magnitude_bound(s: &str, precision: u32) -> Result<BigFloat, BallParseError> {
+    let epos = s.bytes().position(|b| b == b'e' || b == b'E');
+    let (mant_part, exp_val): (&str, i64) = match epos {
+        Some(i) => {
+            let exp_part = &s[i + 1..];
+            let negative_exp = exp_part.starts_with('-');
+            let digits = exp_part.strip_prefix(['+', '-']).unwrap_or(exp_part);
+            let mag: i64 = digits.parse().map_err(|_| BallParseError::Invalid)?;
+            (&s[..i], if negative_exp { -mag } else { mag })
+        }
+        None => (s, 0),
+    };
+    let digit_count = i64::try_from(mant_part.bytes().filter(u8::is_ascii_digit).count())
+        .map_err(|_| BallParseError::TooLong)?;
+    let k = exp_val.saturating_add(digit_count).saturating_add(1);
+    // log2(10) = 3.32192809…: 33220/10000 over-estimates, 33219/10000
+    // under-estimates; pick the direction that rounds the bound UP.
+    let bound_exp = if k >= 0 {
+        k.saturating_mul(33220) / 10000 + 1
+    } else {
+        k.saturating_mul(33219) / 10000 + 1
+    };
+    let one = BigFloat::try_from_i64_exact(1, precision).map_err(|_| BallParseError::Invalid)?;
+    let (bound, _) = one.scale_by_pow2(bound_exp);
+    Ok(bound)
 }
 
 /// Reject a decimal literal whose `e±N` exponent magnitude exceeds
