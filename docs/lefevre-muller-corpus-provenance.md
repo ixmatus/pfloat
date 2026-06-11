@@ -1,5 +1,10 @@
 # Hard-to-round-case corpus: provenance
 
+The schema-shaped registry record for this corpus (license, archive
+snapshots, fixity hash, coverage gaps) lives at
+`docs/references/core-math-wc-corpus.md`; this document remains the
+narrative depth behind it.
+
 This document records the provenance for pfloat's hard-to-round-case
 test corpus, shipped as a differential tier under
 `tests/differential_lefevre_muller.rs`. The file name honours the
