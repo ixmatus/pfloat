@@ -9,8 +9,12 @@
 //!
 //! starting from `a_0 = a` and `b_0 = b`, converges quadratically to
 //! a common limit: the AGM. `O(log p)` iterations suffice at working
-//! precision `p`; the loop terminates once `|a_n − b_n|` falls below
-//! `2^(−p_work − 4)`.
+//! precision `p` once the iterates are within a factor of two of
+//! each other; the loop terminates once the gap `|a_n − b_n|` falls
+//! below a few ulps *of the iterate magnitude* (ADR-0095: an
+//! absolute floor certified the first arithmetic mean for small
+//! operands, and a sub-ulp relative floor would be unsatisfiable on
+//! a `p`-bit grid).
 //!
 //! The kernel computes at a working precision of
 //! `target_precision + 64` bits, then rounds back. The 64-bit guard
@@ -192,22 +196,62 @@ fn agm_kernel(
                 .expect("precision >= 1")
                 .0;
 
-            // Canonicalize so a_n >= b_n. The iteration is symmetric
-            // in (a, b), so this only tidies the convergence trace.
+            // Canonicalize so a_n >= b_n. Load-bearing for the
+            // convergence test below: it reads a_n's exponent as the
+            // operand magnitude, and AM >= GM keeps a_n the larger
+            // iterate from here on.
             if matches!(a_n.partial_cmp(&b_n).0, Some(Ordering::Less)) {
                 core::mem::swap(&mut a_n, &mut b_n);
             }
 
-            let max_iter = 64u32;
-            let convergence_exponent_floor = -i64::from(w) - 4;
+            // Iteration budget, a derived backstop (pf-ddfl,
+            // ADR-0095). Two regimes: while a_n/b_n = R > 2, one
+            // step maps R to at most sqrt(R), halving log2(R);
+            // exponents span i64, so log2(R) < 2^65 needs at most
+            // 65 halvings. Once R <= 2 the relative gap squares
+            // each step (quadratic convergence), so reaching the
+            // few-ulp floor below for any supported w < 2^32 needs
+            // at most log2(2^32) + 1 = 33 more. 65 + 33 + 6 slack
+            // = 104. The floor normally exits the loop well before
+            // the cap; the cap-exit average is still sound (the
+            // pair is within a few ulps, see below).
+            let max_iter = 104u32;
             let two = BigFloat::try_from_i64_exact(2, w).expect("precision >= 1");
 
             for _ in 0..max_iter {
                 let (diff, _) = a_n.sub(&b_n, RoundingMode::NearestEven);
                 let abs_diff = diff.abs();
-                let converged = match &abs_diff.class {
-                    Class::Zero { .. } => true,
-                    Class::Normal { exponent, .. } => *exponent < convergence_exponent_floor,
+                // Convergence is RELATIVE to the iterate magnitude
+                // (pf-ddfl, ADR-0095): converge once the gap falls
+                // below 4 ulps of a_n, i.e. gap exponent de <
+                // exponent(a_n) - w + 3 (ulp(a_n) = 2^(ae - w + 1)).
+                // With b_n <= AGM <= a_n the returned midpoint
+                // m = (a_n + b_n)/2 satisfies |m - AGM| <=
+                // (a_n - b_n)/2 < 2 ulp = 2^(ae-w+2), a relative
+                // error under 2^-(w-3) — more than 2^20 inside the
+                // calibrated AGM_ERROR_GUARD = 24 half-width. The
+                // threshold must sit a few ulps ABOVE the working
+                // grid: two distinct w-bit values can never differ
+                // by less than 2^(ae-w) relative, so any floor at
+                // or below one ulp is unsatisfiable and the loop
+                // would always run to the cap on iterates that
+                // oscillate within an ulp instead of becoming
+                // bit-identical (caught by the pf-ddfl adversarial
+                // verification). The previous ABSOLUTE floor
+                // -(w + 4) certified the first arithmetic mean for
+                // small operands (0.5% relative error with Status
+                // OK at 2^-300). saturating_sub errs toward more
+                // iterations, never premature convergence. The
+                // relative bound holds at every scale the loop's
+                // arithmetic represents; operand exponents within
+                // ~2^62 of the i64 rim saturate inside mul/sqrt
+                // with their statuses discarded here, a separate
+                // pre-existing defect (pf-a77o/pf-kh3z arc).
+                let converged = match (&abs_diff.class, &a_n.class) {
+                    (Class::Zero { .. }, _) => true,
+                    (Class::Normal { exponent: de, .. }, Class::Normal { exponent: ae, .. }) => {
+                        *de < ae.saturating_sub(i64::from(w) - 3)
+                    }
                     _ => false,
                 };
                 if converged {
@@ -222,9 +266,8 @@ fn agm_kernel(
                 b_n = gm;
             }
 
-            // After convergence the AM and GM agree to working
-            // precision; averaging them absorbs any final 1-ULP
-            // separation.
+            // After convergence (or the cap) the pair is within a
+            // few ulps; averaging absorbs the final separation.
             let (sum, _) = a_n.add(&b_n, RoundingMode::NearestEven);
             sum.div(&two, RoundingMode::NearestEven).0
         },
