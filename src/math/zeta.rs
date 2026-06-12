@@ -257,11 +257,7 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             // flags INEXACT everywhere, so the force is a no-op hardening
             // against regression; its worst-case soundness rests on the
             // irrationality of ζ at the non-special set (ζ(5) is open).
-            let status = if matches!(result.class, Class::Normal { .. }) {
-                status | Status::INEXACT
-            } else {
-                status
-            };
+            let status = super::force_transcendental_inexact(&result, status);
             auto_raise(status);
             (result, status)
         }

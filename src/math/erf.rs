@@ -165,11 +165,7 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // algebraic is transcendental), hence irrational, hence INEXACT even
     // where it rounds onto a grid value (pf-uqd1, ADR-0063). erf(±0) = ±0
     // and erf(±∞) = ±1 are dispatched above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

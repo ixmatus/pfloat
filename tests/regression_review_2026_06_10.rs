@@ -1477,6 +1477,81 @@ fn hypot_hole_high_precision_resolves_through_the_deep_rung() {
     );
 }
 
+// ---------------------------------------------------------------
+// pf-9761 (arc R2, slice R2.3, ADR-0105): acos near 1 certified
+// +0 WITH STATUS OK. acos does not compose asin: its two-branch
+// atan form computes 1 − x_w at the Ziv working precision with no
+// input-derived boost, so input-encoded proximity to 1 collapses
+// x_w to exactly 1, the evaluation returns exact 0,
+// half_width(0) = 0 certifies on the first rung, and the
+// defensive INEXACT force skipped non-Normal results — the wrong
+// zero claimed exactness. Fix: the ADR-0097 asin gap-boost on
+// both branches (1 − |x| Sterbenz-exact at the input precision),
+// plus the class-wide posture fix: the INEXACT force now covers
+// Zero results (every kernel in the family pre-dispatches its
+// exact-zero inputs, so a post-driver Zero is always a collapse).
+// References mpmath 1.4.1 @4000 bits at the exact dyadic inputs.
+// ---------------------------------------------------------------
+
+/// pf-9761, the named reproducer: acos(1 − RN150(π)·2^-202 @p400)
+/// → 53 returned +0 with Status OK (truth ≈ 9.887e-31). The same
+/// construction as the asin dense-delta row.
+#[test]
+fn acos_near_one_resolves_input_encoded_proximity() {
+    let (pi150, sp) =
+        BigFloat::parse_str("1120957716564506572603712206968581818470252692", 150, NE).unwrap();
+    assert!(sp.is_ok());
+    let (delta, sd) = pi150.scale_by_pow2(-148 - 202);
+    assert!(sd.is_ok());
+    let one = BigFloat::try_from_i64_exact(1, 400).unwrap();
+    let (x, sx) = one.sub(&delta, NE);
+    assert!(sx.is_ok(), "1 - RN150(pi)*2^-202 must be exact at p400");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = x.acos_round(53, mode).unwrap();
+        assert!(!r.is_zero(), "acos collapsed to zero ({mode:?})");
+        assert_bit_exact(
+            "acos(1 - RN150(pi)*2^-202)",
+            &r,
+            "9.8869052488899701893171944102476337934227554241655e-31",
+            53,
+            mode,
+        );
+        assert!(
+            st.inexact(),
+            "{mode:?}: INEXACT missing (OK was the defect)"
+        );
+    }
+    // The negative branch carries the same collapse shape through
+    // 1 + x_w; acos(−(1 − δ)) = π − acos(1 − δ).
+    let (rn, stn) = x.negated().acos_round(53, NE).unwrap();
+    assert_bit_exact(
+        "acos(-(1 - RN150(pi)*2^-202))",
+        &rn,
+        "3.1415926535897932384626433832785141936722804023562",
+        53,
+        NE,
+    );
+    assert!(stn.inexact());
+}
+
+/// Shallow control (inside the first working precision's reach):
+/// acos(1 − 2^-40 @p53), correct before the fix and bit-pinned.
+#[test]
+fn acos_near_one_shallow_control() {
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let (x, sx) = one.sub(&scaled(1, 53, -40), NE);
+    assert!(sx.is_ok());
+    let (r, st) = x.acos_round(53, NE).unwrap();
+    assert_bit_exact(
+        "acos(1-2^-40)",
+        &r,
+        "0.0000013486991523487112367441192231378786709130652500137",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
 /// ADR-0101 verifier round 2: exp2 at the exact integers past the
 /// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
 /// exactly representable: `Status::OK`, every mode. One deeper,

@@ -185,11 +185,7 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // onto a grid value (pf-uqd1, ADR-0063). atan(±0) = ±0 is dispatched
     // above; atan(±∞) = ±π/2 already carries INEXACT from
     // pi_over_2_at_round (the irrational constant rounds inexactly).
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

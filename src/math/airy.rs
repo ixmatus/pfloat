@@ -286,11 +286,7 @@ fn airy_kernel(
     // INEXACT even where the working-precision evaluation lands on a grid
     // value (ADR-0064). The x = 0 constants are forced on the zero arm
     // above; the ±∞ limits are dispatched and are not Class::Normal.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

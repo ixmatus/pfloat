@@ -211,11 +211,7 @@ fn reciprocal_via_ziv(
     // rounds onto a grid value (pf-uqd1, ADR-0063). The only exact input,
     // sec(±0) = 1, and the cot/csc poles at 0 are dispatched in the
     // kernels above before this helper runs.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

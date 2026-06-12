@@ -154,11 +154,7 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // Weierstrass), hence irrational, hence INEXACT even where it rounds
     // onto a grid value (pf-uqd1, ADR-0063). tan(±0) = ±0 is the only
     // exact input and is special-cased above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

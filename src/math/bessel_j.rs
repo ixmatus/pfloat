@@ -228,11 +228,7 @@ fn bessel_j_kernel(
     // grid value (ADR-0064). J₀(0)=1, Jₙ(0)=0 (n ≠ 0), and the ±∞
     // envelope limits are dispatched above; only finite-normal x ≠ 0
     // reaches here.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

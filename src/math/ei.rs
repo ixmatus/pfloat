@@ -147,19 +147,19 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         mode,
         EI_ERROR_GUARD,
     );
-    // Ei(x) for finite-normal x ≠ 0 is transcendental (the exponential
-    // integral takes transcendental values at nonzero algebraic
-    // arguments), so the rounded result is INEXACT even where the
-    // working-precision evaluation lands on a grid value (ADR-0064).
-    // Ei's real zero at x ≈ 0.3725 is itself transcendental, so no
-    // dyadic input yields an exact zero. Ei(±0) = −∞ (pole) and the
+    // Ei(x) at nonzero algebraic arguments is γ-entangled
+    // (Ei(x) = γ + ln|x| + an E-function value), so its irrationality
+    // there is NOT a theorem; the INEXACT force is conditionally
+    // sound — the ADR-0066 γ/ζ(5) posture (ADR-0064's recorded scope
+    // split; ADR-0105) — even where the working-precision evaluation
+    // lands on a grid value.
+    // Ei's real zero at x ≈ 0.3725 is not proven irrational, so "no
+    // dyadic input yields an exact zero" holds conditionally on that
+    // constant ∉ ℚ₂ — the ADR-0066 conditional-soundness posture, the
+    // γ/ζ(5) class (ADR-0105). Ei(±0) = −∞ (pole) and the
     // exact limits Ei(+∞) = +∞, Ei(−∞) = −0 are dispatched above and
     // are not Class::Normal, so they keep their status.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

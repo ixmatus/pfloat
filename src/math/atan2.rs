@@ -329,11 +329,7 @@ fn atan2_kernel(
     // The only exact result, atan2(+0, x > 0) = +0, and the axis cases
     // (±π/2, ±π, ±π/4, ±3π/4 via pi_*_at_round, already INEXACT) are
     // dispatched above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

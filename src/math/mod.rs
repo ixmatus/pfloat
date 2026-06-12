@@ -226,6 +226,26 @@ pub(crate) const LN2_LIMBS_1024: [u64; 16] = [
 #[cfg(feature = "exp-log")]
 pub(crate) const LN2_TABLE_PRECISION_CAP: u32 = 1024;
 
+/// ADR-0063's unconditional-INEXACT force, extended to the
+/// zero-result gap (pf-9761, ADR-0105). On every kernel routed
+/// through this helper the exact-zero INPUTS are dispatched before
+/// the Ziv driver and the truth at any other input is nonzero
+/// (transcendence, or the per-kernel audit recorded in ADR-0105), so
+/// a `Zero` result reaching this point can only be input-encoded
+/// collapse — certifying it exact was the +0-with-Status-OK class.
+/// Infinity and NaN results keep their flags: the rim and domain
+/// dispatches own those.
+#[allow(dead_code)] // unused under combos without a Ziv consumer
+pub(super) fn force_transcendental_inexact(
+    result: &BigFloat,
+    status: crate::status::Status,
+) -> crate::status::Status {
+    match &result.class {
+        Class::Normal { .. } | Class::Zero { .. } => status | crate::status::Status::INEXACT,
+        _ => status,
+    }
+}
+
 /// Returns `ln(2)` rounded to the requested precision.
 ///
 /// For `prec <= LN2_TABLE_PRECISION_CAP` (1024 post slice 7b2) the

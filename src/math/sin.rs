@@ -185,11 +185,7 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // value — e.g. a huge argument whose reduced residual collapses
     // (pf-njs5 under-report, ADR-0060). sin(±0) = ±0 is the only exact
     // input and is special-cased above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

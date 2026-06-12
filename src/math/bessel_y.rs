@@ -282,11 +282,7 @@ fn bessel_y_kernel(
             // is therefore INEXACT even where the working-precision
             // evaluation lands on a grid value. The +0 pole and the ±∞
             // limits are dispatched above.
-            let status = if matches!(result.class, Class::Normal { .. }) {
-                status | Status::INEXACT
-            } else {
-                status
-            };
+            let status = super::force_transcendental_inexact(&result, status);
             auto_raise(status);
             (result, status)
         }

@@ -165,11 +165,7 @@ fn lgamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Bi
     // INEXACT everywhere, so the force is a no-op hardening against
     // regression; its worst-case soundness rests on the irrationality of
     // ln|Γ| at dyadic arguments, not proven for every dyadic.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }
