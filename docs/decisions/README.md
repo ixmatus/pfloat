@@ -153,3 +153,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0101: the exponent-rim dispatch composed through the shell and the exp-family siblings](0101-rim-composition-through-shell-and-siblings.md) (accepted)
 - [ADR-0102: input-encoded depth dispatches through the infinitesimal rounding — hypot, atan, atan2](0102-input-depth-infinitesimal-dispatch.md) (accepted)
 - [ADR-0103: the Ziv driver takes a lazy input-derived certification depth](0103-ziv-depth-hint.md) (accepted)
+- [ADR-0104: the tiny-x family gains input-precision arms and depth hints](0104-tiny-x-family-precision-arms.md) (accepted)

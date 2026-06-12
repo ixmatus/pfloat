@@ -34,7 +34,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::ATAN2_ERROR_GUARD;
 use super::{pi_at, pi_at_round, pi_over_2_at_round, signed_constant_at_round};
 
@@ -272,7 +272,7 @@ fn atan2_kernel(
     // shift) at working precision `w` under NE. The quadrant shift
     // for x < 0 uses pi_at(w) so the working-precision π scales
     // with the Ziv guard.
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| {
             let y_w = y
                 .round_to_precision(w, RoundingMode::NearestEven)
@@ -301,6 +301,27 @@ fn atan2_kernel(
         target_precision,
         mode,
         ATAN2_ERROR_GUARD,
+        // Band-residue certification depth (pf-fbjn, ADR-0104): a
+        // tiny INEXACT ratio whose structure outruns the legacy cap
+        // resolves at the deep rung, which must reach the ratio's
+        // cubic correction depth and the operands' combined
+        // precision (the ratio's grid position is decided by the
+        // exact remainder, whose depth those bound). x < 0 keeps
+        // the quadrant shift (result ≈ ±π; no tiny collapse), so
+        // the hint stays 0 there. Lazy: free unless the schedule
+        // exhausts.
+        || match (&y.class, &x.class) {
+            (Class::Normal { exponent: ey, .. }, Class::Normal { exponent: ex, .. })
+                if matches!(x_sign, Sign::Positive) && *ey < *ex =>
+            {
+                let two_abs_et = ey.saturating_sub(*ex).saturating_sub(1).saturating_mul(-2);
+                u32::try_from(two_abs_et)
+                    .unwrap_or(u32::MAX)
+                    .max(y.precision.saturating_add(x.precision))
+                    .saturating_add(64)
+            }
+            _ => 0,
+        },
     );
     // atan2(y, x) for finite nonzero y and x off the axes is
     // transcendental (Lindemann–Weierstrass), hence irrational, hence

@@ -29,7 +29,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::ATAN_ERROR_GUARD;
 use super::{pi_over_2_at, pi_over_2_at_round, signed_constant_at_round};
 
@@ -152,7 +152,7 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // returned value's class matches the kernel's domain.
     let is_negative = matches!(x.sign(), Sign::Negative);
     let abs_x = x.abs();
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| {
             let result = atan_finite_unsigned(&abs_x, w);
             if is_negative {
@@ -164,6 +164,21 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         target_precision,
         mode,
         ATAN_ERROR_GUARD,
+        // Band-residue certification depth (pf-fbjn, ADR-0104): a
+        // tiny input whose precision exceeds the dispatch arm above
+        // resolves at the deep rung, which must reach both the
+        // input's precision and the cubic correction's depth. Lazy:
+        // free unless the schedule exhausts.
+        || {
+            if e < 0 {
+                u32::try_from(e.saturating_mul(-5))
+                    .unwrap_or(u32::MAX)
+                    .max(x.precision)
+                    .saturating_add(64)
+            } else {
+                0
+            }
+        },
     );
     // atan(x) for finite normal x ≠ 0 is transcendental (Lindemann–
     // Weierstrass), hence irrational, hence INEXACT even where it rounds
