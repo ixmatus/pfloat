@@ -125,6 +125,40 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         return (v, Status::OK);
     }
 
+    // Exponent-rim triage (pf-qm0h family, ADR-0101). The composition
+    // below discards exp's Status, so exp's mode-aware rim dispatch
+    // (ADR-0096) arrived as a bare +inf/+0 that half_width(non-Normal)
+    // = 0 certified with INEXACT only. Unlike exp2, the result
+    // exponent floor(x·log2 10) is not exact integer arithmetic, so
+    // the rim FORWARDS through exp itself: the product x·ln10 is
+    // computed once at max(precision(x), target) + 128 bits — its
+    // relative error sits below the target by ≥126 bits, so exp's
+    // certified rim machinery classifies and rounds it, and the
+    // result differs from the true 10^x only on inputs within
+    // 2^-(target+126) of a rounding boundary (the documented
+    // measure-zero Ziv-caveat class). exp's status (OVERFLOW/
+    // UNDERFLOW/INEXACT, mode-aware values) is FORWARDED, not
+    // discarded. e_x ≤ 59 keeps the established path untouched
+    // (|x·log2 10| < 2^61.5, clear of exp's own 2^62 triage).
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials handled above"),
+    };
+    if e_x >= 60 {
+        let prod_prec = x.precision().max(target_precision).saturating_add(128);
+        let x_w = x
+            .round_to_precision(prod_prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let ln_10 = ln_10_at(prod_prec);
+        let (product, _) = x_w.mul(&ln_10, RoundingMode::NearestEven);
+        let (result, status) = product.exp_round(target_precision, mode);
+        // 10^x for non-exact-set x is irrational (the dispatch above
+        // owns the exact set), and the rim dispatches already carry
+        // INEXACT; auto_raise is exp's.
+        return (result, status);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The
     // composition `exp(x · ln(10))` has no cancellation regime; the
     // Ziv driver's working-precision growth handles the rounding-

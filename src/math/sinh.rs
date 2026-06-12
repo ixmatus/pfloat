@@ -98,6 +98,34 @@ fn sinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Exponent-rim forwarding (pf-6nn5, ADR-0101): the cosh rationale
+    // verbatim — sinh(x) = sign(x)·e^(|x| − ln2) past the rim to a
+    // relative error below 2^-(2^62). The negative side computes
+    // under the MIRRORED mode and negates (negate-after-round flips
+    // the directed modes; pf-l38k is the named defect class), so the
+    // directed semantics survive the sign.
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials handled above"),
+    };
+    if e_x >= 62 {
+        let negative = x.is_sign_negative();
+        let prod_prec = x.precision().max(target_precision).saturating_add(128);
+        let abs_w = x
+            .abs()
+            .round_to_precision(prod_prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let ln_2 = super::ln_2_at(prod_prec);
+        let (arg, _) = abs_w.sub(&ln_2, RoundingMode::NearestEven);
+        if negative {
+            let inner = super::mirror_mode_for_negation(mode);
+            let (mag, status) = arg.exp_round(target_precision, inner);
+            return (mag.negated(), status);
+        }
+        return arg.exp_round(target_precision, mode);
+    }
+
     // Tiny x: sinh(x) = x + x³/6 + … grows away from x in magnitude
     // (the +x³/6 correction shares x's sign), so round x with that
     // same-sign infinitesimal directly, bypassing the

@@ -100,6 +100,33 @@ fn cosh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Exponent-rim forwarding (pf-6nn5, ADR-0101). The Ziv closure
+    // below discards exp's Status, so exp's mode-aware rim dispatch
+    // (ADR-0096) arrived as a bare +inf certified by
+    // half_width(non-Normal) = 0, and the Class::Normal INEXACT
+    // force skipped it: cosh(huge) returned (+inf, Status::OK) on a
+    // transcendental result. Past the rim cosh(x) = e^(|x| − ln2) to
+    // a relative error below 2^-(2^62) (the e^-|x| term), beneath
+    // every expressible target's rounding boundary except the
+    // measure-zero class the +128-bit argument computation documents
+    // (the ADR-0096 caveat posture). Forward through exp, which owns
+    // the rim classification, the mode-aware values, and the flags.
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials handled above"),
+    };
+    if e_x >= 62 {
+        let prod_prec = x.precision().max(target_precision).saturating_add(128);
+        let abs_w = x
+            .abs()
+            .round_to_precision(prod_prec, RoundingMode::NearestEven)
+            .expect("precision >= 1")
+            .0;
+        let ln_2 = super::ln_2_at(prod_prec);
+        let (arg, _) = abs_w.sub(&ln_2, RoundingMode::NearestEven);
+        return arg.exp_round(target_precision, mode);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the cancellation-free `(exp(x) + exp(-x))/2`
     // composition at working precision `w`. exp is Ziv-driven

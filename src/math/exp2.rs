@@ -124,6 +124,22 @@ fn exp2_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         return (two_pow_at(k, target_precision), Status::OK);
     }
 
+    // Exponent-rim triage (pf-qm0h, the ADR-0096 pattern; found by
+    // the R1-merge CI failure). The composition below discards exp's
+    // Status, so exp's mode-aware rim dispatch arrived here as a bare
+    // +inf/+0 that half_width(non-Normal) = 0 certified with INEXACT
+    // only. exp2 needs none of exp's certified-division machinery:
+    // the result's binary exponent IS floor(x), exactly computable.
+    // e_x ≤ 61 keeps the established path untouched (|floor(x)| <
+    // 2^62, no rim interaction).
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials handled above"),
+    };
+    if e_x >= 62 {
+        return exp2_extreme(x, e_x, target_precision, mode);
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The
     // composition `exp(x · ln(2))` has no cancellation regime; the
     // Ziv driver's working-precision growth handles the rounding-
@@ -163,6 +179,170 @@ fn two_pow_at(k: i64, precision: u32) -> BigFloat {
         *exponent = exponent.saturating_add(k);
     }
     v
+}
+
+/// `2^x` for `|x| ≥ 2^62` (pf-qm0h, ADR-0096 pattern): the result's
+/// binary exponent is `n = floor(x)`, exact integer arithmetic on the
+/// input's own grid — no certified division. Classification against
+/// the i64 rim, reusing exp's mode-aware dispatch results:
+///
+/// - positive `x`, `e_x ≥ 63`: `n ≥ 2^63`, certain overflow.
+/// - negative `x`, `e_x ≥ 64`: `n < i64::MIN − 1`, deep underflow.
+/// - the bands in between classify on the exact `floor(x)`:
+///   overflow / sliver / deep underflow at the rims, else the
+///   representable window: Ziv-certify the unscaled `s = 2^frac`
+///   (`frac = x − n` exact, `s ∈ [1, 2)`) and compose with the exact
+///   `scale_by_pow2(k)`; `k` is clamped one step inside the rim so a
+///   certified carry routes to the overflow dispatch, the ADR-0096
+///   compose contract.
+fn exp2_extreme(
+    x: &BigFloat,
+    e_x: i64,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
+    use super::exp::{
+        exp_certain_overflow, exp_deep_underflow, exp_underflow_sliver, round_bigfloat_to_i64,
+    };
+
+    let positive = !x.is_sign_negative();
+    if (positive && e_x >= 63) || (!positive && e_x >= 64) {
+        return if positive {
+            exp_certain_overflow(target_precision, mode)
+        } else {
+            exp_deep_underflow(target_precision, mode)
+        };
+    }
+
+    // The bands: positive e_x = 62 (floor in [2^62, 2^63), always a
+    // representable window) and negative e_x ∈ {62, 63} (floor in
+    // (−2^64, −2^62], straddling i64::MIN). floor(x) is exact: round
+    // x to e_x + 1 mantissa bits toward −∞ (ulp = 1 there).
+    let int_bits = u32::try_from(e_x + 1).expect("e_x ∈ [62, 63]");
+    let (n_big, _) = x
+        .round_to_precision(int_bits.max(1), RoundingMode::TowardNegative)
+        .expect("precision >= 1");
+
+    // Classify against the rim using i128 (|floor| < 2^64 here).
+    // round_bigfloat_to_i64 saturates, so compare via the big value:
+    // build the rim constants exactly and partial_cmp.
+    let min_big = {
+        let (v, s) = BigFloat::try_from_i64_exact(1, 66)
+            .expect("precision >= 1")
+            .scale_by_pow2(63);
+        debug_assert!(s.is_ok());
+        v.negated() // −2^63 = i64::MIN
+    };
+    let min_minus_1 = {
+        let one = BigFloat::try_from_i64_exact(1, 66).expect("precision >= 1");
+        min_big.sub(&one, RoundingMode::NearestEven).0 // exact at 66 bits
+    };
+    let max_plus_1 = min_big.negated(); // +2^63 = i64::MAX + 1
+
+    // Integers with |x| ≥ 2^63 are NOT caught by the exact dispatch
+    // upstream (integer_exponent rejects magnitudes past i64), so
+    // detect exactness here: floor(x) == x. Two rows need it (found
+    // by the ADR-0101 adversarial verification): x = −2^63 is a
+    // representable exact power (the window path's on-grid value
+    // would defeat the Ziv interval test and force a spurious
+    // INEXACT), and x = −2^63 − 1 puts the truth EXACTLY at the
+    // MinPos/2 tie, where the sliver's strict-interior justification
+    // fails and the tie must be resolved explicitly.
+    let x_is_integer = {
+        let (gap, _) = x.sub(&n_big, RoundingMode::NearestEven);
+        gap.is_zero()
+    };
+
+    use core::cmp::Ordering;
+    let ge = |a: &BigFloat, b: &BigFloat| {
+        matches!(
+            a.partial_cmp(b).0,
+            Some(Ordering::Greater | Ordering::Equal)
+        )
+    };
+    if ge(&n_big, &max_plus_1) {
+        return exp_certain_overflow(target_precision, mode);
+    }
+    if !ge(&n_big, &min_minus_1) {
+        return exp_deep_underflow(target_precision, mode);
+    }
+    if !ge(&n_big, &min_big) {
+        if x_is_integer {
+            // x = i64::MIN − 1 exactly: the truth 2^x is EXACTLY
+            // MinPos/2, the to-nearest tie between +0 and MinPos.
+            // Resolve NE to +0 (the IEEE analogue: zero carries the
+            // even significand; pfloat's no-subnormal grid leaves
+            // both candidates' mantissa lsbs degenerate, so the
+            // convention is recorded here). Away/upward take MinPos,
+            // inward +0. The truth is below every representable:
+            // UNDERFLOW|INEXACT.
+            let value = match mode {
+                RoundingMode::NearestAway | RoundingMode::TowardPositive => {
+                    BigFloat::try_new_zero(Sign::Positive, target_precision)
+                        .expect("precision >= 1")
+                        .next_up()
+                        .0
+                }
+                _ => BigFloat::try_new_zero(Sign::Positive, target_precision)
+                    .expect("precision >= 1"),
+            };
+            let status = Status::UNDERFLOW | Status::INEXACT;
+            auto_raise(status);
+            return (value, status);
+        }
+        // Non-integer x: the truth is strictly inside
+        // (MinPos/2, MinPos) and the shared sliver dispatch holds.
+        return exp_underflow_sliver(target_precision, mode);
+    }
+
+    if x_is_integer {
+        // x = −2^63 (the only window integer reachable: positives
+        // and shallower negatives with ≤62-bit spans were dispatched
+        // exactly upstream): 2^x is exactly representable at every
+        // precision. The window path's on-grid s = 0.5 would defeat
+        // the Ziv interval test (feedback_exact_value_defeats_ziv)
+        // and exhaust into a spurious INEXACT; return the exact
+        // power directly, Status::OK under every mode.
+        let n = round_bigfloat_to_i64(&n_big);
+        let (value, scale_status) = BigFloat::try_from_i64_exact(1, target_precision)
+            .expect("precision >= 1")
+            .scale_by_pow2(n);
+        debug_assert!(scale_status.is_ok(), "n ∈ [i64::MIN, i64::MAX] window");
+        return (value, Status::OK);
+    }
+
+    // Representable window. k = floor(x) fits i64; clamp one inside
+    // the rim (frac shifts by the clamp so x = k + frac still holds,
+    // keeping s = 2^frac ∈ [1, 4) with exponent(s) ∈ {0, 1} and the
+    // compose exact for in-range truths; a certified carry past the
+    // top binade routes to the overflow dispatch).
+    let n = round_bigfloat_to_i64(&n_big);
+    let k = n.clamp(i64::MIN + 1, i64::MAX - 1);
+    let k_big = BigFloat::try_from_i64_exact(k, 66).expect("precision >= 1");
+    let (s, ziv_status) = ziv_round(
+        |w| {
+            let x_w = x
+                .round_to_precision(w, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+            // frac = x − k: exact (both ends on x's grid, |frac| < 2).
+            let (frac, _) = x_w.sub(&k_big, RoundingMode::NearestEven);
+            let ln_2 = ln_2_at(w);
+            let (product, _) = frac.mul(&ln_2, RoundingMode::NearestEven);
+            let (e_val, _) = product.exp(RoundingMode::NearestEven);
+            e_val
+        },
+        target_precision,
+        mode,
+        EXP2_ERROR_GUARD,
+    );
+    let (result, scale_status) = s.scale_by_pow2(k);
+    if scale_status.overflow() {
+        return exp_certain_overflow(target_precision, mode);
+    }
+    let status = ziv_status | scale_status | Status::INEXACT;
+    auto_raise(status);
+    (result, status)
 }
 
 #[cfg(test)]

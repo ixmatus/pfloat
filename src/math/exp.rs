@@ -176,25 +176,48 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
 /// unrounded value; the Ziv driver handles rounding to the caller's
 /// target precision and mode.
 fn exp_at_w(x: &BigFloat, working_prec: u32) -> BigFloat {
+    // The reduction r = x − k·ln2 cancels the leading ~e_x bits of
+    // the operands (both have magnitude ~2^e_x while r is O(1)), so
+    // computing it AT the working precision leaves r with only
+    // working − e_x good bits — while the Ziv driver charges this
+    // closure a flat 24-bit guard. For e_x ≳ 25 that mismatch
+    // certified 1-ulp NE misroundings at percent-level density
+    // (pf-t6ht's probed band, confirmed by run at e_x = 61 during
+    // the ADR-0101 verification when cosh/sinh began forwarding
+    // arguments here). Carry the reduction at working + e_x + 8
+    // bits — the ADR-0097 deterministic pre-boost, costing extra
+    // bits only on the multiply/subtract and only for large
+    // arguments — then run the Taylor series at the working
+    // precision as before.
+    let e_x = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let reduce_prec =
+        working_prec.saturating_add(u32::try_from(e_x.max(0)).unwrap_or(0).saturating_add(8));
     let x_w = x
-        .round_to_precision(working_prec, RoundingMode::NearestEven)
+        .round_to_precision(reduce_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
 
-    let ln_2 = ln_2_at(working_prec);
+    let ln_2 = ln_2_at(reduce_prec);
 
     // k = round(x / ln(2)) as i64.
     let (x_over_ln2, _) = x_w.div(&ln_2, RoundingMode::NearestEven);
     let k = round_bigfloat_to_i64(&x_over_ln2);
 
-    // r = x - k * ln(2).
-    let k_big = BigFloat::try_from_i64_exact(k, working_prec)
+    // r = x - k * ln(2), carried wide then narrowed for the series.
+    let k_big = BigFloat::try_from_i64_exact(k, reduce_prec)
         .or_else(|_| {
-            BigFloat::try_from_i64_round(k, working_prec, RoundingMode::NearestEven).map(|(v, _)| v)
+            BigFloat::try_from_i64_round(k, reduce_prec, RoundingMode::NearestEven).map(|(v, _)| v)
         })
-        .expect("i64 fits in working precision");
+        .expect("i64 fits in the reduction precision");
     let (k_ln2, _) = k_big.mul(&ln_2, RoundingMode::NearestEven);
-    let (r, _) = x_w.sub(&k_ln2, RoundingMode::NearestEven);
+    let (r_wide, _) = x_w.sub(&k_ln2, RoundingMode::NearestEven);
+    let r = r_wide
+        .round_to_precision(working_prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
 
     // exp(x) = exp(r) × 2^k. Apply k as a free exponent shift.
     shift_exponent(exp_taylor(&r, working_prec), k)
@@ -329,7 +352,10 @@ fn exp_extreme(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 /// deep exp overflow has no representable approximation within any
 /// bounded relative error, so +∞ + OVERFLOW is the honest §7.4
 /// answer and matches this module's documented promise.
-fn exp_certain_overflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+pub(super) fn exp_certain_overflow(
+    target_precision: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
     let value = match mode {
         RoundingMode::TowardZero | RoundingMode::TowardNegative => {
             BigFloat::try_new_infinity(Sign::Positive, target_precision)
@@ -348,7 +374,7 @@ fn exp_certain_overflow(target_precision: u32, mode: RoundingMode) -> (BigFloat,
 /// `MinPos/2` (= `2^(i64::MIN − 1)`), so every mode except
 /// `TowardPositive` rounds to +0, and `TowardPositive` rounds up to
 /// `MinPos`.
-fn exp_deep_underflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+pub(super) fn exp_deep_underflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
     let value = if matches!(mode, RoundingMode::TowardPositive) {
         BigFloat::try_new_zero(Sign::Positive, target_precision)
             .expect("precision >= 1")
@@ -365,7 +391,10 @@ fn exp_deep_underflow(target_precision: u32, mode: RoundingMode) -> (BigFloat, S
 /// Mode-aware sliver result for `floor(x/ln2) = i64::MIN − 1`: the
 /// truth lies in `(MinPos/2, MinPos)` strictly, so nearest modes and
 /// `TowardPositive` give `MinPos` while the inward modes give +0.
-fn exp_underflow_sliver(target_precision: u32, mode: RoundingMode) -> (BigFloat, Status) {
+pub(super) fn exp_underflow_sliver(
+    target_precision: u32,
+    mode: RoundingMode,
+) -> (BigFloat, Status) {
     let value = match mode {
         RoundingMode::TowardZero | RoundingMode::TowardNegative => {
             BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1")
@@ -566,7 +595,7 @@ fn exp_reduced_pinned(x: &BigFloat, k: i64, w: u32) -> BigFloat {
 ///
 /// Saturates to `i64::MAX` / `i64::MIN` for out-of-range inputs.
 /// Returns `0` for `NaN` and other non-Normal/Zero classes.
-fn round_bigfloat_to_i64(v: &BigFloat) -> i64 {
+pub(super) fn round_bigfloat_to_i64(v: &BigFloat) -> i64 {
     let (sign, exponent, mantissa) = match &v.class {
         Class::Normal {
             sign,

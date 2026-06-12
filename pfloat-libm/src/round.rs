@@ -62,7 +62,7 @@
 //! thread-local flag set, so that thread-local is not meaningful across a
 //! shell call.
 
-use pfloat::{BigFloat, Parts, RoundingMode, Status};
+use pfloat::{BigFloat, RoundingMode, Status};
 
 /// Guard bits tried above the format precision, in order. Mirrors
 /// pfloat's private Ziv schedule: `ZIV_BASE_GUARD = 64`, doubling, capped
@@ -127,11 +127,6 @@ impl Shell for F64Shell {
     }
 }
 
-#[inline]
-fn is_normal(v: &BigFloat) -> bool {
-    matches!(v.parts(), Parts::Normal { .. })
-}
-
 /// Drive the outer Ziv loop for one hardware input.
 ///
 /// `kernel(xb, w, dir)` returns `f(x)` correctly rounded to `w` bits
@@ -150,12 +145,47 @@ pub(crate) fn drive<S: Shell>(
         let (lo, lo_s) = kernel(&xb, w, RoundingMode::TowardNegative);
         let (hi, hi_s) = kernel(&xb, w, RoundingMode::TowardPositive);
 
-        if !is_normal(&lo) || !is_normal(&hi) {
-            // NaN / ±inf / ±0: the kernel already applied IEEE semantics
-            // and both directed roundings agree. Convert and merge.
+        if lo.is_nan() || hi.is_nan() {
+            // The kernel already applied IEEE NaN semantics; the NaN
+            // rows agree across the directed pair. Convert and merge.
             let (val, cs) = S::convert(&lo, mode);
             return (val, lo_s | hi_s | cs);
         }
+
+        // Mode-aware kernels legitimately return MIXED bracket ends at
+        // the representability rims (pfloat 1.3 / ADR-0096: exp's deep
+        // underflow gives [+0, MinPos] across the directed pair, its
+        // certain overflow [MaxFinite, +inf]; pf-lkno). The old shape
+        // converted `lo` alone whenever either end was non-normal,
+        // assuming agreement — true only while the kernel returned
+        // garbage Normals at the rim, and mode-blind once it stopped
+        // (TowardPositive lost the positive infinitesimal and emitted
+        // +0 where binary32/64 demand the smallest subnormal; this is
+        // what turned main red after the R1 merge). Nudge the special
+        // end of a mixed bracket to its adjacent representable
+        // instead: a directed pair [+0, positive] PROVES the truth is
+        // strictly positive (a zero truth collapses both ends), and a
+        // mixed [finite, +inf] pair proves it finite (an infinite
+        // truth collapses both ends to +inf) — while pfloat's
+        // MinPos/MaxFinite sit so far outside every hardware format
+        // that the nudged end converts identically to the open
+        // interval end it stands for, under every mode. Agreeing
+        // special pairs ([+0,+0], [+inf,+inf]) convert bits-equal and
+        // settle through the generic path below unchanged.
+        let lo = if (lo.is_zero() && !hi.is_zero() && !hi.is_sign_negative())
+            || (lo.is_infinite() && lo.is_sign_negative() && !hi.is_infinite())
+        {
+            lo.next_up().0
+        } else {
+            lo
+        };
+        let hi = if (hi.is_zero() && !lo.is_zero() && lo.is_sign_negative())
+            || (hi.is_infinite() && !hi.is_sign_negative() && !lo.is_infinite())
+        {
+            hi.next_down().0
+        } else {
+            hi
+        };
 
         let (lo_f, lo_cs) = S::convert(&lo, mode);
         let (hi_f, hi_cs) = S::convert(&hi, mode);
@@ -287,17 +317,34 @@ mod tests {
         RoundingMode::TowardNegative,
     ];
 
-    fn oracle_f32(x: f32, mode: RoundingMode, kr: fn(&BigFloat) -> BigFloat) -> (f32, Status) {
-        kr(&BigFloat::from_f32(x)).to_f32_round(mode)
+    // The kernel side of the oracle takes the MODE: pfloat 1.3's
+    // kernels are mode-aware at the representability rims (ADR-0096:
+    // exp's certain overflow is +inf under the nearest/upward modes
+    // but MaxFinite under the inward ones), so a NearestEven-only
+    // kernel call followed by a directed conversion cannot recover
+    // the inward answers (converting +inf under TowardZero stays
+    // +inf). Functions without rim-mode behavior keep an explicit
+    // NearestEven in their closures — the original single-rounding
+    // oracle semantics.
+    fn oracle_f32(
+        x: f32,
+        mode: RoundingMode,
+        kr: fn(&BigFloat, RoundingMode) -> BigFloat,
+    ) -> (f32, Status) {
+        kr(&BigFloat::from_f32(x), mode).to_f32_round(mode)
     }
 
-    fn oracle_f64(x: f64, mode: RoundingMode, kr: fn(&BigFloat) -> BigFloat) -> (f64, Status) {
-        kr(&BigFloat::from_f64(x)).to_f64_round(mode)
+    fn oracle_f64(
+        x: f64,
+        mode: RoundingMode,
+        kr: fn(&BigFloat, RoundingMode) -> BigFloat,
+    ) -> (f64, Status) {
+        kr(&BigFloat::from_f64(x), mode).to_f64_round(mode)
     }
 
     fn check_f32(
         shell: fn(f32, RoundingMode) -> (f32, Status),
-        kr: fn(&BigFloat) -> BigFloat,
+        kr: fn(&BigFloat, RoundingMode) -> BigFloat,
         extra: &[f32],
     ) {
         let battery = [
@@ -344,7 +391,7 @@ mod tests {
 
     fn check_f64(
         shell: fn(f64, RoundingMode) -> (f64, Status),
-        kr: fn(&BigFloat) -> BigFloat,
+        kr: fn(&BigFloat, RoundingMode) -> BigFloat,
         extra: &[f64],
     ) {
         let battery = [
@@ -392,12 +439,12 @@ mod tests {
     fn exp_matches_single_rounding() {
         check_f32(
             crate::f32::exp_round,
-            |xb| xb.exp_round(ORACLE_PREC, RoundingMode::NearestEven).0,
+            |xb, mode| xb.exp_round(ORACLE_PREC, mode).0,
             &[0.5, 1.0, 10.0, -10.0, 88.0, -88.0],
         );
         check_f64(
             crate::f64::exp_round,
-            |xb| xb.exp_round(ORACLE_PREC, RoundingMode::NearestEven).0,
+            |xb, mode| xb.exp_round(ORACLE_PREC, mode).0,
             &[1.0, 100.0, 700.0, -700.0],
         );
     }
@@ -406,7 +453,7 @@ mod tests {
     fn ln_matches_single_rounding() {
         check_f32(
             crate::f32::ln_round,
-            |xb| {
+            |xb, _| {
                 xb.ln_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -415,7 +462,7 @@ mod tests {
         );
         check_f64(
             crate::f64::ln_round,
-            |xb| {
+            |xb, _| {
                 xb.ln_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -428,7 +475,7 @@ mod tests {
     fn sqrt_matches_single_rounding() {
         check_f32(
             crate::f32::sqrt_round,
-            |xb| {
+            |xb, _| {
                 xb.sqrt_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -437,7 +484,7 @@ mod tests {
         );
         check_f64(
             crate::f64::sqrt_round,
-            |xb| {
+            |xb, _| {
                 xb.sqrt_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -450,7 +497,7 @@ mod tests {
     fn sin_matches_single_rounding() {
         check_f32(
             crate::f32::sin_round,
-            |xb| {
+            |xb, _| {
                 xb.sin_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -463,7 +510,7 @@ mod tests {
     fn cbrt_matches_single_rounding() {
         check_f32(
             crate::f32::cbrt_round,
-            |xb| {
+            |xb, _| {
                 xb.cbrt_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0
@@ -478,7 +525,7 @@ mod tests {
         // oracle still exercises the shell's rounding logic for them.
         check_f32(
             crate::f32::cot_round,
-            |xb| {
+            |xb, _| {
                 xb.cot_round(ORACLE_PREC, RoundingMode::NearestEven)
                     .unwrap()
                     .0

@@ -827,3 +827,157 @@ fn beta_deep_near_pole_sum_keeps_the_sign() {
         NE,
     );
 }
+
+// ---------------------------------------------------------------
+// pf-qm0h / pf-6nn5 / pf-lkno hotfix (ADR-0101): the exp-composing
+// kernels discarded exp's rim Status and certified bare specials —
+// exp2/exp10 with INEXACT only, expm1/sinh/cosh with Status::OK on
+// transcendental results (the Class::Normal INEXACT force skips
+// non-Normals). Each now forwards through exp's ADR-0096 rim
+// machinery, mode-aware values and flags included. Found by the
+// R1-merge CI failure in pfloat-libm's consistency lane.
+// ---------------------------------------------------------------
+
+/// exp2 past the rim: 2^(2^90) exceeds every representable.
+#[test]
+fn exp2_rim_is_mode_aware_and_flagged() {
+    let x = scaled(1, 53, 90);
+    let (r_ne, st_ne) = x.exp2_round(53, NE).unwrap();
+    assert!(r_ne.is_infinite(), "NE must be +inf, got {r_ne}");
+    assert!(st_ne.overflow() && st_ne.inexact(), "got {st_ne:?}");
+    let (r_tz, st_tz) = x.exp2_round(53, RoundingMode::TowardZero).unwrap();
+    assert_eq!(r_tz.total_cmp(&max_finite(53)), Ordering::Equal);
+    assert!(st_tz.overflow() && st_tz.inexact());
+    // The negative mirror underflows.
+    let (r_neg, st_neg) = x.negated().exp2_round(53, NE).unwrap();
+    assert!(r_neg.is_zero(), "NE must be +0, got {r_neg}");
+    assert!(st_neg.underflow() && st_neg.inexact());
+    let (r_tp, _) = x
+        .negated()
+        .exp2_round(53, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(r_tp.total_cmp(&min_pos(53)), Ordering::Equal);
+}
+
+/// exp2's representable window at the rim band: floor(x) is exact
+/// integer arithmetic, so 2^(2^62 + 0.5) = sqrt(2)·2^(2^62) must
+/// come back finite with INEXACT only. mpmath 1.4.1: sqrt(2)
+/// mantissa quoted.
+#[test]
+fn exp2_rim_window_returns_the_representable_finite() {
+    let half = scaled(1, 64, -1);
+    let (x, sx) = scaled(1, 64, 62).add(&half, NE);
+    assert!(sx.is_ok());
+    let (r, st) = x.exp2_round(53, NE).unwrap();
+    let expected = mantissa_at_pow2(
+        "1.414213562373095048801688724209698078570",
+        4_611_686_018_427_387_904,
+        NE,
+    );
+    assert_eq!(r.total_cmp(&expected), Ordering::Equal, "got {r}");
+    assert!(st.inexact() && !st.overflow() && !st.underflow());
+}
+
+/// exp10/expm1/cosh/sinh forward exp's rim flags instead of
+/// certifying bare specials with OK.
+#[test]
+fn exp_composers_forward_rim_flags() {
+    let (x, _) = BigFloat::parse_str("1e300", 64, NE).unwrap();
+    let (r10, st10) = x.exp10_round(53, NE).unwrap();
+    assert!(r10.is_infinite() && st10.overflow() && st10.inexact());
+    let (rm1, stm1) = x.expm1_round(53, NE).unwrap();
+    assert!(rm1.is_infinite() && stm1.overflow() && stm1.inexact());
+    let (rc, stc) = x.cosh_round(53, NE).unwrap();
+    assert!(
+        rc.is_infinite() && stc.overflow() && stc.inexact(),
+        "cosh(1e300) = ({rc}, {stc:?}); Status::OK was the defect"
+    );
+    let (rs, sts) = x.sinh_round(53, NE).unwrap();
+    assert!(rs.is_infinite() && sts.overflow() && sts.inexact());
+    // sinh's negative side mirrors the directed modes through the
+    // negation: under TowardPositive the inward magnitude gives
+    // -MaxFinite, not -inf.
+    let (rsn, stsn) = x
+        .negated()
+        .sinh_round(53, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(
+        rsn.total_cmp(&max_finite(53).negated()),
+        Ordering::Equal,
+        "sinh(-1e300) TP must be -MaxFinite, got {rsn}"
+    );
+    assert!(stsn.overflow() && stsn.inexact());
+    // cosh under TowardZero takes the inward finite.
+    let (rcz, _) = x.cosh_round(53, RoundingMode::TowardZero).unwrap();
+    assert_eq!(rcz.total_cmp(&max_finite(53)), Ordering::Equal);
+}
+
+/// ADR-0101 verifier round 2: the cosh/sinh rim forward initially
+/// landed |x| in [2^62, 2^62+ln2) on exp's LEGACY path, whose
+/// reduction cancelled ~`e_x` bits against a flat 24-bit guard —
+/// `cosh(2^62+0.5)` at 53 NE certified the wrong NE side (mantissa
+/// ...c800 where the triple-oracled truth is 0.0227 ulp above the
+/// midpoint: ...d000). The legacy reduction now carries `e_x` extra
+/// bits (closing pf-t6ht's probed band for every exp caller).
+#[test]
+fn cosh_band_above_rim_trigger_rounds_the_ne_side() {
+    let (h, _) = BigFloat::try_from_i64_exact(1, 64)
+        .unwrap()
+        .scale_by_pow2(-1);
+    let b = scaled(1, 64, 62);
+    let (x, sx) = b.add(&h, NE);
+    assert!(sx.is_ok());
+    for f in [BigFloat::cosh_round, BigFloat::sinh_round] {
+        let (r, st) = f(&x, 53, NE).unwrap();
+        match r.parts() {
+            pfloat::Parts::Normal {
+                exponent, mantissa, ..
+            } => {
+                assert_eq!(exponent, 6_653_256_548_922_161_245);
+                assert_eq!(
+                    mantissa,
+                    &[13_916_968_917_729_267_712_u64],
+                    "wrong NE side (the ...c800 defect)"
+                );
+            }
+            other => panic!("expected a Normal, got {other:?}"),
+        }
+        assert!(st.inexact() && !st.overflow());
+    }
+}
+
+/// ADR-0101 verifier round 2: exp2 at the exact integers past the
+/// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
+/// exactly representable: `Status::OK`, every mode. One deeper,
+/// 2^(-2^63 - 1) sits EXACTLY at the `MinPos/2` tie: NE resolves to
+/// +0 (the zero-significand-even convention), away/upward to
+/// `MinPos`, with `UNDERFLOW|INEXACT`.
+#[test]
+fn exp2_exact_integers_past_the_i64_cap() {
+    let x_min = scaled(1, 64, 63).negated();
+    for mode in ALL_MODES {
+        let (r, st) = x_min.exp2_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(&min_pos(53)),
+            Ordering::Equal,
+            "2^(-2^63) must be exactly MinPos under {mode:?}, got {r}"
+        );
+        assert!(st.is_ok(), "exact power must be OK, got {st:?}");
+    }
+    let one = BigFloat::try_from_i64_exact(1, 66).unwrap();
+    let (x_tie, sx) = x_min.sub(&one, NE);
+    assert!(sx.is_ok());
+    for mode in ALL_MODES {
+        let (r, st) = x_tie.exp2_round(53, mode).unwrap();
+        let expect_minpos = matches!(
+            mode,
+            RoundingMode::NearestAway | RoundingMode::TowardPositive
+        );
+        if expect_minpos {
+            assert_eq!(r.total_cmp(&min_pos(53)), Ordering::Equal, "{mode:?}");
+        } else {
+            assert!(r.is_zero(), "{mode:?} must give +0, got {r}");
+        }
+        assert!(st.underflow() && st.inexact(), "{mode:?}: {st:?}");
+    }
+}

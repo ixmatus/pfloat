@@ -150,3 +150,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0098: input-structure-aware resolution for zeta, trig reduction, and beta](0098-input-structure-aware-dispatch.md) (accepted)
 - [ADR-0099: Ball widening at the exponent rim and the parse-budget collapse](0099-ball-rim-saturation-soundness.md) (accepted)
 - [ADR-0100: clog's enclosure guard derives its cap from the input structure](0100-clog-structure-derived-enclosure-cap.md) (accepted)
+- [ADR-0101: the exponent-rim dispatch composed through the shell and the exp-family siblings](0101-rim-composition-through-shell-and-siblings.md) (accepted)

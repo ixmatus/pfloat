@@ -621,7 +621,9 @@ pub(crate) fn pi_over_2_at_round(target: u32, mode: RoundingMode) -> (BigFloat, 
 /// `−(constant)` must round the constant under the *mirrored* mode:
 /// `TowardNegative` and `TowardPositive` swap, while the nearest and
 /// toward-zero modes are symmetric under negation and pass through.
-#[cfg(feature = "trig")]
+/// Gated on either consumer family: the trig constant returns and
+/// sinh's exponent-rim negation (ADR-0101) under `exp-log`.
+#[cfg(any(feature = "trig", feature = "exp-log"))]
 #[allow(dead_code)]
 pub(crate) fn mirror_mode_for_negation(mode: RoundingMode) -> RoundingMode {
     match mode {
