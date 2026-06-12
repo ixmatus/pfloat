@@ -946,6 +946,201 @@ fn cosh_band_above_rim_trigger_rounds_the_ne_side() {
     }
 }
 
+// ---------------------------------------------------------------
+// pf-71u2 / pf-e2ow (arc R2, slice R2.1, ADR-0102): the scalar
+// Ziv-cap lies on input-encoded depth. hypot's eval absorbs the
+// small operand's square whenever 2·gap ≥ working, collapses onto
+// |big| (on-grid), the interval test never converges, and the
+// exhausted fall-through certified the collapsed value — falsely
+// EXACT whenever |big| rounds exactly at the target. atan (and
+// atan2 through it) has the same shape at depth 2·|e|: the cubic
+// correction sits below every working precision the driver
+// reaches, so directed modes returned the argument itself. The
+// depth is input-encoded and exactly computable up front, so both
+// kernels now dispatch through round_with_infinitesimal past the
+// representable band (truth strictly inside the boundary-free gap
+// above/below the base). Directions pinned with mpmath 1.4.1:
+// sqrt(1+2^-4000) − 1 ≈ 2^-4001 ∈ (0, 2^-127); atan(ε) < ε with
+// ε − atan(ε) ≈ ε³/3 (both signs).
+// ---------------------------------------------------------------
+
+/// pf-71u2, the named reproducer: hypot(1, 2^-2000) at target 128.
+/// The broken kernel returned (exactly 1, `Status::OK`) — wrong
+/// value under `TowardPositive` and falsely exact in every mode.
+#[test]
+fn hypot_deep_gap_is_mode_aware_and_inexact() {
+    let one = BigFloat::try_from_i64_exact(1, 128).unwrap();
+    let tiny = scaled(1, 128, -2000);
+    for mode in ALL_MODES {
+        let (r, st) = one.hypot_round(&tiny, 128, mode).unwrap();
+        let expected = if matches!(mode, RoundingMode::TowardPositive) {
+            one.next_up().0
+        } else {
+            one.clone()
+        };
+        assert_eq!(
+            r.total_cmp(&expected),
+            Ordering::Equal,
+            "hypot(1, 2^-2000) {mode:?}: got {r}, want {expected}"
+        );
+        assert!(
+            st.inexact(),
+            "hypot(1, 2^-2000) {mode:?}: INEXACT missing (OK was the defect)"
+        );
+    }
+    // Symmetric in operand order and sign-independent.
+    let (r_sw, st_sw) = tiny
+        .negated()
+        .hypot_round(&one.negated(), 128, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(r_sw.total_cmp(&one.next_up().0), Ordering::Equal);
+    assert!(st_sw.inexact());
+}
+
+/// Same defect at a high target: the gap (2·1600) clears the old
+/// driver cap (2000 + 1024) and the representable band both.
+#[test]
+fn hypot_deep_gap_high_target() {
+    let one = BigFloat::try_from_i64_exact(1, 64).unwrap();
+    let tiny = scaled(1, 64, -1600);
+    let (r_tp, st_tp) = one
+        .hypot_round(&tiny, 2000, RoundingMode::TowardPositive)
+        .unwrap();
+    let one_2000 = BigFloat::try_from_i64_exact(1, 2000).unwrap();
+    assert_eq!(
+        r_tp.total_cmp(&one_2000.next_up().0),
+        Ordering::Equal,
+        "TP must be nextUp(1@2000), got {r_tp}"
+    );
+    assert!(st_tp.inexact());
+    let (r_ne, st_ne) = one.hypot_round(&tiny, 2000, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&one_2000), Ordering::Equal);
+    assert!(st_ne.inexact());
+}
+
+/// Control: a deep-ish-gap exact Pythagorean triple stays exact
+/// with Status OK. (2^62 − 1)² + (2^32)² = (2^62 + 1)²; the gap
+/// (29) sits inside the Ziv-certifiable band, which is untouched.
+#[test]
+fn hypot_pythagorean_band_control() {
+    let a = BigFloat::try_from_i64_exact((1_i64 << 62) - 1, 63).unwrap();
+    let b = scaled(1, 63, 32);
+    let (r, st) = a.hypot_round(&b, 63, NE).unwrap();
+    let expected = BigFloat::try_from_i64_exact((1_i64 << 62) + 1, 63).unwrap();
+    assert_eq!(r.total_cmp(&expected), Ordering::Equal, "got {r}");
+    assert!(st.is_ok(), "exact hypot must stay OK, got {st:?}");
+}
+
+/// The root of pf-e2ow lives in atan itself (atan2 composes it):
+/// atan(2^-545) at target 64 under the inward modes must be
+/// pred(2^-545), not the argument (truth = ε − ε³/3 + … < ε).
+#[test]
+fn atan_tiny_x_directed_modes_round_inward() {
+    let x = scaled(1, 64, -545);
+    let pred = x.next_down().0;
+    for (mode, expected) in [
+        (RoundingMode::TowardZero, &pred),
+        (RoundingMode::TowardNegative, &pred),
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardPositive, &x),
+    ] {
+        let (r, st) = x.atan_round(64, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(expected),
+            Ordering::Equal,
+            "atan(2^-545) {mode:?}: got {r}, want {expected}"
+        );
+        assert!(st.inexact(), "atan(2^-545) {mode:?}: INEXACT missing");
+    }
+    // Negative mirror: |atan(x)| < |x|, so the magnitude-shrinking
+    // modes are TowardZero and TowardPositive.
+    let xn = x.negated();
+    let predn = pred.negated();
+    let (r_tz, _) = xn.atan_round(64, RoundingMode::TowardZero).unwrap();
+    assert_eq!(r_tz.total_cmp(&predn), Ordering::Equal);
+    let (r_tp, _) = xn.atan_round(64, RoundingMode::TowardPositive).unwrap();
+    assert_eq!(r_tp.total_cmp(&predn), Ordering::Equal);
+    let (r_tn, _) = xn.atan_round(64, RoundingMode::TowardNegative).unwrap();
+    assert_eq!(r_tn.total_cmp(&xn), Ordering::Equal);
+}
+
+/// Depth past every feasible working precision (2·2^40 bits): only
+/// the infinitesimal dispatch can resolve this; a precision boost
+/// cannot represent it.
+#[test]
+fn atan_tiny_x_past_every_feasible_precision() {
+    let x = scaled(1, 64, -(1_i64 << 40));
+    let (r_tz, st) = x.atan_round(64, RoundingMode::TowardZero).unwrap();
+    assert_eq!(
+        r_tz.total_cmp(&x.next_down().0),
+        Ordering::Equal,
+        "TZ must be pred, got {r_tz}"
+    );
+    assert!(st.inexact());
+    let (r_ne, _) = x.atan_round(64, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&x), Ordering::Equal);
+}
+
+/// pf-e2ow, the named reproducer: atan2(2^-545, 1) at target 64
+/// under the inward modes returned the argument itself.
+#[test]
+fn atan2_tiny_exact_ratio_directed_modes_round_inward() {
+    let y = scaled(1, 64, -545);
+    let x = BigFloat::try_from_i64_exact(1, 64).unwrap();
+    let pred = y.next_down().0;
+    for (mode, expected) in [
+        (RoundingMode::TowardZero, &pred),
+        (RoundingMode::TowardNegative, &pred),
+        (NE, &y),
+        (RoundingMode::TowardPositive, &y),
+    ] {
+        let (r, st) = y.atan2_round(&x, 64, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(expected),
+            Ordering::Equal,
+            "atan2(2^-545, 1) {mode:?}: got {r}, want {expected}"
+        );
+        assert!(st.inexact());
+    }
+    // Negative y mirrors: magnitude shrinks toward zero.
+    let yn = y.negated();
+    let (r_tp, _) = yn
+        .atan2_round(&x, 64, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(r_tp.total_cmp(&pred.negated()), Ordering::Equal);
+    let (r_tn, _) = yn
+        .atan2_round(&x, 64, RoundingMode::TowardNegative)
+        .unwrap();
+    assert_eq!(r_tn.total_cmp(&yn), Ordering::Equal);
+    // And an exact ratio deeper than any feasible precision.
+    let yd = scaled(1, 64, -(1_i64 << 40));
+    let (r_deep, _) = yd.atan2_round(&x, 64, RoundingMode::TowardZero).unwrap();
+    assert_eq!(r_deep.total_cmp(&yd.next_down().0), Ordering::Equal);
+}
+
+/// Control: an inexact tiny ratio (2^-600 / 3). The truth's
+/// distance to the target grid is carried by the ratio's own
+/// expansion (generic position), so the driver's fall-through
+/// already rounds it correctly; it must stay correct. mpmath 1.4.1
+/// @1000 bits at the exact dyadic inputs.
+#[test]
+fn atan2_tiny_inexact_ratio_control() {
+    let y = scaled(1, 64, -600);
+    let x = BigFloat::try_from_i64_exact(3, 64).unwrap();
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = y.atan2_round(&x, 64, mode).unwrap();
+        assert_bit_exact(
+            "atan2(2^-600, 3)",
+            &r,
+            "8.0330662170096137258025001157083631214366831816997e-182",
+            64,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+}
+
 /// ADR-0101 verifier round 2: exp2 at the exact integers past the
 /// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
 /// exactly representable: `Status::OK`, every mode. One deeper,

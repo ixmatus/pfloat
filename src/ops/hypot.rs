@@ -26,6 +26,7 @@
 //!   sign-independent: `hypot(x, y) = hypot(y, x) = hypot(|x|, |y|)`.
 
 use crate::big::{BigFloat, BuildError};
+use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
@@ -115,6 +116,51 @@ fn hypot_kernel(x: &BigFloat, y: &BigFloat, target: u32, mode: RoundingMode) -> 
     // qNaN; qNaN propagates).
     if let Some((nan, status)) = super::propagate_nan2(x, y, target) {
         return (nan, status);
+    }
+
+    // Deep exponent gap (pf-71u2, ADR-0102): with gap g = e_big −
+    // e_small, the truth is |big| + δ with δ = small²/(hypot + |big|)
+    // ∈ (2^(e_big − 2g − 3), 2^(e_big − 2g + 1)]. The Ziv eval's sum
+    // absorbs small² whenever 2g ≥ working, collapsing onto |big| —
+    // exactly on-grid — so the interval test never converges and the
+    // exhausted fall-through certified the collapsed value: falsely
+    // EXACT whenever |big| rounds exactly at the target. Past the
+    // representable band (2g ≥ max(p_big, target) + 6, two bits of
+    // slack over the derived bound 2g > max + 4) δ sits strictly
+    // inside the boundary-free zone above |big| (width at least
+    // 2^(e_big − max − 2)), so the grow-direction infinitesimal
+    // rounding is exact in every mode and honestly INEXACT (an exact
+    // hypot at the target is impossible there: the true square's
+    // bit-span exceeds the target). Inside the band the driver still
+    // certifies (its cap clears the depth) and stays untouched.
+    if let (Class::Normal { exponent: ex, .. }, Class::Normal { exponent: ey, .. }) =
+        (&x.class, &y.class)
+    {
+        let (e_b, e_s, big) = if ex >= ey {
+            (*ex, *ey, x)
+        } else {
+            (*ey, *ex, y)
+        };
+        let two_gap = e_b.saturating_sub(e_s).saturating_mul(2);
+        let max_pt = i64::from(big.precision.max(target));
+        // Rim guard (ADR-0102 verifier finding): round_with_infinitesimal
+        // places its residue at e_b − (max_pt + 3) + 1; within that reach
+        // of i64::MIN the placement saturates, base + ε becomes exactly
+        // representable, and the rounding certifies a wrong value with
+        // Status OK. Refuse the dispatch there (the driver fall-through
+        // keeps the pre-existing rim behavior) until pf-a77o fixes the
+        // residue placement at its root.
+        if two_gap >= max_pt.saturating_add(6)
+            && e_b >= i64::MIN.saturating_add(max_pt).saturating_add(5)
+        {
+            return crate::rounding::round_with_infinitesimal(
+                &big.abs(),
+                Sign::Positive,
+                false, // magnitude grows: δ > 0 strictly (small ≠ 0)
+                target,
+                mode,
+            );
+        }
     }
 
     // Both finite: sqrt(x² + y²) at the Ziv working precision, rounded

@@ -105,6 +105,46 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: atan(x) = x − x³/3 + … shrinks toward zero (every
+    // post-x term opposes the leading term in magnitude), and past
+    // the representable band the correction can never reach any
+    // working grid the Ziv driver visits: the eval collapses onto
+    // the on-grid argument, the interval test never converges, and
+    // the exhausted fall-through returned the argument itself — 1
+    // ULP wrong under the inward modes (pf-e2ow's root, ADR-0102).
+    // The correction c = |x| − |atan x| lies in (2^(3e−2), 2^(3e+2));
+    // round_with_infinitesimal is exact when both c and its residue
+    // stay strictly inside the boundary-free zone below |x|, whose
+    // width is at least 2^(e − max(p, target) − 2) (one input ulp
+    // when x sits off the target's rounding-change grid, half a
+    // change step when on it, both with binade-crossing slack), so
+    // `2|e| ≥ max(p, target) + 6` clears it with two bits to spare.
+    // Unlike the ADR-0059 fast paths this trigger carries the
+    // input-precision arm — the boundary-free zone shrinks with the
+    // INPUT's grid, not only the target's.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials dispatched above"),
+    };
+    // The rim guard mirrors hypot's (ADR-0102 verifier finding): within
+    // max(p, target) + 5 of i64::MIN the infinitesimal's residue
+    // placement saturates and the dispatch would certify a wrong value
+    // with Status OK; refuse it there (pre-existing rim behavior, fixed
+    // at the root by pf-a77o).
+    let max_pt = i64::from(x.precision.max(target_precision));
+    if e < 0
+        && e.saturating_mul(-2) >= max_pt.saturating_add(6)
+        && e >= i64::MIN.saturating_add(max_pt).saturating_add(5)
+    {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // magnitude shrinks: the −x³/3 correction opposes x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the existing half-angle reduction + Taylor
     // composition (atan_finite_unsigned on |x|) at working precision

@@ -217,6 +217,55 @@ fn atan2_kernel(
         return (signed, status);
     }
 
+    // Tiny exact ratio in the right half-plane (pf-e2ow, ADR-0102):
+    // the true ratio t = y/x has exponent e_t ∈ {e_y−e_x−1, e_y−e_x},
+    // and for e_t past the representable band the atan correction
+    // (≈ |t|³/3, position 3·e_t) never reaches any working grid the
+    // Ziv driver visits — the closure collapses onto the rounded
+    // ratio and the exhausted fall-through returned the argument
+    // itself under the inward modes. When the quotient is EXACT at
+    // 2·target + 2 bits, forwarding it to atan resolves the depth
+    // through atan's tiny-x infinitesimal dispatch, whose trigger is
+    // then guaranteed: 2|e_t| ≥ 2·target + 10 > max(2·target + 2,
+    // target) + 6. An inexact quotient carries the truth's grid
+    // position in its own expansion (the driver's fall-through
+    // rounds it correctly outside a measure-zero proximity class —
+    // the Ziv-cap caveat) and stays with the driver. x < 0 keeps the
+    // quadrant shift: the result there is ≈ ±π, with no tiny-result
+    // collapse.
+    if matches!(x_sign, Sign::Positive) {
+        let (ey, ex) = match (&y.class, &x.class) {
+            (Class::Normal { exponent: ey, .. }, Class::Normal { exponent: ex, .. }) => (*ey, *ex),
+            _ => unreachable!("specials and zeros dispatched above"),
+        };
+        let e_t_hi = ey.saturating_sub(ex);
+        let w2 = target_precision.saturating_mul(2).saturating_add(2);
+        // The rim guard mirrors atan's (ADR-0102 verifier finding): the
+        // forwarded quotient carries precision w2, so atan's residue
+        // placement saturates within w2 + 5 of i64::MIN (plus 1 for
+        // e_t ≥ e_t_hi − 1) and would certify a wrong value with
+        // Status OK; refuse the forward there (pre-existing driver rim
+        // behavior, fixed at the root by pf-a77o).
+        if e_t_hi
+            <= i64::from(target_precision)
+                .saturating_add(5)
+                .saturating_neg()
+            && e_t_hi >= i64::MIN.saturating_add(i64::from(w2)).saturating_add(6)
+        {
+            let (q, qs) = y
+                .div_round(x, w2, RoundingMode::NearestEven)
+                .expect("w2 >= 1");
+            // is_ok() also excludes a rim-saturated quotient (the
+            // div flags OVERFLOW/UNDERFLOW there), which must not
+            // be forwarded as if it were the ratio.
+            if qs.is_ok() {
+                return q
+                    .atan_round(target_precision, mode)
+                    .expect("target_precision >= 1");
+            }
+        }
+    }
+
     // Both finite and nonzero. Ziv-driven correct rounding under
     // every IEEE mode. The eval closure captures y and x and runs
     // the existing finite-case composition (`atan(y/x)` + quadrant
