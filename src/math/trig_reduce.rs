@@ -47,6 +47,29 @@ pub(super) struct Reduction {
     pub r: BigFloat,
 }
 
+/// Input-encoded certification depth for the reduction consumers
+/// (pf-jl35, ADR-0103). A residual `r` tiny against the quadrant
+/// scale parks the truth about `2|e_r|` relative bits from an
+/// on-grid value — the cos-shape arms evaluate to `±(1 − r²/2 + …)`
+/// and the sin/tan-shape arms carry their `r³` series corrections at
+/// the same depth — which exceeds the Ziv driver's fixed cap for
+/// inputs encoding deep proximity to a multiple of π/2. The
+/// reduction already resolves `r`'s position at any working
+/// precision (ADR-0098 grows its product width on realized
+/// collapse), so the residual's exponent is the depth. Called
+/// lazily, only when the driver's legacy schedule exhausts.
+pub(super) fn reduction_depth_hint(x: &BigFloat, working_prec: u32) -> u32 {
+    match reduce(x, working_prec) {
+        Some(Reduction { r, .. }) => match &r.class {
+            Class::Normal { exponent, .. } if *exponent < -1 => {
+                u32::try_from(exponent.saturating_neg().saturating_mul(2)).unwrap_or(u32::MAX)
+            }
+            _ => 0,
+        },
+        None => 0,
+    }
+}
+
 /// Reduces a finite normal `x` to `(quadrant, r)`. Returns `None`
 /// when `|x|` exceeds the table's reduction budget.
 pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
@@ -64,17 +87,22 @@ pub(super) fn reduce(x: &BigFloat, working_prec: u32) -> Option<Reduction> {
         _ => return None,
     };
 
-    // Range check: table is 4096 bits. Multiplying x · (2/π)
-    // produces a value whose bits relevant to the reduction span
-    // positions roughly [e_x − 1, e_x − 1 − working_prec − slack].
-    // For the lowest of these to fall inside the table we need
-    // `e_x + working_prec + 64 < 4096`.
-    let slack = i64::from(working_prec) + 64;
+    // Range cap on |x| alone: `e_x + 64 < 4096`. The cap was
+    // originally the 4096-bit 2/π table's reach and coupled the
+    // working precision into the test (`e_x + working_prec + 64 <
+    // 4096`); since ADR-0098 made `two_over_pi_at` compute live past
+    // the table, the working width is no longer a constraint — the
+    // coupled check made `reduce` refuse even `e_x = 1` whenever the
+    // working precision passed ~4032, which the ADR-0103 deep
+    // certification rung legitimately does (it surfaced as cos
+    // turning NaN+INVALID at the deep rung). The cap on `e_x` itself
+    // stays: it is the documented trig range policy, and it bounds
+    // the reduction's live-computation cost.
     // Saturating: an exponent near i64::MAX (reachable by repeated
     // squaring, which saturates the exponent under the no-emax design)
     // must route to the out-of-range `None` path, not overflow i64 and
     // wrap below 4096. Review 2026-05-29.
-    if e_x.saturating_add(slack) >= 4096 {
+    if e_x.saturating_add(64) >= 4096 {
         return None;
     }
 

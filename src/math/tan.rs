@@ -38,8 +38,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
-use super::trig_reduce::{reduce, Reduction};
-use super::ziv::{ziv_round, ZIV_BASE_GUARD};
+use super::trig_reduce::{reduce, reduction_depth_hint, Reduction};
+use super::ziv::{ziv_round_with_depth, ZIV_BASE_GUARD};
 use super::ziv_calibration::TAN_ERROR_GUARD;
 
 impl BigFloat {
@@ -119,7 +119,7 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         return (nan, Status::INVALID);
     }
 
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| match reduce(x, w) {
             Some(Reduction { quadrant, r }) => {
                 let s = sin_taylor(&r, w);
@@ -138,6 +138,11 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         target_precision,
         mode,
         TAN_ERROR_GUARD,
+        // Inputs near a multiple of π/2 park the truth ~2|e_r| bits
+        // from the grid (pf-jl35, ADR-0103): the series corrections
+        // of both the ratio (≈ r + r³/3) and the pole (≈ ∓1/r) arms
+        // sit at that depth. Resolved lazily on schedule exhaustion.
+        || reduction_depth_hint(x, ziv_first_working),
     );
     // Post-Ziv NaN-to-INVALID surfacing (pf-1axr, sin.rs precedent).
     if matches!(result.class, Class::Nan { .. }) && !status.invalid() {

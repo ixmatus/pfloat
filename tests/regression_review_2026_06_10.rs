@@ -1141,6 +1141,151 @@ fn atan2_tiny_inexact_ratio_control() {
     }
 }
 
+// ---------------------------------------------------------------
+// pf-jl35 (arc R2, slice R2.2, ADR-0103): the Ziv driver's fixed
+// cap (target + 1024) silently fell back on input-encoded
+// proximity deeper than the cap — deep directed modes 1 ulp wrong
+// with plain INEXACT. The driver now takes a lazily-evaluated
+// input-derived certification depth: on legacy-schedule
+// exhaustion, one further iteration at target + depth + 64
+// certifies under the identical interval test. zeta derives the
+// depth from its ADR-0098 conditioning probe; the trig family
+// from the reduction residual's exponent. All references mpmath
+// 1.4.1 at 2048-9000 bits at the bit-identical parsed inputs.
+// The bead's claimed correct value for cos (−1 + 2^-53) was
+// itself misadjudicated: the representable just above −1 at p53
+// is −(1 − 2^-54) (the binade below 1 has ulp 2^-54).
+// ---------------------------------------------------------------
+
+/// pf-jl35, the named zeta reproducer: ζ(1 − 2^-2000 @p2001) → 53
+/// under TowardPositive. Truth = −2^2000 + γ + O(2^-2000)
+/// (mpmath: ζ + 2^2000 = 0.57721…), strictly inside
+/// (−2^2000, −(2^2000 − 2^1947)), so TP must round up to
+/// −(2^2000 − 2^1947); the exhausted driver returned −2^2000
+/// (1 ulp low, INEXACT, run-verified red at e8b1284). NE stays
+/// −2^2000 (γ is ~4946 bits below the half-ulp).
+///
+/// Release builds only: the conditioning-deep Borwein evaluations
+/// cost ~1 min in release but ~15 min in the debug matrix — the
+/// row runs in the MPFR full-union release job (whose feature set
+/// covers this lane). Any red zeta instance needs its depth past
+/// the legacy cap plus the eval's carry slack (shallower depths
+/// survive by uncertified fallback: the eval still carries γ), so
+/// no cheap debug instance of this kernel's wiring exists; the
+/// trig rows below guard the shared driver mechanism in debug.
+#[cfg(not(debug_assertions))]
+#[test]
+fn zeta_near_pole_deep_directed_certifies() {
+    let one = BigFloat::try_from_i64_exact(1, 2001).unwrap();
+    let (t, _) = scaled(1, 2001, -2000).round_to_precision(2001, NE).unwrap();
+    let (s, ss) = one.sub(&t, NE);
+    assert!(ss.is_ok(), "1 - 2^-2000 must be exact at p2001");
+    let neg_big = scaled(1, 53, 2000).negated();
+    let (r_tp, st_tp) = s.zeta_round(53, RoundingMode::TowardPositive).unwrap();
+    assert_eq!(
+        r_tp.total_cmp(&neg_big.next_up().0),
+        Ordering::Equal,
+        "zeta TP must be -(2^2000 - 2^1947), got {r_tp}"
+    );
+    assert!(st_tp.inexact());
+    let (r_ne, st_ne) = s.zeta_round(53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&neg_big), Ordering::Equal, "NE control");
+    assert!(st_ne.inexact());
+}
+
+/// pf-jl35, the named trig reproducer: cos(RN2048(π)) → 53 under
+/// the inward modes. Truth = −1 + 4.227e-1235 (mpmath @9000),
+/// strictly inside (−1, −(1 − 2^-54)): `TowardPositive` and
+/// `TowardZero` must give `nextUp(−1)` = −(1 − 2^-54); the exhausted
+/// driver returned −1. The output needs ~4103 bits, past the old
+/// cap; the depth comes from the reduction residual.
+#[test]
+fn cos_near_pi_deep_directed_certifies() {
+    let (x, _) = pfloat::constants::pi(2048, NE);
+    let neg_one = BigFloat::try_from_i64_exact(-1, 53).unwrap();
+    let expected = neg_one.next_up().0;
+    for mode in [RoundingMode::TowardPositive, RoundingMode::TowardZero] {
+        let (r, st) = x.cos_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(&expected),
+            Ordering::Equal,
+            "cos {mode:?} must be nextUp(-1), got {r}"
+        );
+        assert!(st.inexact());
+    }
+    let (r_ne, _) = x.cos_round(53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&neg_one), Ordering::Equal, "NE control");
+}
+
+/// sin's exposed arm is the cos-shape quadrant: x = RN2048(π)/2
+/// (exact halving) sits ~2^-2050 from π/2, sin(x) = 1 − 1.06e-1235
+/// (mpmath @9000), strictly inside (1 − 2^-54, 1): the inward modes
+/// must give pred(1) = 1 − 2^-54, the nearest modes 1.
+#[test]
+fn sin_near_half_pi_deep_directed_certifies() {
+    let (pi, _) = pfloat::constants::pi(2048, NE);
+    let (x, sx) = pi.scale_by_pow2(-1);
+    assert!(sx.is_ok());
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let pred = one.next_down().0;
+    for mode in [RoundingMode::TowardZero, RoundingMode::TowardNegative] {
+        let (r, st) = x.sin_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(&pred),
+            Ordering::Equal,
+            "sin {mode:?} must be pred(1), got {r}"
+        );
+        assert!(st.inexact());
+    }
+    let (r_ne, _) = x.sin_round(53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&one), Ordering::Equal);
+}
+
+/// The reciprocal family inherits through the shared helper:
+/// sec(RN2048(π)) = −1 − 4.227e-1235 (mpmath @9000), strictly
+/// inside (−(1 + 2^-52), −1): `TowardNegative` must give
+/// −(1 + 2^-52), the inward modes −1.
+#[test]
+fn sec_near_pi_deep_directed_certifies() {
+    let (x, _) = pfloat::constants::pi(2048, NE);
+    let neg_one = BigFloat::try_from_i64_exact(-1, 53).unwrap();
+    let (r_tn, st_tn) = x.sec_round(53, RoundingMode::TowardNegative).unwrap();
+    assert_eq!(
+        r_tn.total_cmp(&neg_one.next_down().0),
+        Ordering::Equal,
+        "sec TN must be -(1 + 2^-52), got {r_tn}"
+    );
+    assert!(st_tn.inexact());
+    let (r_tz, _) = x.sec_round(53, RoundingMode::TowardZero).unwrap();
+    assert_eq!(r_tz.total_cmp(&neg_one), Ordering::Equal);
+}
+
+/// The reduction range cap is now on the input's exponent alone
+/// (`e_x < 4032`); the old working-coupled form (`e_x + working +
+/// 64 < 4096`) refused any deep working precision outright — which
+/// the deep rung legitimately requests, and which also spuriously
+/// refused high TARGETS for mid-range exponents. sin(2^3000) at
+/// target 1000 was NaN + INVALID before; it must now compute, and
+/// agree with its own higher-precision rounding (the refinement
+/// self-consistency oracle).
+#[test]
+fn sin_high_target_mid_exponent_no_longer_refused() {
+    let x = scaled(1, 53, 3000);
+    let (r1000, st) = x.sin_round(1000, NE).unwrap();
+    assert!(
+        !r1000.is_nan() && !st.invalid(),
+        "sin(2^3000) at target 1000 must compute, got {r1000} ({st:?})"
+    );
+    assert!(st.inexact());
+    let (r1500, _) = x.sin_round(1500, NE).unwrap();
+    let (r1500_down, _) = r1500.round_to_precision(1000, NE).unwrap();
+    assert_eq!(
+        r1000.total_cmp(&r1500_down),
+        Ordering::Equal,
+        "refinement self-consistency"
+    );
+}
+
 /// ADR-0101 verifier round 2: exp2 at the exact integers past the
 /// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
 /// exactly representable: `Status::OK`, every mode. One deeper,

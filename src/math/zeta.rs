@@ -51,7 +51,7 @@
 
 use super::lgamma::is_integer_test;
 use super::pi_at;
-use super::ziv::ziv_round;
+
 use super::ziv_calibration::ZETA_ERROR_GUARD;
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
@@ -225,11 +225,28 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             // there is no infinite recursion. The FE branch's
             // composition is now correct under every mode because
             // every constituent is.
-            let (result, status) = ziv_round(
+            // The certification depth near the pole is input-encoded
+            // (pf-jl35, ADR-0103): ζ(1 ± ε) ≈ ±1/ε + γ sits |e(ε)|
+            // bits of relative distance from the on-grid ±2^k, past
+            // the driver's fixed cap for deep ε. The lazy hint
+            // recomputes the ADR-0098 conditioning probe (Sterbenz-
+            // exact s − 1 at the input's own precision) only when
+            // the legacy schedule exhausts.
+            let (result, status) = super::ziv::ziv_round_with_depth(
                 |w| zeta_finite(x, w),
                 target_precision,
                 mode,
                 ZETA_ERROR_GUARD,
+                || {
+                    let probe = x.precision().max(target_precision.saturating_add(8));
+                    let one_probe = ci(1, probe);
+                    let (s_minus_1, _) = x
+                        .round_to_precision(probe, RoundingMode::NearestEven)
+                        .expect("precision >= 1")
+                        .0
+                        .sub(&one_probe, RoundingMode::NearestEven);
+                    u32::try_from(exponent_of(&s_minus_1).min(0).unsigned_abs()).unwrap_or(u32::MAX)
+                },
             );
             // Defensive INEXACT guard (pf-umlm, ADR-0066). The dispatched
             // dyadic outputs (ζ(0) = −1/2, the trivial zeros ζ(−2n) = 0,
