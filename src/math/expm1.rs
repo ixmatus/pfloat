@@ -155,6 +155,20 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         );
     }
 
+    // Positive exponent-rim forwarding (pf-qm0h family, ADR-0101).
+    // The Ziv closure below discards exp's Status, so exp's mode-aware
+    // rim dispatch (ADR-0096) arrived as a bare +inf that
+    // half_width(non-Normal) = 0 certified — and the Class::Normal
+    // INEXACT force then skipped it, emitting Status::OK on a
+    // transcendental result. Past the rim the −1 is unobservable at
+    // ANY expressible target: e^x ≥ 2^(2^62) puts the ulp at
+    // 2^(2^62 − target − 1) ≫ 1 for every target < 2^32, so
+    // expm1(x) and exp(x) round identically under every mode, flags
+    // included. Forward verbatim; exp's triage owns the rim.
+    if !x.is_sign_negative() && e >= 62 {
+        return x.exp_round(target_precision, mode);
+    }
+
     // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading
     // bits when x is small. The boost moves INSIDE the Ziv eval
     // closure so each working-precision retry inherits it.
