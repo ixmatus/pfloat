@@ -180,11 +180,122 @@ fn agm_kernel(
     }
 
     // Both operands are now finite, strictly positive, and unequal.
+    //
+    // Huge exponent spreads take the asymptotic branch (ADR-0106,
+    // the slice verifier's refutation 3). The Gauss iterates
+    // CONVERGE toward the AGM's exponent ≈ s − log₂(s) (s = half
+    // the spread), so near-convergence products sit near 2s — no
+    // static normalization keeps a spread ≳ 2^63 loop off the rim
+    // (the opposite-rim pair certified a ~2^42-wrong value with
+    // Status OK). For a ≥ b, AGM(a, b) = π·a / (2·ln(4a/b)) with
+    // relative error O((b/a)²) (K(k) → ln(4/k′) as k → 1; pinned
+    // numerically against mpmath, error shrinking like (b/a)²), so
+    // once 2·spread clears every expressible target-plus-guard the
+    // closed form IS the correctly roundable value: spread ≥ 2^33
+    // gives 2·spread ≥ 2^34 > u32::MAX + 1024 with margin. The
+    // composition orders π/(2L) before ·a so no intermediate
+    // leaves the representable range (π·a alone would saturate at
+    // the top rim).
+    let (e_a, e_b) = match (&a.class, &b.class) {
+        (Class::Normal { exponent: ea, .. }, Class::Normal { exponent: eb, .. }) => (*ea, *eb),
+        _ => unreachable!("specials and zeros dispatched above"),
+    };
+    if e_a.saturating_sub(e_b).unsigned_abs() >= 1u64 << 33 {
+        let (big, small, e_big, e_small) = if e_a >= e_b {
+            (a, b, e_a, e_b)
+        } else {
+            (b, a, e_b, e_a)
+        };
+        // L = ln(4·big/small) = (e_big − e_small + 2)·ln2
+        //     + ln(m_big) − ln(m_small), with the mantissas shifted
+        // exactly to exponent 0 (m ∈ [1, 2), so both logs are O(1)
+        // with O(1) absolute error at w bits). The integer exponent
+        // part is EXACT — the first draft computed ln(big) and
+        // ln(small) whole, and for same-sign rim exponents their
+        // near-cancellation amplified the logs' absolute error by up
+        // to (|e_a| + |e_b|)/spread ≈ 2^31 past the charged
+        // half-width, certifying 1-ulp-wrong answers (the revision
+        // verifier's refutation, 40 constructed reproducers). The
+        // split leaves every term's relative error at O(2^-w),
+        // uniformly in the exponents. spread + 2 spans up to 65 bits
+        // (opposite rims), held exactly as two i64 halves; their sum
+        // is exact at w ≥ target + 64 ≥ 65 bits.
+        let spread2 = i128::from(e_big) - i128::from(e_small) + 2;
+        let n1 = (spread2 / 2) as i64;
+        let n2 = (spread2 - spread2 / 2) as i64;
+        let (m_big, sm1) = big.scale_by_pow2(-e_big);
+        let (m_small, sm2) = small.scale_by_pow2(-e_small);
+        debug_assert!(
+            sm1.is_ok() && sm2.is_ok(),
+            "shifting a Normal to exponent 0 is exact"
+        );
+        let (result, status) = ziv_round(
+            |w| {
+                let ne = RoundingMode::NearestEven;
+                let ma_w = m_big.round_to_precision(w, ne).expect("precision >= 1").0;
+                let ms_w = m_small.round_to_precision(w, ne).expect("precision >= 1").0;
+                let (lma, _) = ma_w.ln(ne);
+                let (lms, _) = ms_w.ln(ne);
+                let h1 = BigFloat::try_from_i64_exact(n1, w).expect("precision >= 1");
+                let h2 = BigFloat::try_from_i64_exact(n2, w).expect("precision >= 1");
+                let (n_bf, _) = h1.add(&h2, ne);
+                let ln2 = super::ln_2_at(w);
+                let (l_int, _) = n_bf.mul(&ln2, ne);
+                let (l_mant, _) = lma.sub(&lms, ne);
+                let (l, _) = l_int.add(&l_mant, ne);
+                let (two_l, _) = l.scale_by_pow2(1);
+                // π via the Brent–Salamin iteration: available under
+                // the agm feature itself (pi_at's table dispatch is
+                // trig-gated — the first draft's use of it broke the
+                // big,agm combo build).
+                let pi = super::agm_constants::pi_via_agm(w);
+                let (t, _) = pi.div(&two_l, ne);
+                // π/(2L) multiplies before ·big so no intermediate
+                // can leave the representable range.
+                let big_w = big.round_to_precision(w, ne).expect("precision >= 1").0;
+                t.mul(&big_w, ne).0
+            },
+            target_precision,
+            mode,
+            AGM_ERROR_GUARD,
+        );
+        auto_raise(status);
+        return (result, status);
+    }
+
+    // Normalize toward exponent 0 (pf-06lk, ADR-0106). The Gauss
+    // iteration's mul/sqrt saturate their result exponents at the
+    // i64 rim per the no-emax contract, the closure discards those
+    // per-op statuses, and the clamp is independent of the working
+    // precision — so the interval test certified corrupted iterates
+    // for operand exponents within ~2^62 of the rim (worst case
+    // ~10^31 wrong with Status OK). AGM is degree-1 homogeneous,
+    // agm(s·a, s·b) = s·agm(a, b), so scale both operands by 2^−m
+    // with m the floor midpoint of their exponents (pure
+    // shift-and-mask, overflow-free; clamped one above i64::MIN so
+    // its negation exists — the verifier's refutation 1 found
+    // agm(2^MIN, 1.5·2^MIN) wrapping `-m` into an equal-pair
+    // Status-OK lie). With the asymptotic branch above owning every
+    // spread ≥ 2^33, the normalized exponents are within ±2^32 of
+    // 0: every internal product lands near exponent 0, sums stay
+    // within the operand range, and nothing can reach the rim. The
+    // result scales back by 2^m, exactness asserted below at the
+    // scale-back itself.
+    let m = ((e_a >> 1) + (e_b >> 1) + (e_a & e_b & 1)).max(i64::MIN + 1);
+    let (a_norm, sa_norm) = a.scale_by_pow2(-m);
+    let (b_norm, sb_norm) = b.scale_by_pow2(-m);
+    debug_assert!(
+        sa_norm.is_ok() && sb_norm.is_ok(),
+        "normalization is a half-spread shift (< 2^33 here) and cannot saturate"
+    );
+    let a = &a_norm;
+    let b = &b_norm;
+
     // Ziv-driven correct rounding under every IEEE mode: the eval
-    // closure captures (a, b) and runs the Gauss AGM iteration at
-    // working precision w. Quadratic convergence doubles the bit
-    // agreement each step, so Ziv adds at most one extra iteration
-    // per retry (O(log w) → O(log 2w) ≈ +1).
+    // closure captures the normalized (a, b) and runs the Gauss AGM
+    // iteration at working precision w. Quadratic convergence
+    // doubles the bit agreement each step, so Ziv adds at most one
+    // extra iteration per retry (O(log w) → O(log 2w) ≈ +1).
     let (result, status) = ziv_round(
         |w| {
             let mut a_n = a
@@ -275,6 +386,19 @@ fn agm_kernel(
         mode,
         AGM_ERROR_GUARD,
     );
+    // Scale back. NOT asserted exact: rounding the normalized AGM at
+    // a target coarser than the operands can carry past max(a, b) to
+    // the next binade (the verifier's refutation 2 constructed it
+    // deterministically: operands just below 2^(i64::MAX + 1) whose
+    // AGM rounds up at 53 bits), and at the top rim that binade is
+    // unrepresentable. scale_by_pow2 then applies the documented
+    // saturation contract (meaningful mantissa under the clamped
+    // exponent) and flags it; the flag is merged into the returned
+    // Status instead of being discarded — the first draft
+    // debug-asserted it away, a new panic in debug and a dropped
+    // mandatory OVERFLOW in release.
+    let (result, s_back) = result.scale_by_pow2(m);
+    let status = status | s_back;
     auto_raise(status);
     (result, status)
 }

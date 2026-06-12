@@ -1552,6 +1552,222 @@ fn acos_near_one_shallow_control() {
     assert!(st.inexact());
 }
 
+// ---------------------------------------------------------------
+// pf-06lk (arc R2, slice R2.4, ADR-0106): agm loop exponent
+// saturation. The Gauss iteration's mul/sqrt saturate their result
+// exponents at the i64 rim per the no-emax contract; the eval
+// closure discarded those statuses, the clamp is w-independent, so
+// the Ziv interval test certified the corrupted iterates — worst
+// case agm(2^(2^62+1000), 3·2^(2^62+1000)) returned a value ~10^31
+// wrong with Status OK. AGM is degree-1 homogeneous:
+// agm(s·a, s·b) = s·agm(a, b), so the kernel now normalizes the
+// operands toward exponent 0 (the midpoint of the operand
+// exponents, an exact power-of-two scaling), runs the loop near
+// scale 1 where no internal operation can reach the rim, and
+// scales the rounded result back exactly. Expected values:
+// AGM(2^k, 3·2^k) = AGM(1, 3)·2^k with AGM(1, 3) from mpmath 1.4.1
+// @400 bits, parsed at 53 bits then scaled exactly.
+// ---------------------------------------------------------------
+
+/// The boundary case (k = 2^62, 47% low pre-fix), the worst case
+/// (k = 2^62 + 1000, ~10^31 wrong WITH STATUS OK pre-fix), the
+/// negative mirror, and the in-range control (k = 2^62 − 30,
+/// correct pre-fix and pinned so the normalization preserves it).
+#[test]
+fn agm_rim_exponents_certify_the_true_agm() {
+    let agm13 = "1.86361678324489654235568903102427059515753285682685372222044";
+    let k = 1_i64 << 62;
+    for (label, kk, expect_ok_defect) in [
+        ("k=2^62", k, false),
+        ("k=2^62+1000", k + 1000, true),
+        ("k=-(2^62+1000)", -(k + 1000), false),
+        ("k=2^62-30", k - 30, false),
+    ] {
+        let a = scaled(1, 53, kk);
+        let b = scaled(3, 53, kk);
+        let (r, st) = a.agm(&b, NE);
+        let (m, _) = BigFloat::parse_str(agm13, 53, NE).unwrap();
+        let (expected, se) = m.scale_by_pow2(kk);
+        assert!(se.is_ok());
+        assert_eq!(
+            r.total_cmp(&expected),
+            Ordering::Equal,
+            "agm {label}: got {r}, want {expected}"
+        );
+        assert!(
+            st.inexact(),
+            "agm {label}: INEXACT missing{}",
+            if expect_ok_defect {
+                " (Status OK was the worst-case defect)"
+            } else {
+                ""
+            }
+        );
+    }
+}
+
+/// Asserts a Normal result's top-aligned mantissa limb and exponent
+/// (the cosh rim-row precedent: Display saturates at astronomical
+/// exponents, so structural comparison is the only honest one).
+fn assert_parts(label: &str, r: &BigFloat, mantissa: u64, exponent: i64) {
+    match r.parts() {
+        pfloat::Parts::Normal {
+            exponent: e,
+            mantissa: m,
+            ..
+        } => {
+            assert_eq!(e, exponent, "{label}: exponent");
+            assert_eq!(m, &[mantissa], "{label}: mantissa");
+        }
+        other => panic!("{label}: expected a Normal, got {other:?}"),
+    }
+}
+
+/// ADR-0106 verifier refutation 1: the exponent-midpoint's negation
+/// overflowed for both operands at the bottom rim, wrapping the
+/// normalization shift into an equal-pair Status-OK lie in release
+/// (and a debug panic). Expected = RN53(AGM(1, 3))·2^MIN, oracle
+/// mantissa from mpmath 1.4.1 @500 bits via exact integer rounding.
+#[test]
+fn agm_bottom_rim_corner_is_exact_homogeneous() {
+    let a = scaled(1, 53, i64::MIN);
+    let b = scaled(3, 53, i64::MIN);
+    let (r, st) = a.agm(&b, NE);
+    assert_parts("agm bottom rim", &r, 17_188_830_925_994_225_664, i64::MIN);
+    assert!(st.inexact(), "Status OK was the wrapped-shift defect");
+}
+
+/// ADR-0106 verifier refutation 2: rounding the normalized AGM at a
+/// target coarser than the operands can carry past max(a, b); at the
+/// top rim the carried binade is unrepresentable, the scale-back
+/// saturates per the no-emax contract, and the flag must be
+/// SURFACED (the first draft debug-asserted it away). Operands
+/// (2 − 2^-69)·2^MAX and (2 − 2^-68)·2^MAX at p113: the true AGM
+/// sits within 2^-53 of 2^(MAX+1).
+#[test]
+fn agm_top_rim_carry_surfaces_overflow() {
+    let two = BigFloat::try_from_i64_exact(2, 113).unwrap();
+    let (a0, sa) = two.sub(&scaled(1, 113, -69), NE);
+    assert!(sa.is_ok());
+    let (b0, sb) = two.sub(&scaled(1, 113, -68), NE);
+    assert!(sb.is_ok());
+    let (a, s1) = a0.scale_by_pow2(i64::MAX);
+    let (b, s2) = b0.scale_by_pow2(i64::MAX);
+    assert!(s1.is_ok() && s2.is_ok());
+    let (r_ne, st_ne) = a.agm_round(&b, 53, NE).unwrap();
+    assert_parts("agm carry NE", &r_ne, 1 << 63, i64::MAX);
+    assert!(
+        st_ne.overflow() && st_ne.inexact(),
+        "the scale-back saturation flag must be surfaced, got {st_ne:?}"
+    );
+    // The inward mode stays below the binade: exact scale-back, no
+    // overflow; value = the all-ones 53-bit mantissa at MAX.
+    let (r_tz, st_tz) = a.agm_round(&b, 53, RoundingMode::TowardZero).unwrap();
+    assert_parts("agm carry TZ", &r_tz, u64::MAX << 11, i64::MAX);
+    assert!(st_tz.inexact() && !st_tz.overflow());
+}
+
+/// ADR-0106 verifier refutation 3: no static normalization keeps a
+/// spread ≳ 2^63 loop off the rim (the iterates converge to
+/// exponent ≈ half-spread − log₂(half-spread), so near-convergence
+/// products approach the full spread): the opposite-rim pair
+/// certified a ~2^42-wrong value WITH STATUS OK. Spreads ≥ 2^33 now
+/// take the asymptotic branch AGM(a, b) = π·a/(2·ln(4a/b)),
+/// correctly roundable there (relative error O((b/a)²), far below
+/// every expressible target). Oracle mantissas: π/((4s+4)·ln 2) at
+/// exact big-integer s, mpmath 1.4.1 @500 bits, integer-rounded.
+#[test]
+fn agm_huge_spreads_take_the_asymptotic_branch() {
+    // The verifier's measured-boundary case: s = 2^62 + 100.
+    let s_exp = (1_i64 << 62) + 100;
+    let (r, st) = scaled(1, 53, s_exp).agm(&scaled(1, 53, -s_exp), NE);
+    assert_parts(
+        "agm s=2^62+100",
+        &r,
+        10_450_910_948_271_020_032,
+        4_611_686_018_427_387_942,
+    );
+    assert!(st.inexact());
+
+    // The opposite-rim Status-OK lie: agm(2^(MAX−1), 2^(MIN+2)).
+    let (r2, st2) = scaled(1, 53, i64::MAX - 1).agm(&scaled(1, 53, i64::MIN + 2), NE);
+    assert_parts(
+        "agm opposite rims",
+        &r2,
+        10_450_910_948_271_022_080,
+        9_223_372_036_854_775_743,
+    );
+    assert!(st2.inexact(), "Status OK was the opposite-rim defect");
+}
+
+/// The revision verifier's amplification reproducer: SAME-SIGN rim
+/// exponents at spread ~2^33. The first asymptotic draft computed
+/// ln(big) and ln(small) whole; their near-cancellation amplified
+/// the logs' absolute error ~2^31 past the charged half-width and
+/// certified the wrong side of a constructed near-tie (1 ulp,
+/// INEXACT). The exact exponent split (integer part of L exact,
+/// mantissa logs O(1)) kills the amplification; the truth side is
+/// pinned by mpmath @2600 bits (tie fraction 0.5000000000009…, so
+/// NE rounds UP to …329).
+#[test]
+fn agm_same_sign_rim_spread_resolves_the_tie_side() {
+    let a = scaled(1, 53, 1_i64 << 62);
+    let (bm, sp) = BigFloat::parse_str("10384592579223522102099639059340099", 113, NE).unwrap();
+    assert!(sp.is_ok(), "the 113-bit integer must parse exactly");
+    let (b, sb) = bm.scale_by_pow2(4_611_686_009_837_453_199);
+    assert!(sb.is_ok());
+    let (r, st) = a.agm_round(&b, 53, NE).unwrap();
+    assert_parts(
+        "agm same-sign rim tie",
+        &r,
+        10_450_910_945_837_729_792,
+        4_611_686_018_427_387_872,
+    );
+    assert!(st.inexact());
+}
+
+/// The loop/asymptotic seam: one pair just below the 2^33 spread
+/// threshold (the loop) and one at it (the branch) — both match the
+/// same oracle family (the asymptotic error 4^-s is astronomically
+/// below the 53-bit ulp at s ≈ 2^32, so the two paths must agree
+/// with the formula and, transitively, with each other).
+#[test]
+fn agm_spread_seam_is_coherent() {
+    for (s_exp, mantissa, exponent) in [
+        (
+            1_i64 << 32,
+            10_450_910_945_837_729_792_u64,
+            4_294_967_264_i64,
+        ),
+        ((1_i64 << 32) - 2, 10_450_910_950_704_314_368, 4_294_967_262),
+    ] {
+        let (r, st) = scaled(1, 53, s_exp).agm(&scaled(1, 53, -s_exp), NE);
+        assert_parts("agm seam", &r, mantissa, exponent);
+        assert!(st.inexact());
+    }
+}
+
+/// ADR-0095's extreme-spread case stays correct under the
+/// normalization (the midpoint exponent is ~0 there, so the
+/// normalized loop matches the old one; pinned against the
+/// refinement-consistency oracle).
+#[test]
+fn agm_extreme_spread_control() {
+    let a = scaled(1, 53, 1000);
+    let b = scaled(1, 53, -1000);
+    let (r53, st) = a.agm(&b, NE);
+    assert!(st.inexact());
+    let a_hi = scaled(1, 600, 1000);
+    let b_hi = scaled(1, 600, -1000);
+    let (r_hi, _) = a_hi.agm_round(&b_hi, 600, NE).unwrap();
+    let (r_hi_53, _) = r_hi.round_to_precision(53, NE).unwrap();
+    assert_eq!(
+        r53.total_cmp(&r_hi_53),
+        Ordering::Equal,
+        "agm@53 disagrees with round(agm@600 -> 53)"
+    );
+}
+
 /// ADR-0101 verifier round 2: exp2 at the exact integers past the
 /// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
 /// exactly representable: `Status::OK`, every mode. One deeper,
