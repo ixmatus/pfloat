@@ -73,7 +73,13 @@ fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
         } => BigFloat {
             class: Class::Normal {
                 sign: Sign::Positive,
-                exponent: exponent - shift,
+                // Saturating (pf-a77o, ADR-0107): a value near the
+                // bottom rim made the raw subtraction overflow (a
+                // debug panic, wrapped garbage in release). The clamp
+                // at i64::MIN OVERSTATES the half-width — the sound
+                // direction: an overstated width only refuses
+                // certification.
+                exponent: exponent.saturating_sub(shift),
                 mantissa: mantissa.clone(),
             },
             precision: y.precision,
@@ -250,7 +256,16 @@ pub(crate) fn ziv_round_capturing_with_depth(
             // input-encoded structure can park the truth next to a
             // boundary, and certify there if that is past the cap.
             deep_tried = true;
-            let deep_guard = depth_hint().saturating_add(64);
+            // The ceiling bounds exponent-encoded depths (an i64 an
+            // adversary writes for free): past it the deep rung is
+            // refused and the fall-through keeps the documented
+            // 1-ulp INEXACT caveat (pf-a77o, ADR-0107). Without it,
+            // a saturated hint would request a u32::MAX-bit
+            // evaluation — a de facto hang from a 16-byte input.
+            // Input-precision-proportional hints below the ceiling
+            // (16 Mbit ≈ a 2 MB operand) still certify.
+            const ZIV_DEEP_GUARD_CEILING: u32 = 1 << 24;
+            let deep_guard = depth_hint().saturating_add(64).min(ZIV_DEEP_GUARD_CEILING);
             if deep_guard <= ZIV_GUARD_CAP {
                 break attempt;
             }

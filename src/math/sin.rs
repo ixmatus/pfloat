@@ -196,6 +196,22 @@ pub(super) fn sin_taylor(r: &BigFloat, working_prec: u32) -> BigFloat {
         return BigFloat::try_new_zero(r.sign(), working_prec).expect("precision >= 1");
     }
 
+    // Deep-tiny r: the r² (and every later) term's TRUE position is
+    // below the working window, but the mul SATURATES its exponent at
+    // i64::MIN (pf-a77o, ADR-0107) — the saturated term then sits a
+    // few bits below r instead of 2|e_r| below, and adding it
+    // corrupted the sum (sin(2^(i64::MIN+10)) returned 0.9987·x,
+    // certified). When the cubic term cannot reach the window, r IS
+    // the correct w-bit evaluation.
+    if let Class::Normal { exponent, .. } = &r.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return r
+                .round_to_precision(working_prec, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+        }
+    }
+
     let r_sq = r.mul(r, RoundingMode::NearestEven).0;
     let mut term = r.clone();
     let mut sum = term.clone();
@@ -229,6 +245,15 @@ pub(super) fn cos_taylor(r: &BigFloat, working_prec: u32) -> BigFloat {
     let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     if r.is_zero() {
         return one;
+    }
+
+    // Deep-tiny r (the sin_taylor rationale above): the saturated r²
+    // term would corrupt the sum; 1 is the correct w-bit evaluation
+    // when the quadratic term cannot reach the window.
+    if let Class::Normal { exponent, .. } = &r.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return one;
+        }
     }
 
     let r_sq = r.mul(r, RoundingMode::NearestEven).0;

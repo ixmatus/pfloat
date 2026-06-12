@@ -417,7 +417,10 @@ fn finite_to_bigfloat(
         let intermediate_precision = (top_bit + 1) as u32;
         let intermediate_limbs = limbs_for(intermediate_precision);
         let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
-        let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+        // u64 arithmetic: `limbs · 64` exceeds u32 near the precision
+        // ceiling (pf-9wb2, ADR-0107); the difference itself is < 64.
+        let dst_low_zero =
+            ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
         or_left_shifted_into(
             &mut intermediate,
             &m_times_5,
@@ -459,7 +462,16 @@ fn finite_to_bigfloat(
             .saturating_add(guard)
             .saturating_add(pow5_bits)
             .saturating_sub(m_bits)
-            .saturating_add(2);
+            .saturating_add(2)
+            // Clamp so the shifted buffer below (m_bits + l) fits the
+            // u32 domain (pf-9wb2, ADR-0107): every downstream use of
+            // `l` (the buffer size, the shift, the exponent
+            // bookkeeping) then stays self-consistent. At the
+            // documented u32::MAX precision ceiling this trims only
+            // guard tail; the raw add wrapped instead, truncated the
+            // mantissa's TOP bits, and panicked at the
+            // "non-zero quotient" expect on valid input.
+            .min(u32::MAX - m_bits);
 
         let total_bits = m_bits + l;
         let shifted_limbs = limbs_for(total_bits);
@@ -472,7 +484,10 @@ fn finite_to_bigfloat(
         let intermediate_precision = (top_bit + 1) as u32;
         let intermediate_limbs = limbs_for(intermediate_precision);
         let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
-        let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+        // u64 arithmetic: `limbs · 64` exceeds u32 near the precision
+        // ceiling (pf-9wb2, ADR-0107); the difference itself is < 64.
+        let dst_low_zero =
+            ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
         or_left_shifted_into(
             &mut intermediate,
             &quotient,

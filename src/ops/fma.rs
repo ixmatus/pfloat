@@ -226,7 +226,18 @@ fn fma_finite_finite_finite(
     let product = multiply_limbs(&a_int, &b_int);
 
     let prod_top_bit = top_set_bit(&product).expect("non-zero product");
-    let prod_precision = (prod_top_bit + 1) as u32;
+    // The product of two operands near the documented u32::MAX
+    // precision ceiling spans more bits than a u32 can name; the raw
+    // cast wrapped silently (pf-9wb2, ADR-0107). Reaching this needs
+    // ~2^31-bit operands (a half-gigabyte mantissa each) — at the
+    // ceiling's edge the saturation below keeps the arithmetic
+    // self-consistent, and the debug assertion documents the
+    // envelope.
+    debug_assert!(
+        prod_top_bit < u32::MAX as usize,
+        "operand-precision sum exceeds the u32 ceiling (ADR-0002 edge)"
+    );
+    let prod_precision = u32::try_from(prod_top_bit.saturating_add(1)).unwrap_or(u32::MAX);
     // `e_a + e_b` can exceed the `i64` range pfloat uses for
     // exponents (operands from, e.g., `exp` of a large argument);
     // the bare `i64` sum would panic/wrap — the same caller-
@@ -256,7 +267,7 @@ fn fma_finite_finite_finite(
     // required by the BigFloat invariants.
     let prod_storage_limbs = limbs_for(prod_precision);
     let mut prod_mantissa: Vec<u64> = vec![0u64; prod_storage_limbs];
-    let dst_low_zero = (prod_storage_limbs as u32) * 64 - prod_precision;
+    let dst_low_zero = ((prod_storage_limbs as u64) * 64 - u64::from(prod_precision)) as u32;
     or_left_shifted_into(&mut prod_mantissa, &product, prod_precision, dst_low_zero);
 
     let product_bf = BigFloat {

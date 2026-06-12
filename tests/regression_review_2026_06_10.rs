@@ -1768,6 +1768,127 @@ fn agm_extreme_spread_control() {
     );
 }
 
+// ---------------------------------------------------------------
+// pf-a77o + pf-9wb2 (arc R2, slice R2.5, ADR-0107): the rim and
+// ceiling hardening pair. (a) round_with_infinitesimal's residue
+// placement saturated near i64::MIN, certifying Status-OK lies
+// through every tiny-x dispatch (the ADR-0102 interim rim guards
+// existed for exactly this; now removed — the computation lifts
+// away from the rim and rounds in the lifted frame). (b) the
+// Taylor loops' saturated r² terms parked a few bits below r
+// instead of 2|e_r| below, corrupting sums near the rim by ~2^43
+// ulps. (c) the driver's half-width exponent arithmetic could
+// overflow (debug panic / release garbage). (d) parse_str at the
+// documented u32::MAX precision ceiling wrapped its buffer width
+// and panicked on valid input. Directions for the tiny-x rows are
+// the ADR-0102/0104 series signs (|atan x| < |x|, sinh/atanh grow,
+// truth strictly off-grid).
+// ---------------------------------------------------------------
+
+/// The rim guards are gone and the lifted infinitesimal rounds the
+/// true side at any Normal exponent: atan at the bottom rim under
+/// the inward mode takes pred, under the nearest mode the argument
+/// — both INEXACT (Status OK / exact-zero results were the
+/// verifier-recorded defects at e8b1284..fd2758c baselines).
+#[test]
+fn tiny_x_dispatches_are_sound_at_the_bottom_rim() {
+    for k in [i64::MIN + 1, i64::MIN + 10, i64::MIN + 54] {
+        let x = scaled(1, 53, k);
+        let (r_tz, st_tz) = x.atan_round(53, RoundingMode::TowardZero).unwrap();
+        assert_eq!(
+            r_tz.total_cmp(&x.next_down().0),
+            Ordering::Equal,
+            "atan(2^(MIN+{})) TZ must be pred",
+            k - i64::MIN
+        );
+        assert!(st_tz.inexact());
+        let (r_ne, st_ne) = x.atan_round(53, NE).unwrap();
+        assert_eq!(r_ne.total_cmp(&x), Ordering::Equal);
+        assert!(st_ne.inexact(), "Status OK was the defect");
+    }
+    // The grow-direction family at the rim (sinh/atanh returned
+    // (1 + 2^-9)·x with Status OK).
+    let x = scaled(1, 53, i64::MIN + 10);
+    for f in [BigFloat::sinh_round, BigFloat::atanh_round] {
+        let (r, st) = f(&x, 53, RoundingMode::TowardZero).unwrap();
+        assert_eq!(r.total_cmp(&x), Ordering::Equal, "grow-family TZ must be x");
+        assert!(st.inexact());
+        let (r_tp, _) = f(&x, 53, RoundingMode::TowardPositive).unwrap();
+        assert_eq!(r_tp.total_cmp(&x.next_up().0), Ordering::Equal);
+    }
+    // hypot's dispatch at the rim (was (big, OK)).
+    let big = scaled(1, 53, i64::MIN + 30);
+    let small = scaled(1, 53, i64::MIN);
+    let (rh, sth) = big.hypot_round(&small, 53, NE).unwrap();
+    assert_eq!(rh.total_cmp(&big), Ordering::Equal);
+    assert!(sth.inexact(), "falsely-exact was the defect");
+}
+
+/// The bottom-most borrow: atan(2^MIN)'s truth lies strictly inside
+/// (0, `MinPos`), where the no-subnormal grid has nothing below. The
+/// inward modes give +0 with UNDERFLOW|INEXACT; the nearest modes
+/// give `MinPos` (the truth sits an infinitesimal below it, far above
+/// the to-nearest midpoint) with INEXACT and no underflow
+/// (after-rounding tininess, the exp-window convention).
+#[test]
+fn tiny_x_borrow_below_min_pos_is_mode_aware() {
+    let x = scaled(1, 53, i64::MIN);
+    let (r_tz, st_tz) = x.atan_round(53, RoundingMode::TowardZero).unwrap();
+    assert!(r_tz.is_zero() && !r_tz.is_sign_negative());
+    assert!(st_tz.underflow() && st_tz.inexact());
+    let (r_ne, st_ne) = x.atan_round(53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&x), Ordering::Equal, "NE must be MinPos");
+    assert!(st_ne.inexact() && !st_ne.underflow());
+}
+
+/// The saturated-Taylor-term corruption (pf-a77o site (b)):
+/// sin(2^(MIN+10)) returned 0.9987·x (~2^43 ulps wrong) because the
+/// r³ term's exponent clamped at `i64::MIN`, a few bits below r
+/// instead of `2|e_r|`. The deep-tiny evaluations now return the
+/// argument (the correct w-bit value); certification past the
+/// driver's deep-rung ceiling falls back 1-ulp-honest (TZ pinned at
+/// the fall-back side, the documented caveat at beyond-ceiling
+/// exponent-encoded depth).
+#[test]
+fn sin_taylor_rim_term_no_longer_corrupts() {
+    let x = scaled(1, 53, i64::MIN + 10);
+    let (r_ne, st_ne) = x.sin_round(53, NE).unwrap();
+    assert_eq!(
+        r_ne.total_cmp(&x),
+        Ordering::Equal,
+        "sin NE must be the argument, got {r_ne}"
+    );
+    assert!(st_ne.inexact());
+    // The rim-saturated atan2 quotient keeps y's sign now (was −0
+    // for positive arguments through the same saturated arithmetic).
+    let y = scaled(1, 53, i64::MIN + 10);
+    let xq = scaled(1, 53, 1000);
+    let (r2, st2) = y.atan2_round(&xq, 53, RoundingMode::TowardZero).unwrap();
+    assert!(
+        !r2.is_sign_negative() && !r2.is_zero(),
+        "atan2 rim quotient must stay positive nonzero, got {r2}"
+    );
+    assert!(st2.inexact());
+}
+
+/// pf-9wb2, the named reproducer: parse_str("0.5", u32::MAX) panicked
+/// at the "non-zero quotient" expect — the buffer-width add wrapped
+/// at the documented precision ceiling. Release builds only: the
+/// honest cost of a u32::MAX-precision request is a ~512 MB
+/// computation (~0.6 s release, far slower in the debug matrix).
+#[cfg(not(debug_assertions))]
+#[test]
+fn parse_str_at_the_precision_ceiling_is_exact() {
+    let (v, st) = BigFloat::parse_str("0.5", u32::MAX, NE).unwrap();
+    assert!(st.is_ok(), "0.5 is dyadic: the parse must be exact");
+    let half = scaled(1, 53, -1);
+    assert_eq!(
+        v.partial_cmp(&half).0,
+        Some(Ordering::Equal),
+        "got a wrong value at the ceiling"
+    );
+}
+
 /// ADR-0101 verifier round 2: exp2 at the exact integers past the
 /// upstream dispatch's i64 magnitude cap. 2^(-2^63) = `MinPos` is
 /// exactly representable: `Status::OK`, every mode. One deeper,

@@ -240,17 +240,15 @@ fn atan2_kernel(
         };
         let e_t_hi = ey.saturating_sub(ex);
         let w2 = target_precision.saturating_mul(2).saturating_add(2);
-        // The rim guard mirrors atan's (ADR-0102 verifier finding): the
-        // forwarded quotient carries precision w2, so atan's residue
-        // placement saturates within w2 + 5 of i64::MIN (plus 1 for
-        // e_t ≥ e_t_hi − 1) and would certify a wrong value with
-        // Status OK; refuse the forward there (pre-existing driver rim
-        // behavior, fixed at the root by pf-a77o).
+        // The ADR-0102 rim guard is gone: round_with_infinitesimal
+        // now lifts its computation away from the bottom rim
+        // (pf-a77o, ADR-0107), so the forward is sound at every
+        // quotient exponent the div can produce (a rim-SATURATED
+        // quotient still flags and is still refused by is_ok()).
         if e_t_hi
             <= i64::from(target_precision)
                 .saturating_add(5)
                 .saturating_neg()
-            && e_t_hi >= i64::MIN.saturating_add(i64::from(w2)).saturating_add(6)
         {
             let (q, qs) = y
                 .div_round(x, w2, RoundingMode::NearestEven)

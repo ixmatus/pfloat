@@ -143,16 +143,11 @@ fn hypot_kernel(x: &BigFloat, y: &BigFloat, target: u32, mode: RoundingMode) -> 
         };
         let two_gap = e_b.saturating_sub(e_s).saturating_mul(2);
         let max_pt = i64::from(big.precision.max(target));
-        // Rim guard (ADR-0102 verifier finding): round_with_infinitesimal
-        // places its residue at e_b − (max_pt + 3) + 1; within that reach
-        // of i64::MIN the placement saturates, base + ε becomes exactly
-        // representable, and the rounding certifies a wrong value with
-        // Status OK. Refuse the dispatch there (the driver fall-through
-        // keeps the pre-existing rim behavior) until pf-a77o fixes the
-        // residue placement at its root.
-        if two_gap >= max_pt.saturating_add(6)
-            && e_b >= i64::MIN.saturating_add(max_pt).saturating_add(5)
-        {
+        // The ADR-0102 rim guard is gone: round_with_infinitesimal
+        // now lifts its computation away from the bottom rim
+        // (pf-a77o, ADR-0107), so the dispatch is sound at every
+        // Normal exponent.
+        if two_gap >= max_pt.saturating_add(6) {
             return crate::rounding::round_with_infinitesimal(
                 &big.abs(),
                 Sign::Positive,

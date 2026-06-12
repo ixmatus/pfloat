@@ -126,16 +126,11 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { exponent, .. } => *exponent,
         _ => unreachable!("specials dispatched above"),
     };
-    // The rim guard mirrors hypot's (ADR-0102 verifier finding): within
-    // max(p, target) + 5 of i64::MIN the infinitesimal's residue
-    // placement saturates and the dispatch would certify a wrong value
-    // with Status OK; refuse it there (pre-existing rim behavior, fixed
-    // at the root by pf-a77o).
+    // The ADR-0102 rim guard is gone: round_with_infinitesimal now
+    // lifts its computation away from the bottom rim (pf-a77o,
+    // ADR-0107), so the dispatch is sound at every Normal exponent.
     let max_pt = i64::from(x.precision.max(target_precision));
-    if e < 0
-        && e.saturating_mul(-2) >= max_pt.saturating_add(6)
-        && e >= i64::MIN.saturating_add(max_pt).saturating_add(5)
-    {
+    if e < 0 && e.saturating_mul(-2) >= max_pt.saturating_add(6) {
         return crate::rounding::round_with_infinitesimal(
             x,
             x.sign(),
@@ -258,6 +253,18 @@ fn should_halve(y: &BigFloat) -> bool {
 fn atan_taylor(y: &BigFloat, working_prec: u32) -> BigFloat {
     if y.is_zero() {
         return BigFloat::try_new_zero(y.sign(), working_prec).expect("precision >= 1");
+    }
+
+    // Deep-tiny y (the sin_taylor rationale, pf-a77o, ADR-0107): the
+    // saturated y² term would corrupt the sum; y is the correct
+    // w-bit evaluation when the cubic term cannot reach the window.
+    if let Class::Normal { exponent, .. } = &y.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return y
+                .round_to_precision(working_prec, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+        }
     }
 
     let (y_sq, _) = y.mul(y, RoundingMode::NearestEven);
