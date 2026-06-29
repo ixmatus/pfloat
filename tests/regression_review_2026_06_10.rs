@@ -16,13 +16,16 @@
 //! (`f(x)@target == round(f(x)@HIGH, target)`) backs it up.
 //!
 //! Run: `cargo test --test regression_review_2026_06_10 \
-//!        --features std,fmt,big,agm,trig,specials,zeta`
+//!        --features std,fmt,big,agm,trig,integrals,zeta`
+//! (`integrals` implies `specials`; arc R3 adds Ei/li rows that need
+//! it. Both CI jobs that exercise this lane — the full-feature-union
+//! `cargo test` and the release MPFR job — already enable it.)
 
 #![cfg(all(
     feature = "big",
     feature = "agm",
     feature = "trig",
-    feature = "specials",
+    feature = "integrals",
     feature = "zeta"
 ))]
 
@@ -1923,4 +1926,126 @@ fn exp2_exact_integers_past_the_i64_cap() {
         }
         assert!(st.underflow() && st.inexact(), "{mode:?}: {st:?}");
     }
+}
+
+// ===============================================================
+// Arc R3, slice R3.1 (pf-hkoj, ADR-0109): zeta_fe near the trivial
+// zeros certified wrong VALUES. The trivial zeros zeta(-2n) = +0 are
+// dispatched exactly, but the NEIGHBOURHOOD s = -2n - eps feeds the
+// functional-equation branch, where sin(pi s/2) carries the whole
+// result (zeta(-2n - eps) ~ -eps*zeta'(-2n), magnitude |eps|). The
+// flat +96 working boost rounded s to the working width before sin
+// was formed, collapsing the eps proximity; the half-width model was
+// then violated and the first Ziv rung certified a value |e(eps)|
+// orders too small. Fix: pre-boost by pole_proximity_depth(s) (the
+// ADR-0098 lgamma/digamma reflection precedent), bounded by the
+// input precision. Truths: mpmath 1.4.1, two-precision cross-checked,
+// at the bit-identical exact input -2 - 2^-k.
+// ===============================================================
+
+/// `s = -2 - 2^-200` (exact at p264). zeta(-2-eps) is
+/// +eps*zeta(3)/(4pi^2), positive; the broken kernel returned
+/// 1.8949e-62 against the truth 1.89481e-62 (~5.5e-5 relative, ~39
+/// wrong bits at p53), certified at the first rung. The true value's
+/// p53 scaled mantissa has fraction above one half, so NE rounds up
+/// and `TowardZero` truncates down: the
+/// two modes differ by 1 ULP, and `assert_bit_exact` re-rounds the
+/// reference per mode, making this a directed-rounding check on both.
+/// Debug-cheap: the boost lifts the internal working precision to
+/// ~target+96+200.
+#[test]
+fn zeta_fe_near_trivial_zero_shallow_certifies() {
+    let neg2 = BigFloat::try_from_i64_exact(-2, 264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 264)
+        .unwrap()
+        .scale_by_pow2(-200);
+    assert!(se.is_ok());
+    let (s, ss) = neg2.sub(&eps, NE);
+    assert!(ss.is_ok(), "-2 - 2^-200 must be exact at p264");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert!(
+            !r.is_sign_negative() && !r.is_zero(),
+            "zeta(-2-2^-200) must be a positive normal, got {r}"
+        );
+        assert_bit_exact(
+            "zeta(-2-2^-200)",
+            &r,
+            "1.89481213461680241430670492056828379441453045590e-62",
+            53,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+}
+
+/// The deep case: `s = -2 - 2^-1200` (exact at p1264). The broken
+/// kernel returned the same 9.944e-67 under both NE and `TowardZero`
+/// (the collapse erased the mode distinction) where the truth is
+/// 1.76836e-363 — ~296 orders of magnitude wrong, certified at the
+/// first rung (the named pf-hkoj reproducer). Once fixed the two
+/// modes differ by 1 ULP, each checked against its per-mode reference
+/// rounding. The proximity
+/// (1200 bits) exceeds every legacy Ziv working precision, so only
+/// the pole_proximity_depth pre-boost recovers it. The result's
+/// astronomical exponent is pinned structurally first, then the
+/// mantissa bit-exactly.
+///
+/// Release builds only (the pf-jl35 zeta-pole precedent): the
+/// ~1400-bit conditioning-boosted Borwein evaluations cost ~120 s in
+/// the debug matrix but ~10 s in the MPFR full-union release job
+/// (whose feature set covers this lane). The shallow row above
+/// exercises the same boost mechanism debug-cheaply (~4 s).
+#[cfg(not(debug_assertions))]
+#[test]
+fn zeta_fe_near_trivial_zero_deep_certifies() {
+    let neg2 = BigFloat::try_from_i64_exact(-2, 1264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 1264)
+        .unwrap()
+        .scale_by_pow2(-1200);
+    assert!(se.is_ok());
+    let (s, ss) = neg2.sub(&eps, NE);
+    assert!(ss.is_ok(), "-2 - 2^-1200 must be exact at p1264");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert!(
+            !r.is_sign_negative() && !r.is_zero() && !r.is_infinite(),
+            "zeta(-2-2^-1200) must be a tiny positive normal, got {r}"
+        );
+        assert_bit_exact(
+            "zeta(-2-2^-1200)",
+            &r,
+            "1.76835922913628530304569635040298442138500151352e-363",
+            53,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+}
+
+/// Odd-integer control: at `s = -3 - 2^-200` the same proximity boost
+/// fires (depth 200), but sin(pi s/2) PEAKS there rather than
+/// vanishing (zeta(-3) = +1/120 is a nonzero rational), so there is
+/// no cancellation and the value must stay the smooth zeta(-3)
+/// rounding — confirming the boost only over-provisions harmlessly
+/// near the odd integers. The eps perturbation sits ~140 bits below
+/// the p53 ulp, so the result is RN53(1/120), INEXACT.
+#[test]
+fn zeta_fe_near_odd_integer_is_unperturbed() {
+    let neg3 = BigFloat::try_from_i64_exact(-3, 264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 264)
+        .unwrap()
+        .scale_by_pow2(-200);
+    assert!(se.is_ok());
+    let (s, ss) = neg3.sub(&eps, NE);
+    assert!(ss.is_ok(), "-3 - 2^-200 must be exact at p264");
+    let (r, st) = s.zeta_round(53, NE).unwrap();
+    assert_bit_exact(
+        "zeta(-3-2^-200)",
+        &r,
+        "0.00833333333333333333333333333333333333333333333333",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
 }
