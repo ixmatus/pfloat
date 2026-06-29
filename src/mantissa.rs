@@ -59,7 +59,11 @@ pub(crate) trait Mantissa {
 #[inline]
 #[must_use]
 pub(crate) const fn storage_shift(limbs: usize, value_bits: u32) -> u32 {
-    (limbs as u32) * 64 - value_bits
+    // u64 arithmetic (pf-9wb2, ADR-0108): `limbs · 64` exceeds u32
+    // for value_bits within 63 of the precision ceiling — a debug
+    // overflow panic at mere construction (release was
+    // self-correcting modular arithmetic). The difference is < 64.
+    ((limbs as u64) * 64 - value_bits as u64) as u32
 }
 
 #[cfg(test)]

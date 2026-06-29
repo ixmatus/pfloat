@@ -336,8 +336,17 @@ fn add_finite_finite(
     // possible 1-bit carry on same-sign add) plus a few guard bits.
     let guard_bits: u64 = 4;
     let working_prec_u64 = top_l.max(top_s) + 2 + guard_bits;
-    let working_prec = u32::try_from(working_prec_u64)
-        .expect("working_prec fits in u32 within huge_gap_threshold");
+    // Saturating (pf-9wb2, ADR-0107): two operands at the documented
+    // u32::MAX precision ceiling with a small gap push the aligned
+    // span a few bits past u32 and the old expect PANICKED on legal
+    // input. The saturated width drops only the bottom few bits —
+    // below the sticky horizon except at the ceiling's very edge,
+    // recorded in ADR-0107 as the supported envelope.
+    debug_assert!(
+        u32::try_from(working_prec_u64).is_ok(),
+        "aligned add/sub span exceeds the u32 ceiling (ADR-0002 edge)"
+    );
+    let working_prec = u32::try_from(working_prec_u64).unwrap_or(u32::MAX);
 
     let working_limbs = limbs_for(working_prec);
 
@@ -419,7 +428,8 @@ fn add_finite_finite(
     //   dst bit 0 (= mantissa-as-integer LSB) at intermediate storage
     //   position (intermediate_limbs * 64 - intermediate_precision).
     //   So we shift left by (intermediate_limbs * 64 - intermediate_precision) bits.
-    let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+    let dst_low_zero =
+        ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
     place_buffer_left_shifted(
         &mut intermediate,
         &sum_buf,

@@ -137,7 +137,12 @@ pub(crate) fn round_finite_to_precision(
     }
 
     let drop_bits = intermediate_precision - target_precision;
-    let intermediate_low_zero = (intermediate_mantissa.len() as u32) * 64 - intermediate_precision;
+    // u64 arithmetic (pf-9wb2, ADR-0108): near the precision ceiling
+    // `limbs · 64` exceeds u32 (a debug overflow panic across the
+    // whole near-ceiling parse band; release was self-correcting
+    // modular arithmetic). The count itself is < 64.
+    let intermediate_low_zero =
+        ((intermediate_mantissa.len() as u64) * 64 - u64::from(intermediate_precision)) as u32;
 
     // Absolute storage bit positions:
     //   - intermediate's mantissa LSB:    intermediate_low_zero
@@ -183,7 +188,7 @@ pub(crate) fn round_finite_to_precision(
 
     // Mask the low (target_limbs * 64 - target_precision) bits to
     // zero in the target storage.
-    let target_low_zero = (target_limbs as u32) * 64 - target_precision;
+    let target_low_zero = ((target_limbs as u64) * 64 - u64::from(target_precision)) as u32;
     clear_low_bits(&mut storage, target_low_zero as usize);
 
     let mut new_exponent = exponent;
@@ -433,6 +438,30 @@ pub(crate) fn round_with_infinitesimal(
     // strictly under the target rounding boundary, with room for a
     // sticky bit beneath the guard after any borrow renormalisation.
     let wide = base.precision.max(target_precision).saturating_add(3);
+
+    // Near the bottom rim the residue's position `e − wide + 1` is
+    // unrepresentable and the old `saturating_sub` parked the residue
+    // AT the rim instead of below the base's tail — `base ± ε` then
+    // became exactly representable at the target and the rounding
+    // certified a wrong value with Status OK (pf-a77o site (a),
+    // ADR-0107; the ADR-0102 dispatches carried interim rim guards
+    // against exactly this composition). Lift the computation by an
+    // exact power-of-two shift, round in the lifted frame, and shift
+    // back: rounding commutes with exact scaling. The lifted exponent
+    // stays far below the top rim (e ≤ MIN + wide + 2 here, and
+    // wide ≪ 2^62).
+    let lift = if e <= i64::MIN.saturating_add(i64::from(wide)).saturating_add(2) {
+        i64::from(wide).saturating_add(4)
+    } else {
+        0
+    };
+    if lift != 0 {
+        let (lifted, s_up) = signed_base.scale_by_pow2(lift);
+        debug_assert!(s_up.is_ok(), "the lift is a small exact up-shift");
+        signed_base = lifted;
+    }
+    let e = e.saturating_add(lift);
+
     let delta_sign = if subtracts_magnitude {
         result_sign.flip()
     } else {
@@ -456,8 +485,50 @@ pub(crate) fn round_with_infinitesimal(
     let (sum, _) = signed_base
         .add_round(&delta, wide, RoundingMode::NearestEven)
         .expect("wide >= 1");
-    sum.round_to_precision(target_precision, mode)
-        .expect("target_precision >= 1")
+    let (rounded, status) = sum
+        .round_to_precision(target_precision, mode)
+        .expect("target_precision >= 1");
+    if lift == 0 {
+        return (rounded, status);
+    }
+    let (unlifted, s_down) = rounded.scale_by_pow2(-lift);
+    if s_down.is_ok() {
+        return (unlifted, status);
+    }
+    // The un-lift saturated: only reachable when the base was exactly
+    // ±2^(i64::MIN) and the magnitude-shrinking round borrowed below
+    // it — the truth lies strictly between zero and ±MinPos, where
+    // pfloat's no-subnormal grid has nothing. Mode-aware underflow
+    // (the ADR-0096 sliver shape): the truth is MinPos − ε, above the
+    // to-nearest midpoint, so the nearest modes and the outward
+    // directed mode give ±MinPos; the inward modes give ±0;
+    // UNDERFLOW|INEXACT either way.
+    let outward = match result_sign {
+        Sign::Positive => matches!(mode, RoundingMode::TowardPositive),
+        Sign::Negative => matches!(mode, RoundingMode::TowardNegative),
+    };
+    let st = Status::UNDERFLOW | Status::INEXACT;
+    crate::status::auto_raise(st);
+    if matches!(mode, RoundingMode::NearestEven | RoundingMode::NearestAway) || outward {
+        let min_pos = BigFloat {
+            class: Class::Normal {
+                sign: result_sign,
+                exponent: i64::MIN,
+                mantissa: {
+                    let mut m = vec![0u64; limbs_for(target_precision)];
+                    let t = m.len() - 1;
+                    m[t] = 1u64 << 63;
+                    m
+                },
+            },
+            precision: target_precision,
+        };
+        (min_pos, st)
+    } else {
+        let zero =
+            BigFloat::try_new_zero(result_sign, target_precision).expect("target_precision >= 1");
+        (zero, st)
+    }
 }
 
 #[cfg(test)]

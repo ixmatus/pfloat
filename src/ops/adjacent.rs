@@ -336,7 +336,7 @@ fn max_finite(sign: Sign, precision: u32) -> BigFloat {
 /// canonical form, so the value's LSB sits at this position.
 #[inline]
 fn low_zero(precision: u32, limbs: usize) -> usize {
-    (limbs as u32 * 64 - precision) as usize
+    ((limbs as u64) * 64 - u64::from(precision)) as usize
 }
 
 /// `true` when `mantissa` is a power of two in canonical form: the top

@@ -34,7 +34,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::ATAN2_ERROR_GUARD;
 use super::{pi_at, pi_at_round, pi_over_2_at_round, signed_constant_at_round};
 
@@ -217,13 +217,60 @@ fn atan2_kernel(
         return (signed, status);
     }
 
+    // Tiny exact ratio in the right half-plane (pf-e2ow, ADR-0102):
+    // the true ratio t = y/x has exponent e_t ∈ {e_y−e_x−1, e_y−e_x},
+    // and for e_t past the representable band the atan correction
+    // (≈ |t|³/3, position 3·e_t) never reaches any working grid the
+    // Ziv driver visits — the closure collapses onto the rounded
+    // ratio and the exhausted fall-through returned the argument
+    // itself under the inward modes. When the quotient is EXACT at
+    // 2·target + 2 bits, forwarding it to atan resolves the depth
+    // through atan's tiny-x infinitesimal dispatch, whose trigger is
+    // then guaranteed: 2|e_t| ≥ 2·target + 10 > max(2·target + 2,
+    // target) + 6. An inexact quotient carries the truth's grid
+    // position in its own expansion (the driver's fall-through
+    // rounds it correctly outside a measure-zero proximity class —
+    // the Ziv-cap caveat) and stays with the driver. x < 0 keeps the
+    // quadrant shift: the result there is ≈ ±π, with no tiny-result
+    // collapse.
+    if matches!(x_sign, Sign::Positive) {
+        let (ey, ex) = match (&y.class, &x.class) {
+            (Class::Normal { exponent: ey, .. }, Class::Normal { exponent: ex, .. }) => (*ey, *ex),
+            _ => unreachable!("specials and zeros dispatched above"),
+        };
+        let e_t_hi = ey.saturating_sub(ex);
+        let w2 = target_precision.saturating_mul(2).saturating_add(2);
+        // The ADR-0102 rim guard is gone: round_with_infinitesimal
+        // now lifts its computation away from the bottom rim
+        // (pf-a77o, ADR-0107), so the forward is sound at every
+        // quotient exponent the div can produce (a rim-SATURATED
+        // quotient still flags and is still refused by is_ok()).
+        if e_t_hi
+            <= i64::from(target_precision)
+                .saturating_add(5)
+                .saturating_neg()
+        {
+            let (q, qs) = y
+                .div_round(x, w2, RoundingMode::NearestEven)
+                .expect("w2 >= 1");
+            // is_ok() also excludes a rim-saturated quotient (the
+            // div flags OVERFLOW/UNDERFLOW there), which must not
+            // be forwarded as if it were the ratio.
+            if qs.is_ok() {
+                return q
+                    .atan_round(target_precision, mode)
+                    .expect("target_precision >= 1");
+            }
+        }
+    }
+
     // Both finite and nonzero. Ziv-driven correct rounding under
     // every IEEE mode. The eval closure captures y and x and runs
     // the existing finite-case composition (`atan(y/x)` + quadrant
     // shift) at working precision `w` under NE. The quadrant shift
     // for x < 0 uses pi_at(w) so the working-precision π scales
     // with the Ziv guard.
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| {
             let y_w = y
                 .round_to_precision(w, RoundingMode::NearestEven)
@@ -252,6 +299,27 @@ fn atan2_kernel(
         target_precision,
         mode,
         ATAN2_ERROR_GUARD,
+        // Band-residue certification depth (pf-fbjn, ADR-0104): a
+        // tiny INEXACT ratio whose structure outruns the legacy cap
+        // resolves at the deep rung, which must reach the ratio's
+        // cubic correction depth and the operands' combined
+        // precision (the ratio's grid position is decided by the
+        // exact remainder, whose depth those bound). x < 0 keeps
+        // the quadrant shift (result ≈ ±π; no tiny collapse), so
+        // the hint stays 0 there. Lazy: free unless the schedule
+        // exhausts.
+        || match (&y.class, &x.class) {
+            (Class::Normal { exponent: ey, .. }, Class::Normal { exponent: ex, .. })
+                if matches!(x_sign, Sign::Positive) && *ey < *ex =>
+            {
+                let two_abs_et = ey.saturating_sub(*ex).saturating_sub(1).saturating_mul(-2);
+                u32::try_from(two_abs_et)
+                    .unwrap_or(u32::MAX)
+                    .max(y.precision.saturating_add(x.precision))
+                    .saturating_add(64)
+            }
+            _ => 0,
+        },
     );
     // atan2(y, x) for finite nonzero y and x off the axes is
     // transcendental (Lindemann–Weierstrass), hence irrational, hence
@@ -259,11 +327,7 @@ fn atan2_kernel(
     // The only exact result, atan2(+0, x > 0) = +0, and the axis cases
     // (±π/2, ±π, ±π/4, ±3π/4 via pi_*_at_round, already INEXACT) are
     // dispatched above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

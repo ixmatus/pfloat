@@ -162,20 +162,21 @@ fn li_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         mode,
         LI_ERROR_GUARD,
     );
-    // li(x) for finite x > 0, x ≠ 1 is transcendental (li(x) = Ei(ln x)
-    // and the logarithmic integral takes transcendental values at such
-    // algebraic arguments), so the rounded result is INEXACT even where
-    // the working-precision evaluation lands on a grid value (ADR-0064).
+    // li(x) = Ei(ln x) at algebraic arguments is γ-entangled, so its
+    // transcendence there is NOT a theorem (only the E-function part
+    // carries a Shidlovskii-class result); the INEXACT force is
+    // conditionally sound — the ADR-0066 γ/ζ(5) posture (ADR-0064's
+    // recorded scope split; ADR-0105) — even where the
+    // working-precision evaluation lands on a grid value.
     // li's real zero at the Ramanujan–Soldner constant μ ≈ 1.4514 is
-    // itself transcendental, so no dyadic input yields an exact zero.
+    // not proven irrational (the earlier claim of transcendence here
+    // overstated the literature), so "no dyadic input yields an exact
+    // zero" holds conditionally on μ ∉ ℚ₂ — the ADR-0066
+    // conditional-soundness posture, the γ/ζ(5) class (ADR-0105).
     // li(0) = 0, the exact limit li(+∞) = +∞, x = 1 (pole), x < 0 and
     // x = −∞ (INVALID) are dispatched above and are not Class::Normal,
     // so they keep their status.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

@@ -73,7 +73,13 @@ fn half_width(y: &BigFloat, shift: i64) -> BigFloat {
         } => BigFloat {
             class: Class::Normal {
                 sign: Sign::Positive,
-                exponent: exponent - shift,
+                // Saturating (pf-a77o, ADR-0107): a value near the
+                // bottom rim made the raw subtraction overflow (a
+                // debug panic, wrapped garbage in release). The clamp
+                // at i64::MIN OVERSTATES the half-width — the sound
+                // direction: an overstated width only refuses
+                // certification.
+                exponent: exponent.saturating_sub(shift),
                 mantissa: mantissa.clone(),
             },
             precision: y.precision,
@@ -111,6 +117,34 @@ pub(crate) fn ziv_round(
 ) -> (BigFloat, Status) {
     let (cand, status, _converged_working, _eval_intermediate) =
         ziv_round_capturing(eval, target, mode, error_guard);
+    (cand, status)
+}
+
+/// [`ziv_round`] with an input-derived certification depth, evaluated
+/// lazily on cap exhaustion (pf-jl35, ADR-0103).
+///
+/// The fixed `ZIV_GUARD_CAP` bounds certification at `target + 1024`
+/// bits, but a kernel whose input encodes proximity deeper than that
+/// (ζ near its pole, trig near a multiple of π/2, the tiny-x series
+/// tails) knows — from the input alone — how far the truth can sit
+/// from a rounding boundary. The half-width model
+/// `|y|·2^-(working − error_guard)` is a per-kernel claim about `eval`
+/// valid at *any* working precision, so one further iteration at
+/// `target + depth + 64` certifies legitimately where the legacy
+/// schedule exhausts. `depth_hint` is called only on exhaustion (zero
+/// cost on the common path) and must be input-proportional (the
+/// DoS-budget posture); a hint that still leaves the boundary
+/// unresolved falls back exactly as before — the measure-zero caveat,
+/// one layer deeper.
+pub(crate) fn ziv_round_with_depth(
+    eval: impl Fn(u32) -> BigFloat,
+    target: u32,
+    mode: RoundingMode,
+    error_guard: u32,
+    depth_hint: impl Fn() -> u32,
+) -> (BigFloat, Status) {
+    let (cand, status, _w, _y) =
+        ziv_round_capturing_with_depth(eval, target, mode, error_guard, depth_hint);
     (cand, status)
 }
 
@@ -168,9 +202,28 @@ pub(crate) fn ziv_round_capturing(
     mode: RoundingMode,
     error_guard: u32,
 ) -> ZivTrace {
+    ziv_round_capturing_with_depth(eval, target, mode, error_guard, || 0)
+}
+
+/// The shared loop behind [`ziv_round`], [`ziv_round_capturing`], and
+/// [`ziv_round_with_depth`]: the legacy doubling schedule, then — only
+/// on exhaustion, and only when the lazily-computed hint exceeds the
+/// legacy cap — one further iteration at `target + depth_hint() + 64`
+/// under the identical interval test (ADR-0103).
+pub(crate) fn ziv_round_capturing_with_depth(
+    eval: impl Fn(u32) -> BigFloat,
+    target: u32,
+    mode: RoundingMode,
+    error_guard: u32,
+    depth_hint: impl Fn() -> u32,
+) -> ZivTrace {
     let mut guard = ZIV_BASE_GUARD;
-    let mut fallback: Option<ZivTrace> = None;
-    for _ in 0..ZIV_MAX_ITERS {
+    let mut iter = 0u32;
+    let mut deep_tried = false;
+    let mut legacy_fallback: Option<ZivTrace> = None;
+    // Cap (and any deep rung) exhausted breaks out with a best-effort
+    // attempt on a pathologically hard input.
+    let trace = loop {
         let working = target.saturating_add(guard);
         let y = eval(working);
         let (cand, status) = y
@@ -193,11 +246,44 @@ pub(crate) fn ziv_round_capturing(
             return trace;
         }
 
-        fallback = Some((cand, status, working, y));
-        guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
-    }
-    // Cap reached on a pathologically hard input: best effort.
-    let trace = fallback.expect("ZIV_MAX_ITERS >= 1");
+        let attempt = (cand, status, working, y);
+        iter += 1;
+        if iter < ZIV_MAX_ITERS {
+            legacy_fallback = Some(attempt);
+            guard = guard.saturating_mul(2).min(ZIV_GUARD_CAP);
+        } else if !deep_tried {
+            // Legacy schedule exhausted: ask the kernel how deep the
+            // input-encoded structure can park the truth next to a
+            // boundary, and certify there if that is past the cap.
+            deep_tried = true;
+            // The ceiling bounds exponent-encoded depths (an i64 an
+            // adversary writes for free): past it the deep rung is
+            // refused and the fall-through keeps the documented
+            // 1-ulp INEXACT caveat (pf-a77o, ADR-0107). Without it,
+            // a saturated hint would request a u32::MAX-bit
+            // evaluation — a de facto hang from a 16-byte input.
+            // Input-precision-proportional hints below the ceiling
+            // (16 Mbit ≈ a 2 MB operand) still certify.
+            const ZIV_DEEP_GUARD_CEILING: u32 = 1 << 24;
+            let deep_guard = depth_hint().saturating_add(64).min(ZIV_DEEP_GUARD_CEILING);
+            if deep_guard <= ZIV_GUARD_CAP {
+                break attempt;
+            }
+            legacy_fallback = Some(attempt);
+            guard = deep_guard;
+        } else {
+            // The deep rung evaluated but did not certify. Its value
+            // is the more accurate fallback — unless the deeper
+            // working pushed the eval outside the kernel's internal
+            // envelope and it degenerated to NaN, in which case the
+            // legacy attempt (computed inside the tested envelope)
+            // stands.
+            if matches!(attempt.0.class, Class::Nan { .. }) {
+                break legacy_fallback.expect("the legacy schedule ran to exhaustion");
+            }
+            break attempt;
+        }
+    };
     auto_raise(trace.1);
     #[cfg(all(feature = "std", any(test, feature = "ziv-instrumented")))]
     LAST_TRACE.with(|t| *t.borrow_mut() = Some(trace.clone()));

@@ -162,8 +162,15 @@ fn sqrt_finite_positive(
     if parity {
         l += 1;
     }
+    // Source clamp for uniformity with div/cbrt (pf-9wb2, ADR-0108);
+    // sqrt's 1-bit parity bump happens to fit limbs_for's rounding
+    // slack, but the invariant should not rest on that coincidence.
+    l = l.min(u32::MAX - p_a);
 
-    let total_bits = p_a + l;
+    // Saturating (pf-9wb2, ADR-0107): wraps only with operands near
+    // the documented u32::MAX precision ceiling (the allocation wall
+    // itself); the saturated width keeps the buffer self-consistent.
+    let total_bits = p_a.saturating_add(l);
     let shifted_limbs = limbs_for(total_bits);
     let mut shifted: Vec<u64> = vec![0u64; shifted_limbs];
     or_left_shifted_into(&mut shifted, &m_a_int, p_a, l);
@@ -175,7 +182,8 @@ fn sqrt_finite_positive(
     let intermediate_precision = (top_bit_s + 1) as u32;
     let intermediate_limbs = limbs_for(intermediate_precision);
     let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
-    let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+    let dst_low_zero =
+        ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
     or_left_shifted_into(&mut intermediate, &s, intermediate_precision, dst_low_zero);
 
     let pre_sticky = r.iter().any(|&v| v != 0);

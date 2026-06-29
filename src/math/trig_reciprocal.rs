@@ -51,8 +51,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
-use super::trig_reduce::{reduce, Reduction};
-use super::ziv::{ziv_round, ZIV_BASE_GUARD};
+use super::trig_reduce::{reduce, reduction_depth_hint, Reduction};
+use super::ziv::{ziv_round_with_depth, ZIV_BASE_GUARD};
 use super::ziv_calibration::{COT_ERROR_GUARD, CSC_ERROR_GUARD, SEC_ERROR_GUARD};
 
 macro_rules! reciprocal_api {
@@ -183,7 +183,7 @@ fn reciprocal_via_ziv(
         return invalid_nan(target);
     }
 
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| match reduce(x, w) {
             Some(Reduction { quadrant, r }) => compose(quadrant, &r, w),
             None => BigFloat::try_new_quiet_nan(Sign::Positive, w, &[]).expect("precision >= 1"),
@@ -191,6 +191,12 @@ fn reciprocal_via_ziv(
         target,
         mode,
         error_guard,
+        // Inputs near a multiple of π/2 park the truth ~2|e_r| bits
+        // from the grid (pf-jl35, ADR-0103): the reciprocal arms
+        // carry their series corrections (sec ≈ ±(1 + r²/2), the
+        // csc/cot pole arms ≈ ±1/r·(1 ± …)) at that depth. Resolved
+        // lazily on schedule exhaustion.
+        || reduction_depth_hint(x, ziv_first_working),
     );
 
     // A Ziv iteration's reduce hitting the table cap propagated NaN through
@@ -205,11 +211,7 @@ fn reciprocal_via_ziv(
     // rounds onto a grid value (pf-uqd1, ADR-0063). The only exact input,
     // sec(±0) = 1, and the cot/csc poles at 0 are dispatched in the
     // kernels above before this helper runs.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

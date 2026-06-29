@@ -40,7 +40,7 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::TANH_ERROR_GUARD;
 
 #[cfg(feature = "fixed")]
@@ -133,7 +133,15 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { exponent, .. } => *exponent,
         _ => unreachable!(),
     };
-    if e <= -(i64::from(target_precision) + 2) {
+    // The depth must also clear the INPUT's grid (pf-fbjn, ADR-0104):
+    // a high-precision x parked next to a rounding-change point puts
+    // the cubic series correction (position 3e) across a boundary the
+    // residue (position e − p − 2) never reaches. Arm-failing inputs
+    // go to the driver, whose ADR-0103 deep rung takes the input at
+    // full precision and certifies the true boundary side.
+    if e <= -(i64::from(target_precision) + 2)
+        && e.saturating_mul(-2) >= i64::from(x.precision).saturating_add(6)
+    {
         return crate::rounding::round_with_infinitesimal(
             x,
             x.sign(),
@@ -163,22 +171,32 @@ fn tanh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 
     let sign = x.sign();
     let abs_x = x.abs();
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |working_prec| tanh_at_w(&abs_x, sign, working_prec),
         target_precision,
         mode,
         TANH_ERROR_GUARD,
+        // Parked-input certification depth (pf-fbjn, ADR-0104):
+        // arm-rejected tiny inputs resolve at the deep rung, which
+        // must reach both the input's precision and the series
+        // correction's depth. Lazy: free unless the schedule exhausts.
+        || {
+            if e < 0 {
+                u32::try_from(e.saturating_mul(-5))
+                    .unwrap_or(u32::MAX)
+                    .max(x.precision)
+                    .saturating_add(64)
+            } else {
+                0
+            }
+        },
     );
     // tanh(x) for finite normal x ≠ 0 is transcendental (Lindemann–
     // Weierstrass), hence irrational, hence INEXACT even where it rounds
     // onto a grid value (pf-uqd1, ADR-0063). tanh(±0) = ±0 and tanh(±∞) =
     // ±1 are dispatched above; the tiny-x fast path sets INEXACT via
     // round_with_infinitesimal.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

@@ -42,8 +42,8 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::trig_reduce::{reduce, Reduction};
-use super::ziv::{ziv_round, ZIV_BASE_GUARD};
+use super::trig_reduce::{reduce, reduction_depth_hint, Reduction};
+use super::ziv::{ziv_round_with_depth, ZIV_BASE_GUARD};
 use super::ziv_calibration::SIN_ERROR_GUARD;
 
 impl BigFloat {
@@ -115,14 +115,17 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     }
 
     // Range-cap check at the Ziv first-iteration working precision.
-    // The 4096-bit 2/π reduction table caps the supported `|x|` at
-    // roughly `2^(4096 − working − slack)`. Pre-check at
+    // The reduction's range policy caps the supported `|x|` at
+    // `2^4032` (`reduce`'s `e_x + 64 < 4096`; since ADR-0103 the cap
+    // is on the input's exponent alone — the old working-coupled
+    // form refused deep working precisions outright, which the deep
+    // certification rung legitimately requests). Pre-check at
     // `target + ZIV_BASE_GUARD` (the first iteration the driver
     // runs): if reduce fails here the input is fundamentally out of
-    // range and no Ziv iteration could recover. Higher Ziv
-    // iterations (guard doubling to 128, 256, 512, 1024) may exceed
-    // the table for inputs near the cliff; the closure handles that
-    // by returning NaN and the post-Ziv check below raises INVALID.
+    // range and no iteration could recover; a mid-loop None (now
+    // unreachable by construction, kept as defense) makes the
+    // closure return NaN and the post-Ziv check below raises
+    // INVALID.
     // The pre-pf-1axr pre-check at `target + 1024` (the Ziv ceiling)
     // was over-conservative: it fired spuriously at
     // `target_precision ≥ 3008 − e_x`, blocking any caller above
@@ -148,7 +151,7 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // `|x|`), return a NaN at the working precision; Ziv treats the
     // NaN as "interval can't be certified" and the post-Ziv check
     // below raises INVALID on the final result.
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| match reduce(x, w) {
             Some(Reduction { quadrant, r }) => match quadrant {
                 0 => sin_taylor(&r, w),
@@ -161,6 +164,11 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         target_precision,
         mode,
         SIN_ERROR_GUARD,
+        // Inputs near a multiple of π/2 park the truth ~2|e_r| bits
+        // from the grid (pf-jl35, ADR-0103; the cos-shape quadrants
+        // 1 and 3 are sin's exposed arms); resolved lazily on
+        // schedule exhaustion.
+        || reduction_depth_hint(x, ziv_first_working),
     );
     // Post-Ziv: a Ziv iteration's reduce hitting the table cap
     // propagated NaN through the driver; surface as INVALID for
@@ -177,11 +185,7 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // value — e.g. a huge argument whose reduced residual collapses
     // (pf-njs5 under-report, ADR-0060). sin(±0) = ±0 is the only exact
     // input and is special-cased above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }
@@ -190,6 +194,22 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
 pub(super) fn sin_taylor(r: &BigFloat, working_prec: u32) -> BigFloat {
     if r.is_zero() {
         return BigFloat::try_new_zero(r.sign(), working_prec).expect("precision >= 1");
+    }
+
+    // Deep-tiny r: the r² (and every later) term's TRUE position is
+    // below the working window, but the mul SATURATES its exponent at
+    // i64::MIN (pf-a77o, ADR-0107) — the saturated term then sits a
+    // few bits below r instead of 2|e_r| below, and adding it
+    // corrupted the sum (sin(2^(i64::MIN+10)) returned 0.9987·x,
+    // certified). When the cubic term cannot reach the window, r IS
+    // the correct w-bit evaluation.
+    if let Class::Normal { exponent, .. } = &r.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return r
+                .round_to_precision(working_prec, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+        }
     }
 
     let r_sq = r.mul(r, RoundingMode::NearestEven).0;
@@ -225,6 +245,15 @@ pub(super) fn cos_taylor(r: &BigFloat, working_prec: u32) -> BigFloat {
     let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     if r.is_zero() {
         return one;
+    }
+
+    // Deep-tiny r (the sin_taylor rationale above): the saturated r²
+    // term would corrupt the sum; 1 is the correct w-bit evaluation
+    // when the quadratic term cannot reach the window.
+    if let Class::Normal { exponent, .. } = &r.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return one;
+        }
     }
 
     let r_sq = r.mul(r, RoundingMode::NearestEven).0;

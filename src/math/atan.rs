@@ -29,7 +29,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::ATAN_ERROR_GUARD;
 use super::{pi_over_2_at, pi_over_2_at_round, signed_constant_at_round};
 
@@ -105,6 +105,41 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: atan(x) = x − x³/3 + … shrinks toward zero (every
+    // post-x term opposes the leading term in magnitude), and past
+    // the representable band the correction can never reach any
+    // working grid the Ziv driver visits: the eval collapses onto
+    // the on-grid argument, the interval test never converges, and
+    // the exhausted fall-through returned the argument itself — 1
+    // ULP wrong under the inward modes (pf-e2ow's root, ADR-0102).
+    // The correction c = |x| − |atan x| lies in (2^(3e−2), 2^(3e+2));
+    // round_with_infinitesimal is exact when both c and its residue
+    // stay strictly inside the boundary-free zone below |x|, whose
+    // width is at least 2^(e − max(p, target) − 2) (one input ulp
+    // when x sits off the target's rounding-change grid, half a
+    // change step when on it, both with binade-crossing slack), so
+    // `2|e| ≥ max(p, target) + 6` clears it with two bits to spare.
+    // Unlike the ADR-0059 fast paths this trigger carries the
+    // input-precision arm — the boundary-free zone shrinks with the
+    // INPUT's grid, not only the target's.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("specials dispatched above"),
+    };
+    // The ADR-0102 rim guard is gone: round_with_infinitesimal now
+    // lifts its computation away from the bottom rim (pf-a77o,
+    // ADR-0107), so the dispatch is sound at every Normal exponent.
+    let max_pt = i64::from(x.precision.max(target_precision));
+    if e < 0 && e.saturating_mul(-2) >= max_pt.saturating_add(6) {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // magnitude shrinks: the −x³/3 correction opposes x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure runs the existing half-angle reduction + Taylor
     // composition (atan_finite_unsigned on |x|) at working precision
@@ -112,7 +147,7 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // returned value's class matches the kernel's domain.
     let is_negative = matches!(x.sign(), Sign::Negative);
     let abs_x = x.abs();
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| {
             let result = atan_finite_unsigned(&abs_x, w);
             if is_negative {
@@ -124,17 +159,28 @@ fn atan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         target_precision,
         mode,
         ATAN_ERROR_GUARD,
+        // Band-residue certification depth (pf-fbjn, ADR-0104): a
+        // tiny input whose precision exceeds the dispatch arm above
+        // resolves at the deep rung, which must reach both the
+        // input's precision and the cubic correction's depth. Lazy:
+        // free unless the schedule exhausts.
+        || {
+            if e < 0 {
+                u32::try_from(e.saturating_mul(-5))
+                    .unwrap_or(u32::MAX)
+                    .max(x.precision)
+                    .saturating_add(64)
+            } else {
+                0
+            }
+        },
     );
     // atan(x) for finite normal x ≠ 0 is transcendental (Lindemann–
     // Weierstrass), hence irrational, hence INEXACT even where it rounds
     // onto a grid value (pf-uqd1, ADR-0063). atan(±0) = ±0 is dispatched
     // above; atan(±∞) = ±π/2 already carries INEXACT from
     // pi_over_2_at_round (the irrational constant rounds inexactly).
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }
@@ -207,6 +253,18 @@ fn should_halve(y: &BigFloat) -> bool {
 fn atan_taylor(y: &BigFloat, working_prec: u32) -> BigFloat {
     if y.is_zero() {
         return BigFloat::try_new_zero(y.sign(), working_prec).expect("precision >= 1");
+    }
+
+    // Deep-tiny y (the sin_taylor rationale, pf-a77o, ADR-0107): the
+    // saturated y² term would corrupt the sum; y is the correct
+    // w-bit evaluation when the cubic term cannot reach the window.
+    if let Class::Normal { exponent, .. } = &y.class {
+        if exponent.saturating_mul(2) < -(i64::from(working_prec) + 4) {
+            return y
+                .round_to_precision(working_prec, RoundingMode::NearestEven)
+                .expect("precision >= 1")
+                .0;
+        }
     }
 
     let (y_sq, _) = y.mul(y, RoundingMode::NearestEven);

@@ -74,8 +74,11 @@ pub(crate) fn extract_value_limbs(src: &[u64], low_bit_pos: u32, bits: u32, out:
 /// integer of `precision` bits. The result Vec is
 /// `limbs_for(precision)` long.
 pub(crate) fn extract_as_integer(mantissa: &[u64], precision: u32) -> Vec<u64> {
-    let storage_bits = (mantissa.len() as u32) * 64;
-    let low_bit_pos = storage_bits - precision;
+    // u64 arithmetic (pf-9wb2, ADR-0108): `limbs · 64` exceeds u32
+    // near the precision ceiling (the family invariant: no u32
+    // `· 64 −` arithmetic anywhere in the crate).
+    let storage_bits = (mantissa.len() as u64) * 64;
+    let low_bit_pos = (storage_bits - u64::from(precision)) as u32;
     let limb_count = crate::mantissa::limbs_for(precision);
     let mut out = vec![0u64; limb_count];
     extract_value_limbs(mantissa, low_bit_pos, precision, &mut out);

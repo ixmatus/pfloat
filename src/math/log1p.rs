@@ -32,7 +32,7 @@ use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
 
-use super::ziv::ziv_round;
+use super::ziv::ziv_round_with_depth;
 use super::ziv_calibration::LOG1P_ERROR_GUARD;
 
 #[cfg(feature = "fixed")]
@@ -146,7 +146,13 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
     // round x with that negative infinitesimal directly, bypassing the
     // capped cancellation boost that otherwise collapses 1 + x to 1 and
     // the difference to 0 for very tiny x (review 2026-05-29).
-    if e <= -(i64::from(target_precision) + 2) {
+    // The depth must also clear the INPUT's grid (pf-fbjn, ADR-0104):
+    // a high-precision x parked next to a rounding-change point puts
+    // the quadratic series correction (position 2e) across a boundary
+    // the residue (position e − p − 2) never reaches. Arm-failing
+    // inputs go to the driver, whose ADR-0103 deep rung takes the
+    // input at full precision and certifies the true boundary side.
+    if e <= -(i64::from(target_precision) + 2) && e <= -(i64::from(x.precision) + 3) {
         return crate::rounding::round_with_infinitesimal(
             x,
             x.sign(),
@@ -181,9 +187,18 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
     // driver's requested working precision `w`, then rounds the
     // composition's result to `w` under NE so the Ziv interval
     // test sees a w-precision value with the cancellation absorbed.
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| {
-            let inner_w = w.saturating_add(cancellation).min(w.saturating_add(1024));
+            // The +1024 cap on the internal boost predates the
+            // ADR-0059 fast path; with the ADR-0104 precision arm,
+            // every driver-reached tiny input has |e| ≤ max(p + 2,
+            // target + 2) (deeper inputs take the fast path), so the
+            // uncapped boost is input-proportional — and the cap was
+            // actively harmful in the arm-fail zone: it let the
+            // composition collapse to exactly 0, which half_width(0)
+            // = 0 certifies instantly with Status OK (the
+            // review-2026-05-29 certified-zero class, resurrected).
+            let inner_w = w.saturating_add(cancellation);
             let x_w = x
                 .round_to_precision(inner_w, RoundingMode::NearestEven)
                 .expect("precision >= 1")
@@ -199,6 +214,20 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
         target_precision,
         mode,
         LOG1P_ERROR_GUARD,
+        // Parked-input certification depth (pf-fbjn, ADR-0104):
+        // arm-rejected tiny inputs resolve at the deep rung, which
+        // must reach both the input's precision and the series
+        // correction's depth. Lazy: free unless the schedule exhausts.
+        || {
+            if e < 0 {
+                u32::try_from(e.saturating_mul(-3))
+                    .unwrap_or(u32::MAX)
+                    .max(x.precision)
+                    .saturating_add(64)
+            } else {
+                0
+            }
+        },
     );
     // log1p(x) = ln(1 + x) for finite normal x ≠ 0 is transcendental
     // (Lindemann–Weierstrass: ln of an algebraic ≠ 1 is transcendental,
@@ -206,11 +235,7 @@ fn log1p_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
     // where it rounds onto a grid value (pf-uqd1, ADR-0063). log1p(±0) =
     // ±0 is dispatched above, the pole at −1 too; the tiny-x fast path
     // sets INEXACT via round_with_infinitesimal.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

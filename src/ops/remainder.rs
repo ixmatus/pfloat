@@ -210,7 +210,8 @@ fn build_scaled(
     let intermediate_precision = (top_bit + 1) as u32;
     let intermediate_limbs = limbs_for(intermediate_precision);
     let mut intermediate = vec![0u64; intermediate_limbs];
-    let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+    let dst_low_zero =
+        ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
     or_left_shifted_into(&mut intermediate, mag, intermediate_precision, dst_low_zero);
 
     // Result MSB sits at bit position s + top_bit. The value is exact

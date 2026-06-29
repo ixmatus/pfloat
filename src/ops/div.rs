@@ -195,9 +195,19 @@ fn div_finite_finite(
     // lose two bits relative to the simple estimate.
     let l = target_precision
         .saturating_add(guard)
-        .saturating_add(p_b.saturating_sub(p_a).saturating_add(2));
+        .saturating_add(p_b.saturating_sub(p_a).saturating_add(2))
+        // Clamp at the SOURCE so every consumer (buffer, shift,
+        // exponent bookkeeping) stays self-consistent (pf-9wb2,
+        // ADR-0108): saturating only the buffer width repeats the
+        // desync this slice's own parse fix recorded as its lesson —
+        // the shifted mantissa lands past the buffer, the top bits
+        // drop, and a zero quotient panics the expect below.
+        .min(u32::MAX - p_a);
 
-    let total_bits = p_a + l;
+    // Saturating (pf-9wb2, ADR-0107): wraps only with operands near
+    // the documented u32::MAX precision ceiling (the allocation wall
+    // itself); the saturated width keeps the buffer self-consistent.
+    let total_bits = p_a.saturating_add(l);
     let shifted_limbs = limbs_for(total_bits);
     let mut shifted_dividend: Vec<u64> = vec![0u64; shifted_limbs];
     or_left_shifted_into(&mut shifted_dividend, &m_a_int, p_a, l);
@@ -212,7 +222,8 @@ fn div_finite_finite(
     let intermediate_precision = (top_bit + 1) as u32;
     let intermediate_limbs = limbs_for(intermediate_precision);
     let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
-    let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+    let dst_low_zero =
+        ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
     or_left_shifted_into(
         &mut intermediate,
         &quotient,

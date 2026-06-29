@@ -147,6 +147,28 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         _ => {}
     }
 
+    // Near |x| = 1 the input encodes proximity the working round
+    // destroys: `round_to_precision(x, w)` collapses x_w to exactly
+    // ±1 whenever the proximity depth exceeds w, the branch
+    // numerator 1 ∓ x_w becomes exactly 0, the evaluation returns
+    // exact 0 (or exact π), and `half_width(0) = 0` certifies on
+    // the first rung — +0 with Status OK on the positive side
+    // (pf-9761, ADR-0105). The depth is input-encoded and exactly
+    // computable up front: 1 − |x| is Sterbenz-exact at the input's
+    // precision, and every Ziv evaluation runs boosted past it (the
+    // ADR-0097 asin pattern; both branches share the gap, since the
+    // negative branch's 1 + x_w cancels at the same depth).
+    let one_at_x = BigFloat::try_from_i64_exact(1, x.precision().max(1)).expect("precision >= 1");
+    let (gap, _) = one_at_x.sub(&x.abs(), RoundingMode::NearestEven);
+    let amplification_boost = match &gap.class {
+        Class::Normal { exponent, .. } if *exponent <= -2 => {
+            u32::try_from(exponent.saturating_neg().saturating_sub(1))
+                .unwrap_or(0)
+                .saturating_add(8)
+        }
+        _ => 0,
+    };
+
     // Ziv-driven correct rounding under every IEEE mode. The
     // eval closure carries the two-branch composition: for x ≥ 0
     // use `2·atan(sqrt((1−x)/(1+x)))`; for x < 0 use
@@ -157,6 +179,7 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     let is_negative = matches!(x.sign(), Sign::Negative);
     let (result, status) = ziv_round(
         |w| {
+            let w = w.saturating_add(amplification_boost);
             let x_w = x
                 .round_to_precision(w, RoundingMode::NearestEven)
                 .expect("precision >= 1")
@@ -194,11 +217,7 @@ fn acos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // only exact input and is dispatched above; acos(0) = π/2 and
     // acos(−1) = π already carry INEXACT from pi_over_2_at_round /
     // pi_at_round (the irrational constants round inexactly).
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

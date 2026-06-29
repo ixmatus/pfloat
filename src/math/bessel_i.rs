@@ -262,11 +262,7 @@ fn bessel_i_kernel(
             // value (ADR-0064). I₀(0)=1, Iₙ(0)=0 (n ≠ 0), and the ±∞
             // limits are dispatched above; only finite-normal x ≠ 0
             // reaches here.
-            let status = if matches!(result.class, Class::Normal { .. }) {
-                status | Status::INEXACT
-            } else {
-                status
-            };
+            let status = super::force_transcendental_inexact(&result, status);
             auto_raise(status);
             (result, status)
         }

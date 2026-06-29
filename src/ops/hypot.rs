@@ -26,6 +26,7 @@
 //!   sign-independent: `hypot(x, y) = hypot(y, x) = hypot(|x|, |y|)`.
 
 use crate::big::{BigFloat, BuildError};
+use crate::class::Class;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::{auto_raise, Status};
@@ -35,7 +36,7 @@ use crate::fixed::FixedFloat;
 #[cfg(feature = "fixed")]
 use crate::mantissa::limbs_for;
 
-use crate::math::ziv::ziv_round;
+use crate::math::ziv::ziv_round_with_depth;
 use crate::math::ziv_calibration::HYPOT_ERROR_GUARD;
 
 impl BigFloat {
@@ -117,9 +118,49 @@ fn hypot_kernel(x: &BigFloat, y: &BigFloat, target: u32, mode: RoundingMode) -> 
         return (nan, status);
     }
 
+    // Deep exponent gap (pf-71u2, ADR-0102): with gap g = e_big −
+    // e_small, the truth is |big| + δ with δ = small²/(hypot + |big|)
+    // ∈ (2^(e_big − 2g − 3), 2^(e_big − 2g + 1)]. The Ziv eval's sum
+    // absorbs small² whenever 2g ≥ working, collapsing onto |big| —
+    // exactly on-grid — so the interval test never converges and the
+    // exhausted fall-through certified the collapsed value: falsely
+    // EXACT whenever |big| rounds exactly at the target. Past the
+    // representable band (2g ≥ max(p_big, target) + 6, two bits of
+    // slack over the derived bound 2g > max + 4) δ sits strictly
+    // inside the boundary-free zone above |big| (width at least
+    // 2^(e_big − max − 2)), so the grow-direction infinitesimal
+    // rounding is exact in every mode and honestly INEXACT (an exact
+    // hypot at the target is impossible there: the true square's
+    // bit-span exceeds the target). Inside the band the driver still
+    // certifies (its cap clears the depth) and stays untouched.
+    if let (Class::Normal { exponent: ex, .. }, Class::Normal { exponent: ey, .. }) =
+        (&x.class, &y.class)
+    {
+        let (e_b, e_s, big) = if ex >= ey {
+            (*ex, *ey, x)
+        } else {
+            (*ey, *ex, y)
+        };
+        let two_gap = e_b.saturating_sub(e_s).saturating_mul(2);
+        let max_pt = i64::from(big.precision.max(target));
+        // The ADR-0102 rim guard is gone: round_with_infinitesimal
+        // now lifts its computation away from the bottom rim
+        // (pf-a77o, ADR-0107), so the dispatch is sound at every
+        // Normal exponent.
+        if two_gap >= max_pt.saturating_add(6) {
+            return crate::rounding::round_with_infinitesimal(
+                &big.abs(),
+                Sign::Positive,
+                false, // magnitude grows: δ > 0 strictly (small ≠ 0)
+                target,
+                mode,
+            );
+        }
+    }
+
     // Both finite: sqrt(x² + y²) at the Ziv working precision, rounded
     // once at the target.
-    ziv_round(
+    let (v, status) = ziv_round_with_depth(
         |w| {
             let xw = x
                 .round_to_precision(w, RoundingMode::NearestEven)
@@ -137,7 +178,90 @@ fn hypot_kernel(x: &BigFloat, y: &BigFloat, target: u32, mode: RoundingMode) -> 
         target,
         mode,
         HYPOT_ERROR_GUARD,
-    )
+        // Hole-residue certification depth (pf-fbjn, ADR-0104): a
+        // big operand whose precision exceeds the dispatch arm with
+        // a gap past the legacy cap resolves at the deep rung. The
+        // truth's distance to any rounding-change point B is bounded
+        // below through the exact dyadic truth² − B², whose bottom
+        // bit the operands' precisions and the gap bound, so the
+        // rung is certain outside exact-square coincidences. Lazy:
+        // free unless the schedule exhausts.
+        || match (&x.class, &y.class) {
+            (Class::Normal { exponent: ex, .. }, Class::Normal { exponent: ey, .. }) => {
+                let (big_p, small_p) = if ex >= ey {
+                    (x.precision, y.precision)
+                } else {
+                    (y.precision, x.precision)
+                };
+                let two_gap =
+                    u32::try_from(ex.saturating_sub(*ey).saturating_abs().saturating_mul(2))
+                        .unwrap_or(u32::MAX);
+                two_gap
+                    .saturating_add(small_p.saturating_mul(2))
+                    .max(big_p.saturating_mul(2))
+                    .saturating_add(target)
+                    .saturating_add(64)
+            }
+            _ => 0,
+        },
+    );
+
+    // Exactness audit on claimed-exact results (pf-fbjn, ADR-0104).
+    // The interval test certifies VALUES, not statuses: a collapsed
+    // eval (small² absorbed below the working precision) can round
+    // exactly, certify under the nearest modes — the interval sits
+    // strictly inside the half-ulp — and claim OK while the truth is
+    // inexact. hypot's exact set is decidable by construct-and-check:
+    // v is exact iff v² = x² + y², all dyadic. The squares are exact
+    // at twice their operands' precisions and the audit width covers
+    // every genuinely-exact case's span (the difference x² − v² spans
+    // at most ~2p + 2t bits around the shared binade, and a true
+    // exact has x² − v² = −y² with span ≤ 2·p_small); a nonzero
+    // residue, or any audit step rounding (unreachable for true
+    // exacts), forces the honest INEXACT. Runs only when the driver
+    // claims OK — the rare exact-result path.
+    if status.is_ok() {
+        let p_audit = x
+            .precision
+            .saturating_mul(2)
+            .saturating_add(y.precision.saturating_mul(2))
+            .saturating_add(target.saturating_mul(2))
+            .saturating_add(64);
+        let mut audit = Status::OK;
+        let x2 = x
+            .mul_round(x, p_audit, RoundingMode::NearestEven)
+            .map(|(r, s)| {
+                audit |= s;
+                r
+            })
+            .expect("p_audit >= 1");
+        let y2 = y
+            .mul_round(y, p_audit, RoundingMode::NearestEven)
+            .map(|(r, s)| {
+                audit |= s;
+                r
+            })
+            .expect("p_audit >= 1");
+        let v2 = v
+            .mul_round(&v, p_audit, RoundingMode::NearestEven)
+            .map(|(r, s)| {
+                audit |= s;
+                r
+            })
+            .expect("p_audit >= 1");
+        let (d1, s1) = x2
+            .sub_round(&v2, p_audit, RoundingMode::NearestEven)
+            .expect("p_audit >= 1");
+        let (d2, s2) = d1
+            .add_round(&y2, p_audit, RoundingMode::NearestEven)
+            .expect("p_audit >= 1");
+        audit |= s1 | s2;
+        if !(audit.is_ok() && d2.is_zero()) {
+            auto_raise(Status::INEXACT);
+            return (v, status | Status::INEXACT);
+        }
+    }
+    (v, status)
 }
 
 #[cfg(test)]

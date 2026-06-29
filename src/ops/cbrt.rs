@@ -155,8 +155,18 @@ fn cbrt_finite(
     // bits, so requirement 1 is preserved.
     let rem3 = (((scale_a - i128::from(l)) % 3 + 3) % 3) as u32;
     l += rem3;
+    // Clamp at the SOURCE post-bump (pf-9wb2, ADR-0108; the div
+    // rationale): the rem3 bump can push `p_a + l` one past the u32
+    // domain at the ceiling, dropping the mantissa's top bits and
+    // panicking the non-zero-root expect. The clamp may break the
+    // mod-3 alignment only at the ceiling's edge, where the result
+    // still rounds from a self-consistent buffer.
+    l = l.min(u32::MAX - p_a);
 
-    let total_bits = p_a + l;
+    // Saturating (pf-9wb2, ADR-0107): wraps only with operands near
+    // the documented u32::MAX precision ceiling (the allocation wall
+    // itself); the saturated width keeps the buffer self-consistent.
+    let total_bits = p_a.saturating_add(l);
     let shifted_limbs = limbs_for(total_bits);
     let mut shifted: Vec<u64> = vec![0u64; shifted_limbs];
     or_left_shifted_into(&mut shifted, &m_a_int, p_a, l);
@@ -168,7 +178,8 @@ fn cbrt_finite(
     let intermediate_precision = (top_bit_s + 1) as u32;
     let intermediate_limbs = limbs_for(intermediate_precision);
     let mut intermediate: Vec<u64> = vec![0u64; intermediate_limbs];
-    let dst_low_zero = (intermediate_limbs as u32) * 64 - intermediate_precision;
+    let dst_low_zero =
+        ((intermediate_limbs as u64) * 64 - u64::from(intermediate_precision)) as u32;
     or_left_shifted_into(&mut intermediate, &s, intermediate_precision, dst_low_zero);
 
     let pre_sticky = r.iter().any(|&v| v != 0);

@@ -155,11 +155,7 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
     // precision, yet the true value differs (pf-njs5 under-report,
     // ADR-0064). Si(±0) = ±0 and the exact limits Si(±∞) = ±π/2 are
     // dispatched above; only finite-normal x ≠ 0 reaches here.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }

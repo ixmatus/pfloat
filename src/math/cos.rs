@@ -36,8 +36,8 @@ use crate::fixed::FixedFloat;
 use crate::mantissa::limbs_for;
 
 use super::sin::{cos_taylor, sin_taylor};
-use super::trig_reduce::{reduce, Reduction};
-use super::ziv::{ziv_round, ZIV_BASE_GUARD};
+use super::trig_reduce::{reduce, reduction_depth_hint, Reduction};
+use super::ziv::{ziv_round_with_depth, ZIV_BASE_GUARD};
 use super::ziv_calibration::COS_ERROR_GUARD;
 
 impl BigFloat {
@@ -121,7 +121,7 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         return (nan, Status::INVALID);
     }
 
-    let (result, status) = ziv_round(
+    let (result, status) = ziv_round_with_depth(
         |w| match reduce(x, w) {
             Some(Reduction { quadrant, r }) => match quadrant {
                 0 => cos_taylor(&r, w),
@@ -134,6 +134,10 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         target_precision,
         mode,
         COS_ERROR_GUARD,
+        // Inputs near a multiple of π/2 park the truth ~2|e_r| bits
+        // from the grid (pf-jl35, ADR-0103); resolved lazily on
+        // schedule exhaustion.
+        || reduction_depth_hint(x, ziv_first_working),
     );
     // Post-Ziv NaN-to-INVALID surfacing (pf-1axr, sin.rs precedent).
     if matches!(result.class, Class::Nan { .. }) && !status.invalid() {
@@ -147,11 +151,7 @@ fn cos_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
     // nonzero dyadic x), so the rounded result is INEXACT even where
     // it lands on a grid value (pf-njs5 under-report, ADR-0060).
     // cos(±0) = 1 is the only exact input and is special-cased above.
-    let status = if matches!(result.class, Class::Normal { .. }) {
-        status | Status::INEXACT
-    } else {
-        status
-    };
+    let status = super::force_transcendental_inexact(&result, status);
     auto_raise(status);
     (result, status)
 }
