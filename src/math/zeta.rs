@@ -302,13 +302,35 @@ fn zeta_finite(x: &BigFloat, target_precision: u32) -> BigFloat {
 /// well-conditioned [`zeta_borwein`] path. Numerically pinned by
 /// `ζ(−1) = 2·(2π)⁻²·(−1)·1·(π²/6) = −1/12`. The factors multiply
 /// with no cancellation (`Γ(1−s)` grows, `(2π)^{s−1}` decays, the
-/// product is the genuine — possibly large — value), so a single
-/// `+96`-bit working boost over the gamma/sin/pow composition
-/// suffices. Returns the unrounded working-precision value.
+/// product is the genuine — possibly large — value).
+///
+/// One conditioning trap remains, the value-side sibling of the pole
+/// at 1 (pf-hkoj, ADR-0109): the trivial zeros `ζ(−2n) = 0` are
+/// dispatched exactly upstream, but the *neighbourhood* `s = −2n − ε`
+/// feeds this branch, and there `sin(πs/2)` carries the whole result
+/// — `ζ(−2n − ε) ≈ −ε·ζ'(−2n)`, magnitude `|ε|`. The flat `+96` boost
+/// rounds `s` to the working width before `sin` is formed, collapsing
+/// `s` to exactly `−2n` for `ε` deeper than the working precision; the
+/// `sin(πs/2) = sin(∓nπ) = 0` then drives the product to a value
+/// `|e(ε)|` orders too small, certified at the first Ziv rung (the
+/// half-width model is violated, ADR-0103 §3b). The depth to the
+/// nearest integer is exactly computable on `s`'s own grid
+/// (`pole_proximity_depth`, the lgamma/digamma reflection precedent,
+/// ADR-0098); pre-boost the working precision by it so `sin` sees the
+/// `ε` offset. The boost is bounded by the input precision (DoS-safe);
+/// near the *odd* integers `sin` peaks rather than vanishing, so the
+/// boost only over-provisions there, harmlessly and boundedly. Returns
+/// the unrounded working-precision value.
 fn zeta_fe(x: &BigFloat, target_precision: u32) -> BigFloat {
+    let pole_boost = super::lgamma::pole_proximity_depth(x);
     let working = target_precision
         .saturating_add(96)
-        .min(target_precision.saturating_add(4096));
+        .saturating_add(pole_boost)
+        .min(
+            target_precision
+                .saturating_add(4096)
+                .saturating_add(x.precision()),
+        );
 
     let sw = x
         .round_to_precision(working, RoundingMode::NearestEven)

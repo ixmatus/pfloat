@@ -158,3 +158,5 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0106: agm normalizes its operands toward exponent 0](0106-agm-exponent-normalization.md) (accepted)
 - [ADR-0107: exponent arithmetic at the bottom rim — the lift, the Taylor floor, and the deep-rung ceiling](0107-bottom-rim-exponent-hardening.md) (accepted)
 - [ADR-0108: u32 arithmetic at the precision ceiling](0108-precision-ceiling-arithmetic.md) (accepted)
+- [ADR-0109: zeta_fe pre-boosts its working precision by the input's proximity to the negative integers](0109-zeta-fe-trivial-zero-conditioning.md) (accepted)
+- [ADR-0110: interior-zero conditioning for li, Ei, and digamma — geometric cancellation growth, an Ei zero-window, and a Spouge digamma](0110-interior-zero-conditioning-li-ei-digamma.md) (accepted)

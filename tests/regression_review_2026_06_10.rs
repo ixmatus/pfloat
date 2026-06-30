@@ -16,13 +16,16 @@
 //! (`f(x)@target == round(f(x)@HIGH, target)`) backs it up.
 //!
 //! Run: `cargo test --test regression_review_2026_06_10 \
-//!        --features std,fmt,big,agm,trig,specials,zeta`
+//!        --features std,fmt,big,agm,trig,integrals,zeta`
+//! (`integrals` implies `specials`; arc R3 adds Ei/li rows that need
+//! it. Both CI jobs that exercise this lane — the full-feature-union
+//! `cargo test` and the release MPFR job — already enable it.)
 
 #![cfg(all(
     feature = "big",
     feature = "agm",
     feature = "trig",
-    feature = "specials",
+    feature = "integrals",
     feature = "zeta"
 ))]
 
@@ -1923,4 +1926,325 @@ fn exp2_exact_integers_past_the_i64_cap() {
         }
         assert!(st.underflow() && st.inexact(), "{mode:?}: {st:?}");
     }
+}
+
+// ===============================================================
+// Arc R3, slice R3.1 (pf-hkoj, ADR-0109): zeta_fe near the trivial
+// zeros certified wrong VALUES. The trivial zeros zeta(-2n) = +0 are
+// dispatched exactly, but the NEIGHBOURHOOD s = -2n - eps feeds the
+// functional-equation branch, where sin(pi s/2) carries the whole
+// result (zeta(-2n - eps) ~ -eps*zeta'(-2n), magnitude |eps|). The
+// flat +96 working boost rounded s to the working width before sin
+// was formed, collapsing the eps proximity; the half-width model was
+// then violated and the first Ziv rung certified a value |e(eps)|
+// orders too small. Fix: pre-boost by pole_proximity_depth(s) (the
+// ADR-0098 lgamma/digamma reflection precedent), bounded by the
+// input precision. Truths: mpmath 1.4.1, two-precision cross-checked,
+// at the bit-identical exact input -2 - 2^-k.
+// ===============================================================
+
+/// `s = -2 - 2^-200` (exact at p264). zeta(-2-eps) is
+/// +eps*zeta(3)/(4pi^2), positive; the broken kernel returned
+/// 1.8949e-62 against the truth 1.89481e-62 (~5.5e-5 relative, ~39
+/// wrong bits at p53), certified at the first rung. The true value's
+/// p53 scaled mantissa has fraction above one half, so NE rounds up
+/// and `TowardZero` truncates down: the
+/// two modes differ by 1 ULP, and `assert_bit_exact` re-rounds the
+/// reference per mode, making this a directed-rounding check on both.
+/// Debug-cheap: the boost lifts the internal working precision to
+/// ~target+96+200.
+#[test]
+fn zeta_fe_near_trivial_zero_shallow_certifies() {
+    let neg2 = BigFloat::try_from_i64_exact(-2, 264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 264)
+        .unwrap()
+        .scale_by_pow2(-200);
+    assert!(se.is_ok());
+    let (s, ss) = neg2.sub(&eps, NE);
+    assert!(ss.is_ok(), "-2 - 2^-200 must be exact at p264");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert!(
+            !r.is_sign_negative() && !r.is_zero(),
+            "zeta(-2-2^-200) must be a positive normal, got {r}"
+        );
+        assert_bit_exact(
+            "zeta(-2-2^-200)",
+            &r,
+            "1.89481213461680241430670492056828379441453045590e-62",
+            53,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+}
+
+/// The deep case: `s = -2 - 2^-1200` (exact at p1264). The broken
+/// kernel returned the same 9.944e-67 under both NE and `TowardZero`
+/// (the collapse erased the mode distinction) where the truth is
+/// 1.76836e-363 — ~296 orders of magnitude wrong, certified at the
+/// first rung (the named pf-hkoj reproducer). Once fixed the two
+/// modes differ by 1 ULP, each checked against its per-mode reference
+/// rounding. The proximity
+/// (1200 bits) exceeds every legacy Ziv working precision, so only
+/// the pole_proximity_depth pre-boost recovers it. The result's
+/// astronomical exponent is pinned structurally first, then the
+/// mantissa bit-exactly.
+///
+/// Release builds only (the pf-jl35 zeta-pole precedent): the
+/// ~1400-bit conditioning-boosted Borwein evaluations cost ~120 s in
+/// the debug matrix but ~10 s in the MPFR full-union release job
+/// (whose feature set covers this lane). The shallow row above
+/// exercises the same boost mechanism debug-cheaply (~4 s).
+#[cfg(not(debug_assertions))]
+#[test]
+fn zeta_fe_near_trivial_zero_deep_certifies() {
+    let neg2 = BigFloat::try_from_i64_exact(-2, 1264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 1264)
+        .unwrap()
+        .scale_by_pow2(-1200);
+    assert!(se.is_ok());
+    let (s, ss) = neg2.sub(&eps, NE);
+    assert!(ss.is_ok(), "-2 - 2^-1200 must be exact at p1264");
+    for mode in [NE, RoundingMode::TowardZero] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert!(
+            !r.is_sign_negative() && !r.is_zero() && !r.is_infinite(),
+            "zeta(-2-2^-1200) must be a tiny positive normal, got {r}"
+        );
+        assert_bit_exact(
+            "zeta(-2-2^-1200)",
+            &r,
+            "1.76835922913628530304569635040298442138500151352e-363",
+            53,
+            mode,
+        );
+        assert!(st.inexact());
+    }
+}
+
+/// Odd-integer control: at `s = -3 - 2^-200` the same proximity boost
+/// fires (depth 200), but sin(pi s/2) PEAKS there rather than
+/// vanishing (zeta(-3) = +1/120 is a nonzero rational), so there is
+/// no cancellation and the value must stay the smooth zeta(-3)
+/// rounding — confirming the boost only over-provisions harmlessly
+/// near the odd integers. The eps perturbation sits ~140 bits below
+/// the p53 ulp, so the result is RN53(1/120), INEXACT.
+#[test]
+fn zeta_fe_near_odd_integer_is_unperturbed() {
+    let neg3 = BigFloat::try_from_i64_exact(-3, 264).unwrap();
+    let (eps, se) = BigFloat::try_from_i64_exact(1, 264)
+        .unwrap()
+        .scale_by_pow2(-200);
+    assert!(se.is_ok());
+    let (s, ss) = neg3.sub(&eps, NE);
+    assert!(ss.is_ok(), "-3 - 2^-200 must be exact at p264");
+    let (r, st) = s.zeta_round(53, NE).unwrap();
+    assert_bit_exact(
+        "zeta(-3-2^-200)",
+        &r,
+        "0.00833333333333333333333333333333333333333333333333",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+// ===============================================================
+// Arc R3, slice R3.2 (pf-0r1l, ADR-0110): li / Ei / digamma at their
+// deep INTERIOR zeros certified wrong values (Ei and digamma with the
+// WRONG SIGN). The root cause is the input-encoded proximity to an
+// irrational zero being rounded away before the kernel evaluates:
+//   - Ei: ei_series rounds x to a flat working width and had no
+//     near-zero cancellation handling, so it SATURATED (every deep
+//     input returned the same ~-1.76e-74) and, when the input sat the
+//     far side of the zero, returned the wrong sign.
+//   - li / digamma: cancellation_boosted's 12-iteration LINEAR crawl
+//     saturated at ~1492 bits, so inputs deeper than that never
+//     reached the realised cancellation (geometric growth fixes it,
+//     ADR-0110).
+//   - digamma additionally hit the z_min = 2^28 shift bomb (~28 min)
+//     once the Ziv working precision climbed past the Stirling table
+//     reach; the Spouge-derivative dispatch removes it.
+// Truths: mpmath 1.4.1, two-precision cross-checked, at the
+// bit-identical p-bit roundings of each zero (round-trip decimals).
+// Inputs are the closest p-bit dyadic to each zero (proximity ~2^-p),
+// so parse_str(.., p, NE) recovers the identical dyadic mpmath used.
+// ===============================================================
+
+/// RN256 of Ei's zero x0 ~ 0.37250741... (83-digit round-trip).
+const EI_ZERO_RN256: &str =
+    "0.37250741078136663446199186658011913353568949777165405155565743524220012063620033168";
+/// RN1500 of Ei's zero (457-digit round-trip; the wrong-sign case).
+const EI_ZERO_RN1500: &str = "0.3725074107813666344619918665801191335356894977716540515556574352422001206362018543849260499515489423924647410089784888971884859964513190909730851441030323246757175996464553431492013427280264636400043516796895802963952541696002687969488523429259713357476646792904951276419139147433560923961567399937198579084410146164504254573975974766449866360285719219941913988999613476230720360214336149937872004295614699239838216968183789311782018826806090899072536810635";
+/// RN256 of li's zero, the Ramanujan-Soldner constant mu ~ 1.4513692...
+const LI_ZERO_RN256: &str =
+    "1.4513692348833810502839684858920274494930322836480158630930045576624255957545243600";
+/// RN2000 of li's zero (608-digit round-trip; the ~139-orders case).
+/// Used only by the release-gated deep row below.
+#[cfg(not(debug_assertions))]
+const LI_ZERO_RN2000: &str = "1.4513692348833810502839684858920274494930322836480158630930045576624255957545178356595313577110868288470407515709706492030714335702042347848831900391108409842208865034838259375973333131396904110893875200271409693094298719306951483277641087216382996708422369126578452842707230772241061811131318318124512352191633404002577360159907445904017251368918339612155074307424793709893064395293020516241143642020809737507918258956251798522220055305868862328101012768516900105875608393150662138717113369733580730682011316746368408580505641371784257812013255078429486697408350823301767055762948648619812836567241287407428";
+/// RN1500 of digamma's positive root r ~ 1.4616321... (457-digit).
+/// Used only by the release-gated deep row below.
+#[cfg(not(debug_assertions))]
+const DG_ROOT_RN1500: &str = "1.461632144968362341262659542325721328468196204006446351295988408598786440353801810243074992733725592750556793365533053341617365778466985829177168381645024652542618792044384381978333559773961976074719431934937175414059451930109963724166527772172791673250880463960076932978144901475185803414306536810631010706016949785457933765577116113646852653864407737258989068226295819675052911994431197220725866405648207495227280806664927802646725469139476123636535751660";
+
+/// Ei at the p256 rounding of its zero. The broken kernel SATURATED
+/// (`ei_series` rounds x to ~target+128 and had no near-zero
+/// cancellation boost), returning the same ~-1.76e-74 for every input
+/// deeper than ~245 bits — here ~4 orders too large. Fixed by the
+/// zero-window `cancellation_boosted` wrap. Debug-cheap (~1 ms).
+#[test]
+fn ei_at_zero_shallow_resolves_proximity() {
+    let (x, _) = BigFloat::parse_str(EI_ZERO_RN256, 256, NE).unwrap();
+    let (r, st) = x.ei_round(53, NE).unwrap();
+    assert_bit_exact(
+        "Ei(RN256 zero)",
+        &r,
+        "-5.93278017227464494659448410905778474751721681552e-78",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// The Ei wrong-SIGN case: the p1500 rounding of the zero sits the
+/// positive side, truth +1.74495e-452, but the saturated kernel
+/// returned the negative ~-1.76e-74 (wrong sign AND 378 orders). The
+/// fix preserves the input-encoded proximity, so the sign and
+/// magnitude are both right. ~130 ms release / ~1.5 s debug.
+#[test]
+fn ei_at_zero_deep_keeps_the_sign() {
+    let (x, _) = BigFloat::parse_str(EI_ZERO_RN1500, 1500, NE).unwrap();
+    let (r, st) = x.ei_round(53, NE).unwrap();
+    assert!(
+        !r.is_sign_negative() && !r.is_zero(),
+        "Ei(RN1500 zero) must be a positive normal (was wrong-sign), got {r}"
+    );
+    assert_bit_exact(
+        "Ei(RN1500 zero)",
+        &r,
+        "1.74495224423398994478629394787165905009655137054e-452",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// li shallow control: the p256 rounding of the Soldner constant was
+/// already correct pre-fix (`cancellation_boosted` reached the ~258-bit
+/// depth within its linear crawl). It must stay correct under the
+/// geometric-growth change — a guard that the change preserves the
+/// shallow path. Debug-cheap.
+#[test]
+fn li_at_soldner_shallow_control() {
+    let (x, _) = BigFloat::parse_str(LI_ZERO_RN256, 256, NE).unwrap();
+    let (r, st) = x.li_round(53, NE).unwrap();
+    assert_bit_exact(
+        "li(RN256 zero)",
+        &r,
+        "1.75145860178909040777584303367206605065164608427e-77",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// li at the p2000 rounding of the Soldner constant: ~2000-bit
+/// proximity, past the legacy linear crawl's ~1492 saturation, so the
+/// broken kernel was ~139 orders wrong (NE and TZ identical — the tell
+/// of a collapse). Geometric `cancellation_boosted` reaches the depth.
+/// Release-gated (~2.8 s release / ~30 s+ debug).
+#[cfg(not(debug_assertions))]
+#[test]
+fn li_at_soldner_deep_certifies() {
+    let (x, _) = BigFloat::parse_str(LI_ZERO_RN2000, 2000, NE).unwrap();
+    let (r, st) = x.li_round(53, NE).unwrap();
+    assert!(
+        !r.is_sign_negative() && !r.is_zero() && !r.is_infinite(),
+        "li(RN2000 zero) must be a tiny positive normal, got {r}"
+    );
+    assert_bit_exact(
+        "li(RN2000 zero)",
+        &r,
+        "3.01155405456412427246887850150149437719766046662e-603",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// digamma at a high TARGET away from its root: digamma(2.5) at p1024
+/// drives the Ziv working precision past the Stirling table reach, so
+/// the broken kernel shifted up to `z_min` = 2^28 — a ~268M-term sum
+/// costing ~28 minutes. The Spouge-derivative dispatch makes it ~0.3 s
+/// (release). This guards the `spouge_digamma` path's correctness AND
+/// its cost in the debug matrix (it is NOT release-gated precisely so
+/// a spouge regression is caught fast); ~3-4 s debug.
+#[test]
+fn digamma_high_precision_uses_spouge() {
+    let x = BigFloat::parse_str("2.5", 1024, NE).unwrap().0;
+    let (r, st) = x.digamma_round(1024, NE).unwrap();
+    // 330-digit reference (mpmath @1200 bits): assert_bit_exact at
+    // p1024 needs ~310 digits to round-trip. This pins the value to
+    // 1024 bits, catching the ~0.1·w S-sum cancellation loss the
+    // internal absorption fixes (a too-short reference would mask it).
+    assert_bit_exact(
+        "digamma(2.5)@1024",
+        &r,
+        "0.703156640645243187225690333667911099473507062006232559619539412795011695949612564517992949382082542068032257375718212718335122180663862716377151165751591206551711191266986458548378646626288061477325050427202466808022754863088151740191007734417696879630107020674946735984012026572311494321432437157666747120129795446926129310661957",
+        1024,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// The Spouge sum cancellation GROWS with the argument (~0.1·w at
+/// z≈2.5, ~0.4·w at z≈1e6, found by this slice's adversarial verifier),
+/// so a fixed internal-precision margin under-covers large z and the
+/// first draft of `spouge_digamma` certified `digamma(1000000)@1024`
+/// ~190 bits short — a silent wrong value. The fix charges the measured
+/// depth into the scale and re-drives through `cancellation_boosted` (the
+/// whole Spouge regime, not just the root window). This large-z row
+/// guards it; the small-z `digamma(2.5)@1024` row above did not.
+/// Release-gated (~15 s release, dominated by the one-time
+/// coefficient computation at the boosted precision).
+#[cfg(not(debug_assertions))]
+#[test]
+fn digamma_large_argument_spouge_charges_sum_cancellation() {
+    let x = BigFloat::parse_str("1000000.0", 1200, NE).unwrap().0;
+    let (r, st) = x.digamma_round(1024, NE).unwrap();
+    assert_bit_exact(
+        "digamma(1000000)@1024",
+        &r,
+        "13.8155100579641907707746154031061852456026406778043880546126658109280907807403303326313511126554723511937285048862727304193036600881003872584088322029046881303856424221003292038345233650366929368941164152115961264901240562762800629222179573243109739999916937581752554743770949455676902220820754963461901359068818959949729948464555",
+        1024,
+        NE,
+    );
+    assert!(st.inexact());
+}
+
+/// The digamma wrong-SIGN + cost case: the p1500 rounding of the
+/// positive root. The legacy linear crawl saturated below the ~1500
+/// depth, returning the wrong sign, AND each deep evaluation hit the
+/// `z_min` = 2^28 shift bomb (~28 min). Geometric `cancellation_boosted`
+/// reaches the depth and the Spouge dispatch removes the bomb: truth
+/// +7.84636e-453, ~2 s release. Release-gated (~25 s debug).
+#[cfg(not(debug_assertions))]
+#[test]
+fn digamma_at_root_deep_keeps_the_sign() {
+    let (x, _) = BigFloat::parse_str(DG_ROOT_RN1500, 1500, NE).unwrap();
+    let (r, st) = x.digamma_round(53, NE).unwrap();
+    assert!(
+        !r.is_sign_negative() && !r.is_zero(),
+        "digamma(RN1500 root) must be a positive normal (was wrong-sign), got {r}"
+    );
+    assert_bit_exact(
+        "digamma(RN1500 root)",
+        &r,
+        "7.84635712238823226330795968835636586463977510063e-453",
+        53,
+        NE,
+    );
+    assert!(st.inexact());
 }
