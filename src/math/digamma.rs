@@ -203,7 +203,16 @@ fn digamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     // truncation accuracy no matter the working precision). Outside
     // the window |ψ| ≥ |ψ(5/4)| ≈ 2^-2.1, inside the guard's
     // reach.
-    if in_positive_root_window(x) {
+    // Two cancellations route the positive branch through
+    // cancellation_boosted: the near-root window (above), and the whole
+    // Spouge regime (working_prec > STIRLING_REACH_THRESHOLD), whose S/S'
+    // sum cancellation grows with the argument (~0.4·w at z≈1e6) and so
+    // is uncoverable by a fixed margin (pf-0r1l verifier; the
+    // spouge_digamma_scaled scale reports the depth and the iteration
+    // recovers it). Below the threshold the shift-Stirling path has no
+    // sum cancellation and runs directly (the differential_digamma lane,
+    // p ≤ 256, stays on this fast path).
+    if in_positive_root_window(x) || working_prec > STIRLING_REACH_THRESHOLD {
         return super::ziv::cancellation_boosted(working_prec, |w| {
             digamma_positive_at_w(x, z_min_for_target(w), w)
         });
@@ -238,6 +247,19 @@ fn digamma_positive_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> (BigFlo
         .round_to_precision(working_prec, RoundingMode::NearestEven)
         .expect("precision >= 1")
         .0;
+
+    // Past the 17-pair Stirling table's reach, dispatch to the Spouge
+    // derivative (pf-0r1l, ADR-0110): reaching the table for small x
+    // requires shifting up to z_min, which the target/log2(z_min)
+    // sizing caps at 2^28 — a ~268M-term shift sum costing ~28 minutes
+    // for the deep-root inputs whose Ziv working precision climbs past
+    // ~900 bits. Spouge's cost is linear in a ∝ working_prec, correct
+    // and cost-proportional past the table reach. The threshold matches
+    // lgamma's; below it the shift-Stirling path stays the faster one
+    // and keeps the differential_digamma lane (p ≤ 256) on Stirling.
+    if working_prec > STIRLING_REACH_THRESHOLD {
+        return super::gamma_stirling::spouge_digamma_scaled(&x_w, working_prec);
+    }
 
     let e_x = match &x_w.class {
         Class::Normal { exponent, .. } => *exponent,
@@ -278,6 +300,15 @@ fn digamma_positive_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> (BigFlo
         (diff, scale)
     }
 }
+
+/// Working-precision threshold above which `digamma_positive_at_w`
+/// dispatches to the Spouge derivative ([`super::gamma_stirling::spouge_digamma_scaled`]).
+/// Below it, the 17-pair Stirling asymptotic with upward shift remains
+/// the faster path. Set to lgamma's value (the shared
+/// 17-Bernoulli-pair table caps both at ~895 bits) and conservatively
+/// below it, so the `differential_digamma` lane (p ≤ 256) and the
+/// shallow Ziv rungs stay on Stirling (pf-0r1l, ADR-0110).
+const STIRLING_REACH_THRESHOLD: u32 = 600;
 
 /// `z_min` for the digamma asymptotic. Same shape as the lgamma
 /// helper but slightly tighter because digamma's tail starts at

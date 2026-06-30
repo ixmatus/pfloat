@@ -322,6 +322,129 @@ pub(super) fn spouge_lgamma_scaled(z: &BigFloat, working_prec: u32) -> (BigFloat
     (ln_gamma_z, scale)
 }
 
+/// Computes `ψ(z) = digamma(z)` via the analytic derivative of
+/// Spouge's `ln Γ` (the [`spouge_lgamma_scaled`] companion, pf-0r1l,
+/// ADR-0110). Differentiating
+/// `ln Γ(z) = (z+1/2)ln(z+a) − (z+a) + ln S(z,a) − ln z` gives
+///
+/// ```text
+/// ψ(z) = ln(z+a) + (z+1/2)/(z+a) − 1 + S'(z,a)/S(z,a) − 1/z
+///   S(z,a)  = √(2π) + Σ_{k=1}^{a−1} c_k/(z+k)
+///   S'(z,a) = −Σ_{k=1}^{a−1} c_k/(z+k)²
+/// ```
+///
+/// (verified against mpmath: `a = spouge_a_for(w)` delivers `~w`
+/// accurate bits, scaling with `a` exactly as `spouge_lgamma_scaled`).
+/// The `c_k` are the **same** Spouge coefficients (memoized per
+/// `working_prec`), so a digamma call at a precision lgamma already
+/// touched reuses the cache.
+///
+/// This is the digamma analogue of lgamma's Spouge dispatch: the
+/// 17-pair Stirling table reaches only ~895 bits, and reaching it for
+/// small `z` requires shifting up to `z_min`, which the
+/// `target/log₂(z_min)` sizing caps at `2^28` — a ~268M-term shift sum
+/// that costs ~28 minutes for the deep-root inputs whose Ziv working
+/// precision climbs past ~900 bits (pf-0r1l). Spouge's cost is linear
+/// in `a ∝ working_prec`, so this path is both correct past the table
+/// reach and cost-proportional to the precision requested.
+///
+/// Returns `(value, operand_scale)`: the value carries
+/// `working_prec − (S/S' internal cancellation)` accurate bits, and the
+/// scale charges both the near-root O(1) cancellation AND that internal
+/// alternating cancellation. The caller MUST re-drive through
+/// `cancellation_boosted` (as the digamma positive branch does for both
+/// the root window and the whole Spouge regime): the internal
+/// cancellation grows with `z` (~0.1·w at `z≈2.5`, ~0.4·w at `z≈1e6`),
+/// so no fixed working-precision margin makes this self-contained —
+/// the scale-driven iteration is the only sound recovery
+/// (`spouge_lgamma_scaled`'s pattern; pf-0r1l verifier, contrast the
+/// filed pf-rlrb where lgamma's non-window path skips the re-drive).
+#[allow(dead_code)]
+pub(super) fn spouge_digamma_scaled(z: &BigFloat, working_prec: u32) -> (BigFloat, i64) {
+    let a = spouge_a_for(working_prec);
+    let z_w = z
+        .round_to_precision(working_prec, RoundingMode::NearestEven)
+        .expect("precision >= 1")
+        .0;
+
+    let one = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
+    let two = BigFloat::try_from_i64_exact(2, working_prec).expect("precision >= 1");
+    let (half, _) = one.div(&two, RoundingMode::NearestEven);
+
+    // Leading: ln(z+a) + (z+1/2)/(z+a) − 1.
+    let a_bf = BigFloat::try_from_i64_exact(i64::from(a), working_prec).expect("precision >= 1");
+    let (z_plus_a, _) = z_w.add(&a_bf, RoundingMode::NearestEven);
+    let (ln_z_plus_a, _) = z_plus_a.ln(RoundingMode::NearestEven);
+    let (z_plus_half, _) = z_w.add(&half, RoundingMode::NearestEven);
+    let (frac1, _) = z_plus_half.div(&z_plus_a, RoundingMode::NearestEven);
+    let (lead0, _) = ln_z_plus_a.add(&frac1, RoundingMode::NearestEven);
+    let (leading, _) = lead0.sub(&one, RoundingMode::NearestEven);
+
+    // S(z,a) and S'(z,a) share the coefficient vector. Both alternate,
+    // so their largest term exceeds the sum by an internal cancellation
+    // hidden behind the S'/S division (the pf-wmv7 Spouge-sum lesson,
+    // ADR-0097). That depth GROWS with z — ~0.1·w at z≈2.5 but ~0.4·w
+    // at z≈1e6 (the c_k grow with a∝w while the z^-k decay is slow), so
+    // no FIXED working-precision margin covers it (pf-0r1l verifier).
+    // It is charged into the returned scale and re-driven by the
+    // caller's cancellation_boosted, which iterates to convergence — the
+    // spouge_lgamma_scaled pattern.
+    let pi = pi_at(working_prec);
+    let (two_pi, _) = two.mul(&pi, RoundingMode::NearestEven);
+    let (sqrt_2pi, _) = two_pi.sqrt(RoundingMode::NearestEven);
+    let coefficients = spouge_coefficients(working_prec, a);
+    let mut sum_s = sqrt_2pi;
+    let mut sum_sp =
+        BigFloat::try_new_zero(crate::sign::Sign::Positive, working_prec).expect("precision >= 1");
+    let mut max_term_s = super::ziv::value_exponent(&sum_s);
+    let mut max_term_sp = i64::MIN;
+    for (k_minus_1, c_k) in coefficients.iter().enumerate() {
+        let k = (k_minus_1 + 1) as i64;
+        let k_bf = BigFloat::try_from_i64_exact(k, working_prec).expect("precision >= 1");
+        let (z_plus_k, _) = z_w.add(&k_bf, RoundingMode::NearestEven);
+        let (term_s, _) = c_k.div(&z_plus_k, RoundingMode::NearestEven);
+        let (z_plus_k_sq, _) = z_plus_k.mul(&z_plus_k, RoundingMode::NearestEven);
+        let (term_sp_abs, _) = c_k.div(&z_plus_k_sq, RoundingMode::NearestEven);
+        let term_sp = term_sp_abs.negated(); // S' = −Σ c_k/(z+k)²
+        max_term_s = max_term_s.max(super::ziv::value_exponent(&term_s));
+        max_term_sp = max_term_sp.max(super::ziv::value_exponent(&term_sp));
+        let (next_s, _) = sum_s.add(&term_s, RoundingMode::NearestEven);
+        sum_s = next_s;
+        let (next_sp, _) = sum_sp.add(&term_sp, RoundingMode::NearestEven);
+        sum_sp = next_sp;
+    }
+
+    let (sp_over_s, _) = sum_sp.div(&sum_s, RoundingMode::NearestEven);
+    let (one_over_z, _) = one.div(&z_w, RoundingMode::NearestEven);
+
+    // ψ = leading + S'/S − 1/z.
+    let (psi0, _) = leading.add(&sp_over_s, RoundingMode::NearestEven);
+    let (psi, _) = psi0.sub(&one_over_z, RoundingMode::NearestEven);
+
+    // Scale = the O(1) leading magnitudes that cancel near ψ's root,
+    // PLUS the S/S' internal cancellation (the large-z term above). The
+    // caller's cancellation_boosted re-evaluates at working + this depth
+    // until the value carries `working` accurate bits.
+    let s_internal = match &sum_s.class {
+        crate::class::Class::Normal { exponent, .. } => max_term_s.saturating_sub(*exponent).max(0),
+        _ => 0,
+    };
+    let sp_internal = match &sum_sp.class {
+        crate::class::Class::Normal { exponent, .. } => {
+            max_term_sp.saturating_sub(*exponent).max(0)
+        }
+        _ => 0,
+    };
+    let scale = super::ziv::value_exponent(&ln_z_plus_a)
+        .max(super::ziv::value_exponent(&frac1))
+        .max(super::ziv::value_exponent(&one_over_z))
+        .max(super::ziv::value_exponent(&sp_over_s))
+        .max(0) // the −1 constant
+        .saturating_add(s_internal.max(sp_internal));
+
+    (psi, scale)
+}
+
 /// Compute the Spouge coefficient vector `[c_1, c_2, …, c_{a-1}]`
 /// at the supplied working precision, memoized per `working_prec`
 /// (since `a = spouge_a_for(working_prec)` is a function of

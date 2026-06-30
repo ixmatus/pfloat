@@ -324,6 +324,23 @@ pub(crate) fn value_exponent(v: &BigFloat) -> i64 {
 /// The cancellation depth is bounded by the input's proximity to the
 /// zero, itself bounded by the input precision; the iteration cap is a
 /// backstop and the Ziv driver remains the outer correctness gate.
+///
+/// Growth is **geometric**, not linear (pf-0r1l, ADR-0110). The probe
+/// rounds the input inside `eval(w)`, so for an input whose proximity
+/// to the zero is encoded `D` bits deep, every probe at `w < D` sees a
+/// `w`-bit rounding *artifact* of the input — its magnitude tracks `w`,
+/// not the true result — and reports `cancel ≈ w`, i.e. `needed ≈
+/// working_prec + w`, a crawl of `working_prec` bits per iteration. The
+/// legacy 12-iteration linear crawl saturated at `~working_prec·12`
+/// (`~1492` at the first Ziv rung), so deep inputs — `li` at the
+/// Soldner constant parsed at p2000, `digamma` at its root parsed at
+/// p1500 — never reached `w ≥ D`, where the probe finally sees the true
+/// input (`round(x, w) = x`) and the realised cancellation. Doubling
+/// `w` each iteration reaches any `D` in `~log₂(D/working_prec)` steps
+/// regardless of the rung, then converges within one more step
+/// (`needed` is fixed once `w ≥ D`). The overshoot is at most `2·D`
+/// bits — input-proportional, the DoS-budget posture — and only ever
+/// *adds* accuracy, which the outer Ziv driver rounds away.
 #[allow(dead_code)] // unused under transcendental-without-specials combos
 pub(crate) fn cancellation_boosted(
     working_prec: u32,
@@ -331,7 +348,11 @@ pub(crate) fn cancellation_boosted(
 ) -> BigFloat {
     let mut w = working_prec;
     let mut last = None;
-    for _ in 0..12 {
+    // Geometric growth converges in log-many steps; 32 doublings from
+    // any starting width exceed every representable precision, so the
+    // cap is a pure backstop and real termination is convergence
+    // (`w ≥ precision(x)` stabilises the probe).
+    for _ in 0..32 {
         let (value, operand_scale) = eval(w);
         let result_exp = match &value.class {
             Class::Normal { exponent, .. } => *exponent,
@@ -350,7 +371,11 @@ pub(crate) fn cancellation_boosted(
             return value;
         }
         last = Some(value);
-        w = needed;
+        // At least double: when the probe under-reports `cancel`
+        // (below the true depth, `needed` crawls by `working_prec`),
+        // doubling guarantees we climb past `precision(x)` in
+        // log-many steps rather than crawling and saturating.
+        w = needed.max(w.saturating_mul(2));
     }
     last.unwrap_or_else(|| eval(w).0)
 }

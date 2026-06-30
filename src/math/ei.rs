@@ -139,8 +139,22 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         |w| {
             if use_asymptotic {
                 ei_asymptotic(x, w)
+            } else if in_zero_window(x) {
+                // Near Ei's real zero (x ≈ 0.3725) the series
+                // γ + ln|x| + Σ cancels to a tiny value, and proximity
+                // to the zero is input-encoded; round_to_precision
+                // inside ei_series collapses it for proximity deeper
+                // than the working precision, so the flat boost
+                // saturated and certified a wrong magnitude — and, for
+                // a deep input landing the wrong side of the zero, the
+                // WRONG SIGN (pf-0r1l, ADR-0110). The realised-
+                // cancellation boost preserves the proximity and keeps
+                // the Ziv half-width sound, exactly as li already wraps
+                // its Ei composition. Confined to the zero window so
+                // generic Ei pays nothing.
+                super::ziv::cancellation_boosted(w, |ww| ei_series(x, ww))
             } else {
-                ei_series(x, w)
+                ei_series(x, w).0
             }
         },
         target_precision,
@@ -186,13 +200,39 @@ pub(super) fn asymptotic_threshold_exponent(target_precision: u32) -> i64 {
     e
 }
 
+/// `x ∈ [11/32, 13/32]`: the window bracketing Ei's real zero
+/// `x₀ ≈ 0.37250741…`. Exact dyadic bounds compared on the original
+/// input, so the trigger is precision-independent (the lgamma/digamma
+/// root-window precedent, ADR-0097).
+fn in_zero_window(x: &BigFloat) -> bool {
+    let bound = |n: i64| {
+        BigFloat::try_from_i64_exact(n, 5)
+            .expect("5 bits hold 11 and 13")
+            .scale_by_pow2(-5)
+            .0
+    };
+    matches!(
+        x.partial_cmp(&bound(11)).0,
+        Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
+    ) && matches!(
+        x.partial_cmp(&bound(13)).0,
+        Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+    )
+}
+
 /// Convergent series `Ei(x) = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!)`
 /// (DLMF 6.6.2). The peak term sits near `k ≈ |x|`; for `x < 0` the
 /// terms alternate while the result decays, so the working precision
 /// is boosted by roughly `2·|x|·log₂ e` to absorb the cancellation
 /// (the [`super::erf::erf_maclaurin`] guard idiom, doubled for the
 /// alternating case).
-fn ei_series(x: &BigFloat, target_precision: u32) -> BigFloat {
+///
+/// Returns `(value, operand_scale)` for [`super::ziv::cancellation_boosted`]:
+/// near Ei's zero the O(1) leading magnitude `γ + ln|x|` (and the
+/// first series term `x`) cancel against the tail to the tiny result,
+/// so the scale is their binary exponent. Callers outside the zero
+/// window discard the scale.
+fn ei_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
@@ -248,7 +288,12 @@ fn ei_series(x: &BigFloat, target_precision: u32) -> BigFloat {
             }
         }
     }
-    acc
+    // The O(1) magnitude that cancels to form the near-zero result:
+    // the leading γ + ln|x| and the first series term x. Away from the
+    // zero the result is itself O(this), so the charged cancellation is
+    // ~0 (cancellation_boosted then adds nothing).
+    let scale = super::ziv::value_exponent(&g_plus_ln).max(super::ziv::value_exponent(&x_w));
+    (acc, scale)
 }
 
 /// Divergent asymptotic `Ei(x) ∼ (eˣ/x)·Σ_{k≥0} k!/xᵏ` (DLMF 6.12.2),
