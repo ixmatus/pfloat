@@ -2201,6 +2201,48 @@ fn zeta_near_zero_negative_is_the_correctly_rounded_neighbour() {
     assert!(stc.inexact());
 }
 
+/// pf-31ql (Si tiny-x directed modes): Si(x) = x − x³/18 + … shrinks
+/// toward x in magnitude (the −x³/18 correction opposes x's sign), so
+/// for tiny x the collapsed Ziv path returned x itself under every
+/// mode — 1 ulp wrong under `TowardZero` and `TowardNegative`, where
+/// the correct result is pred(x) (Si(x) < x for x > 0). Si lacked the
+/// ADR-0059/0104 tiny-x dispatch; ADR-0113 adds it. The defect needs
+/// x deep enough that the cubic correction (~2·|`e_x`| bits below x)
+/// falls past the Ziv guard cap (target + 1024) so the driver never
+/// resolves it and falls through to x: x = 2^−1000 at target 53 has
+/// its correction ~2004 bits down, unreachable, so pre-fix TZ/TN
+/// returned x itself. NE/NA/TP → x and TZ/TN → pred(x), all INEXACT.
+#[test]
+fn si_tiny_x_directed_modes_shrink_toward_zero() {
+    let (x, sx) = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-1000);
+    assert!(sx.is_ok());
+    let down = x.next_down().0; // pred(2^-60)
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardPositive, &x),
+        (RoundingMode::TowardNegative, &down),
+        (RoundingMode::TowardZero, &down),
+    ] {
+        let (r, st) = x.si_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "Si(2^-1000) under {mode:?}: got {r}, want {want}"
+        );
+        assert!(
+            st.inexact(),
+            "Si(2^-1000) is irrational: INEXACT under {mode:?}"
+        );
+    }
+    // Odd symmetry: Si(−x) = −Si(x); |Si(−x)| < |x|, so TowardZero
+    // rounds to −pred(x).
+    let (rn, _) = x.negated().si_round(53, RoundingMode::TowardZero).unwrap();
+    assert_eq!(rn.total_cmp(&down.negated()), Ordering::Equal);
+}
+
 // ===============================================================
 // Arc R3, slice R3.2 (pf-0r1l, ADR-0110): li / Ei / digamma at their
 // deep INTERIOR zeros certified wrong values (Ei and digamma with the

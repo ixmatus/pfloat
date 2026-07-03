@@ -118,6 +118,33 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: Si(x) = x − x³/18 + … shrinks toward x in magnitude (the
+    // −x³/18 correction opposes x's sign), so round x with that
+    // magnitude-shrinking infinitesimal directly — the ADR-0059/0104
+    // tiny-x pattern (Si is the asinh analogue, asinh(x) = x − x³/6).
+    // Past the Ziv guard cap (target + 1024) the series correction
+    // (position ~2·|e_x| below x) is unreachable, the driver collapses
+    // to x and rounds it as if exact, and directed modes returned x
+    // itself — 1 ulp wrong toward zero where Si(x) < x (pf-31ql,
+    // ADR-0113). The two-part depth clears both the target ulp and the
+    // INPUT's grid (pf-fbjn, ADR-0104); arm-failing inputs go to the
+    // driver's deep rung.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("special classes dispatched above"),
+    };
+    if e <= -(i64::from(target_precision) + 2)
+        && e.saturating_mul(-2) >= i64::from(x.precision).saturating_add(6)
+    {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // magnitude shrinks: the −x³/18 correction opposes x's sign
+            target_precision,
+            mode,
+        );
+    }
+
     // Regime decision pinned from target_precision so it does not
     // flip across Ziv retries. Si is odd; compute on |x| and reapply
     // sign inside the eval closure so the Ziv interval test sees the
