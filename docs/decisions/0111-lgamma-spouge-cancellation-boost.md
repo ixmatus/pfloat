@@ -89,10 +89,28 @@ confirm no fast-path regression.
 - Positive: the last certified-wrong-VALUE defect in the gamma family
   is closed; `lgamma`, `gamma`, and `beta` are now correctly rounded at
   every target, not only where the differential lanes reached.
-- Cost: high-target lgamma off the root windows now runs ~2 Spouge
-  evaluations instead of one, at up to 2·working. Bounded and
+- Cost (positive axis): high-target lgamma off the root windows now
+  runs ~2 Spouge evaluations instead of one, at up to 2·working
+  (measured: `lgamma(2.5)@1024` ~2.2 ms → ~9.9 ms, ~5×). Bounded and
   input-proportional; the differential lanes (p ≤ 256) are unaffected
   because they never crossed the threshold.
+- Cost (negative axis) — recorded from the R4.1 adversarial verifier:
+  the negative-axis reflection recurses into the positive Spouge path
+  (`(1−x).lgamma_round(w)`), so at high target the inner call now runs
+  the boosted iteration inside the outer reflection's own
+  `cancellation_boosted`, compounding to ~15× (`lgamma(−2.5)@1024`
+  ~3.4 s → ~52 s). It is **bounded and input-proportional, not a DoS**
+  (each `cancellation_boosted` converges in ~2 inner iterations), and
+  buys no correctness on the negative axis (baseline was already correct
+  there through ≥2000 bits, via the outer Ziv escalation that masked the
+  inner kernel's inaccuracy). It only bites at target ≳ 537 on the
+  negative axis, an extreme regime; typical (≤ 256-bit) callers stay on
+  Stirling and are unaffected. A future enhancement (deferred, filed as
+  a follow-up) could have the reflection charge the inner Spouge
+  cancellation through its own operand scale rather than re-driving the
+  inner `lgamma_round`, but that is a cost optimisation, not a
+  correctness change, and is out of scope for this certified-wrong-value
+  fix.
 - The `spouge_lgamma_scaled` docstring's "caller MUST re-drive"
   contract is now satisfied at every call site (the crate-wide sweep
   found exactly one caller; the two remaining `_positive_at_w(..).0`
