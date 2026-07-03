@@ -2375,6 +2375,87 @@ fn si_tiny_x_directed_modes_shrink_toward_zero() {
     assert_eq!(rn.total_cmp(&down.negated()), Ordering::Equal);
 }
 
+/// pf-8scf (gamma positive-integer exact walk at target precision):
+/// `try_gamma_pos_integer_exact` walked the factorial AND the counter
+/// at `target_precision`, so at a tiny target the counter increment
+/// rounded (2 → 3 rounds to 4) and the loop terminated early with a
+/// wrong accumulated value: `gamma(4)@p1` returned `Some(2)` with OK,
+/// where `gamma(4) = 6` is not representable at p1 (a tie between 4 and
+/// 8) and must go to the Ziv envelope. Walk at a build precision and
+/// check target-representability at the end (ADR-0118). Assert under
+/// `TowardZero`, where 6 truncates unambiguously to 4 (no tie, so the
+/// Ziv envelope certifies on the first rung — fast and deterministic),
+/// never the bug value 2; `gamma(3)@p1 = 2! = 2 = 2^1` stays exact on
+/// the fast path.
+#[test]
+fn gamma_positive_integer_exact_walk_at_build_precision() {
+    let four = BigFloat::try_from_i64_exact(4, 8).unwrap();
+    let (g4, s4) = four.gamma_round(1, RoundingMode::TowardZero).unwrap();
+    let c4 = BigFloat::try_from_i64_exact(1, 1)
+        .unwrap()
+        .scale_by_pow2(2)
+        .0; // 4
+    assert_eq!(
+        g4.total_cmp(&c4),
+        Ordering::Equal,
+        "gamma(4)@p1 under TZ truncates 6 to 4, never the bug value 2, got {g4}"
+    );
+    assert!(s4.inexact());
+    let three = BigFloat::try_from_i64_exact(3, 8).unwrap();
+    let (g3, s3) = three.gamma_round(1, NE).unwrap();
+    let two = BigFloat::try_from_i64_exact(2, 1).unwrap();
+    assert_eq!(g3.total_cmp(&two), Ordering::Equal, "gamma(3)@p1 = 2 exact");
+    assert!(s3.is_ok(), "2! = 2 is exact at p1");
+}
+
+/// pf-ihsp (beta case-4 exact path at operand precision): `B(−n, m)`
+/// via the pole-cancellation closed form computed `n − m` at OPERAND
+/// precision, so `B(−128@p1, 1@p1)` rounded `n − m = 127` to 128 and
+/// returned −1 with OK where −1/128 is due. Lift n, m to
+/// `BETA_EXACT_BUILD_PREC` before the integer arithmetic (ADR-0118).
+#[test]
+fn beta_case4_exact_lifts_to_build_precision() {
+    let a = BigFloat::try_from_i64_exact(-128, 1).unwrap(); // -2^7, exact at p1
+    let b = BigFloat::try_from_i64_exact(1, 1).unwrap();
+    let (v, st) = a.beta_round(&b, 53, NE).unwrap();
+    let want = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(-7)
+        .0; // -1/128
+    assert_eq!(
+        v.total_cmp(&want),
+        Ordering::Equal,
+        "B(-128,1) = -1/128, got {v}"
+    );
+    assert!(st.is_ok(), "-1/128 is exact at p53");
+}
+
+/// pf-k5ll (beta B(1, dyadic) reciprocal): `B(1, b) = 1/b` exactly. The
+/// positive-integer dispatch covered integer b (`B(1, 8) = 1/8`) but
+/// missed the non-integer dyadic `b = 1/8`: `B(1, 1/8)` went through
+/// Ziv and returned 8 with INEXACT over-reported. The construct-and-
+/// check reciprocal returns 8 exactly with OK (ADR-0118).
+#[test]
+fn beta_one_reciprocal_is_exact_for_powers_of_two() {
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let eighth = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-3)
+        .0; // 1/8
+    let (v, st) = one.beta_round(&eighth, 53, NE).unwrap();
+    let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
+    assert_eq!(
+        v.total_cmp(&eight),
+        Ordering::Equal,
+        "B(1, 1/8) = 8, got {v}"
+    );
+    assert!(st.is_ok(), "B(1, 1/8) = 8 is exact");
+    // Symmetric: B(8, 1) = 1/8 exactly.
+    let (v2, st2) = eight.beta_round(&one, 53, NE).unwrap();
+    assert_eq!(v2.total_cmp(&eighth), Ordering::Equal, "B(8, 1) = 1/8");
+    assert!(st2.is_ok());
+}
+
 // ===============================================================
 // Arc R3, slice R3.2 (pf-0r1l, ADR-0110): li / Ei / digamma at their
 // deep INTERIOR zeros certified wrong values (Ei and digamma with the
