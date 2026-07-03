@@ -164,6 +164,7 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0112: a near-zero dispatch for ζ(s), s → 0⁻ (the pf-qt7v 0·∞ form)](0112-zeta-near-zero-conditioning.md) (accepted)
 - [ADR-0113: tiny-x dispatch for Si (the pf-31ql directed-mode 1-ulp fix)](0113-si-tiny-x-dispatch.md) (accepted)
 - [ADR-0114: add/sub result fidelity — directed-mode sign mirroring and exponent-saturation flag parity](0114-addsub-flag-and-sign-fidelity.md) (accepted)
+- [ADR-0115: complex status and sign fidelity — qNaN/sNaN INVALID, exact-quotient OK, zero-dividend sign, csqrt directed imaginary](0115-complex-status-sign-fidelity.md) (accepted)
 - [ADR-0116: Ball kernel-status fidelity and validating serde deserialize](0116-ball-status-serde-fidelity.md) (accepted)
 - [ADR-0117: conversion & parse fidelity — mode-aware parse-cap saturation, tininess-before-rounding underflow, and the sticky-flag lane](0117-conversion-saturation-and-flag-fidelity.md) (accepted)
 - [ADR-0118: gamma/beta exact-dispatch precision — walk factorials at build precision, not at target](0118-gamma-beta-exact-dispatch-precision.md) (accepted)
