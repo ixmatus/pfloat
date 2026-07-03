@@ -94,11 +94,38 @@ fn div_numerators(a: &BigFloat, b: &BigFloat, c: &BigFloat, d: &BigFloat) -> (Bi
     )
 }
 
+/// `Status::INVALID` iff any of the four operand parts is a signaling NaN.
+/// IEEE 754 §7.2 raises the invalid-operation exception for a signaling NaN
+/// operand of any arithmetic operation, so this floor rides on top of every
+/// §G.5.1 recovery row: it is the one flag the recovery must never drop, even
+/// where an infinity or a boxed zero overrides the *value* (pf-hdq1). A quiet
+/// NaN raises nothing here (it propagates silently).
+fn signaling_invalid(a: &BigFloat, b: &BigFloat, c: &BigFloat, d: &BigFloat) -> Status {
+    if a.is_signaling_nan() || b.is_signaling_nan() || c.is_signaling_nan() || d.is_signaling_nan()
+    {
+        Status::INVALID
+    } else {
+        Status::OK
+    }
+}
+
 /// Annex G §G.5.1 pre-dispatch for `(a + bi)/(c + di)` at output precision
 /// `p`. Returns `Some` for the recovered infinity/NaN rows, or `None` when the
 /// operands are finite with a nonzero finite divisor (the case the C3
-/// directed-pair Ziv divide handles).
+/// directed-pair Ziv divide handles). The signaling-NaN INVALID floor
+/// (`signaling_invalid`) rides on every recovered row.
 pub(crate) fn complex_div_special(
+    a: &BigFloat,
+    b: &BigFloat,
+    c: &BigFloat,
+    d: &BigFloat,
+    p: u32,
+) -> Option<(BigFloat, BigFloat, Status)> {
+    let inv = signaling_invalid(a, b, c, d);
+    complex_div_special_core(a, b, c, d, p).map(|(re, im, s)| (re, im, s | inv))
+}
+
+fn complex_div_special_core(
     a: &BigFloat,
     b: &BigFloat,
     c: &BigFloat,
@@ -153,10 +180,13 @@ pub(crate) fn complex_div_special(
     }
 
     // A NaN operand with no recoverable infinity or zero divisor: not
-    // recovered. (Reaching here means at least one part is NaN, since every
-    // all-finite-nonzero-divisor case returns `None`.)
+    // recovered, `(NaN, NaN)`. The base status is OK: a *quiet* NaN propagates
+    // silently (no INVALID). The `signaling_invalid` floor in the wrapper adds
+    // INVALID iff the NaN was signaling (pf-hdq1). (Reaching here means at least
+    // one part is NaN, since every all-finite-nonzero-divisor case returns
+    // `None`.)
     if a.is_nan() || b.is_nan() || c.is_nan() || d.is_nan() {
-        return Some(nan_pair(p));
+        return Some((nan(p), nan(p), Status::OK));
     }
 
     // All finite, nonzero finite divisor: the C3 Ziv divide handles it.
@@ -168,6 +198,22 @@ pub(crate) fn complex_div_special(
 /// an operand is a complex infinity to recover, or `None` to keep the naive
 /// `(NaN, NaN)` (a genuine NaN-without-infinity, including `∞·0`).
 pub(crate) fn recover_mul(
+    a: &BigFloat,
+    b: &BigFloat,
+    c: &BigFloat,
+    d: &BigFloat,
+    p: u32,
+) -> Option<(BigFloat, BigFloat, Status)> {
+    // The signaling-NaN INVALID floor (pf-hdq1): the boxing that recovers a
+    // complex infinity turns a signaling-NaN part into a signed zero, silently
+    // discarding the INVALID that sNaN operand must raise. Reinstate it on every
+    // recovered row. (When no infinity is present `recover_mul` returns `None`
+    // and the naive fused product already carries the sNaN INVALID.)
+    let inv = signaling_invalid(a, b, c, d);
+    recover_mul_core(a, b, c, d, p).map(|(re, im, s)| (re, im, s | inv))
+}
+
+fn recover_mul_core(
     a: &BigFloat,
     b: &BigFloat,
     c: &BigFloat,

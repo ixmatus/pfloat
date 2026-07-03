@@ -94,8 +94,19 @@ pub(crate) fn csqrt_big(
             let (re, s) = a.sqrt_round(p, mode).expect("p >= 1");
             return (re, signed_zero(b, p), s);
         }
-        // Q12/Q13: x < 0. (+0, copysign(sqrt(|x|), y)).
-        let (root, s) = a.abs().sqrt_round(p, mode).expect("p >= 1");
+        // Q12/Q13: x < 0. (+0, copysign(sqrt(|x|), y)). When y is negative the
+        // imaginary part is −sqrt(|x|); rounding a negated value under `mode`
+        // means rounding the magnitude under the *mirrored* mode and then
+        // negating (the negate-after-directed-round rule, pf-yprp). Rounding the
+        // magnitude under `mode` and negating would overshoot to the wrong side
+        // of −sqrt(|x|) in the two directed modes. The nearest and toward-zero
+        // modes are symmetric under negation, so the mirror is a no-op there.
+        let root_mode = if b.is_sign_negative() {
+            mirror_mode_for_negation(mode)
+        } else {
+            mode
+        };
+        let (root, s) = a.abs().sqrt_round(p, root_mode).expect("p >= 1");
         return (
             BigFloat::try_new_zero(Sign::Positive, p).expect("p >= 1"),
             root.copysign(b),
@@ -175,6 +186,22 @@ fn kahan_brackets(
         resolve_bracket(&u_lo, &u_hi, p, mode),
         resolve_bracket(&v_lo, &v_hi, p, mode),
     )
+}
+
+/// Mirror a rounding mode for negation. Since
+/// `round(−v, mode) = −round(v, mirror(mode))`, a value computed as
+/// `−(magnitude)` must round the magnitude under the mirrored mode:
+/// `TowardNegative` and `TowardPositive` swap, while the nearest and
+/// toward-zero modes are symmetric under negation and pass through. This is the
+/// crate-local twin of pfloat's `mirror_mode_for_negation` (the scalar
+/// signed-constant idiom, ADR-0101), applied here to csqrt's negated imaginary
+/// root on the negative real axis.
+fn mirror_mode_for_negation(mode: RoundingMode) -> RoundingMode {
+    match mode {
+        RoundingMode::TowardNegative => RoundingMode::TowardPositive,
+        RoundingMode::TowardPositive => RoundingMode::TowardNegative,
+        other => other,
+    }
 }
 
 fn pos_inf(p: u32) -> BigFloat {
