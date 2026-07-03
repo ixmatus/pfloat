@@ -242,6 +242,78 @@ fn addsub_exponent_saturation_flags_overflow() {
     );
 }
 
+/// pf-mw6u (parse cap saturation is mode-blind): the parse cost cap
+/// (`MAX_DECIMAL_EXPONENT` = 10^6) fires far inside pfloat's exponent
+/// range, so the saturated value is a directional approximation, not a
+/// true overflow. `1e2000000` under `TowardZero` must stay FINITE (not
+/// +inf); `1e-2000000` under `TowardPositive` must round to a nonzero
+/// (not +0). Mirrors the convert.rs overflow/tiny mode conventions
+/// (ADR-0117).
+#[test]
+fn parse_cap_saturation_is_mode_aware() {
+    let (big_tz, st_o) = BigFloat::parse_str("1e2000000", 53, RoundingMode::TowardZero).unwrap();
+    assert!(
+        !big_tz.is_infinite(),
+        "1e2000000 TZ must stay finite, got {big_tz}"
+    );
+    assert!(st_o.overflow());
+    let (big_ne, _) = BigFloat::parse_str("1e2000000", 53, NE).unwrap();
+    assert!(big_ne.is_infinite(), "1e2000000 NE still saturates to inf");
+    let (tiny_tp, st_u) =
+        BigFloat::parse_str("1e-2000000", 53, RoundingMode::TowardPositive).unwrap();
+    assert!(
+        !tiny_tp.is_zero() && !tiny_tp.is_sign_negative(),
+        "1e-2000000 TP must be a nonzero positive, got {tiny_tp}"
+    );
+    assert!(st_u.underflow());
+    let (tiny_tz, _) = BigFloat::parse_str("1e-2000000", 53, RoundingMode::TowardZero).unwrap();
+    assert!(tiny_tz.is_zero(), "1e-2000000 TZ collapses to +0");
+}
+
+/// pf-k08c (`to_f32`/`f64` underflow before rounding): `x = 2^-126 −
+/// 3·2^-152` is tiny before rounding (below the smallest f32 normal
+/// `2^-126`) and rounds up to `0x00800000 = 2^-126` under NE. IEEE 754
+/// §7.5 tininess-before-rounding flags UNDERFLOW; testing the
+/// DELIVERED exponent missed the round-up-to-normal case (INEXACT
+/// only). ADR-0117.
+#[test]
+fn to_f32_tiny_before_rounding_flags_underflow() {
+    let a = BigFloat::try_from_i64_exact(1, 60)
+        .unwrap()
+        .scale_by_pow2(-126)
+        .0;
+    let b = BigFloat::try_from_i64_exact(3, 60)
+        .unwrap()
+        .scale_by_pow2(-152)
+        .0;
+    let (x, sx) = a.sub(&b, NE);
+    assert!(sx.is_ok(), "2^-126 - 3*2^-152 exact at p60");
+    let (f, st) = x.to_f32_round(NE);
+    assert_eq!(f.to_bits(), 0x0080_0000, "rounds up to the smallest normal");
+    assert!(
+        st.underflow() && st.inexact(),
+        "tiny before rounding + inexact => UNDERFLOW, got {st:?}"
+    );
+}
+
+/// pf-sjgh (conversion feeds the sticky-flag lane): `to_f32`/`f64` return
+/// the per-call Status but never auto-raised the thread-local sticky
+/// flags their docstring promises, so `pfloat::flags::test()` stayed 0
+/// for an sNaN→f32 INVALID. ADR-0117.
+#[test]
+fn to_f32_feeds_the_sticky_flag_lane() {
+    use pfloat::{flags, Sign};
+    let snan = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).unwrap();
+    flags::clear();
+    let (_f, st) = snan.to_f32_round(NE);
+    assert!(st.invalid(), "sNaN→f32 per-call Status must carry INVALID");
+    assert!(
+        flags::test().invalid(),
+        "sNaN→f32 must raise the sticky INVALID flag, test()={:?}",
+        flags::test()
+    );
+}
+
 /// (a) exp(-1e300): certain deep underflow. The truth is below half
 /// of `MinPos`, so every mode except `TowardPositive` rounds to +0;
 /// `TowardPositive` must round up to `MinPos`. `UNDERFLOW|INEXACT` either

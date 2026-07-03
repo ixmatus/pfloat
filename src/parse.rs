@@ -384,24 +384,69 @@ fn finite_to_bigfloat(
     // [`POW5_STORAGE_BUDGET_BITS`] (ADR-0031): the big `pow5(|e|)`
     // is intrinsic to correctly rounded parse, so the cap is a
     // resource budget rather than an algorithmic limit.
+    // The cost cap is a resource budget, not pfloat's exponent rim:
+    // `10^MAX_DECIMAL_EXPONENT` is `~2^3.3e6`, far inside the i64
+    // exponent range, so the saturated value is a directional
+    // approximation of a representable value pfloat declines to build,
+    // NOT a true overflow. The saturation token must therefore honour
+    // the rounding mode, mirroring the convert.rs `overflow`/`tiny`
+    // conventions: a mode-blind ±∞/±0 broke `1e2000000` under
+    // TowardZero (→ +∞, must stay finite) and `1e-2000000` under
+    // TowardPositive (→ +0, must round up to a nonzero) — pf-mw6u.
+    let neg = matches!(sign, Sign::Negative);
     if exponent > MAX_DECIMAL_EXPONENT {
-        // Past the budget: `digits × 10^exponent` cannot be built
-        // within the allotted storage, so saturate to `±∞ +
-        // OVERFLOW + INEXACT`. (Within the cap, the result is
-        // correctly rounded by the universal pipeline below.)
-        let inf = BigFloat::try_new_infinity(sign, precision).expect("precision >= 1");
+        // Overflow side: round to ∞ only toward ±∞ in the value's own
+        // direction (and under nearest); otherwise saturate to the
+        // largest finite so directed-toward-zero modes stay finite.
+        let to_inf = match mode {
+            RoundingMode::NearestEven | RoundingMode::NearestAway => true,
+            RoundingMode::TowardZero => false,
+            RoundingMode::TowardPositive => !neg,
+            RoundingMode::TowardNegative => neg,
+        };
+        let value = if to_inf {
+            BigFloat::try_new_infinity(sign, precision).expect("precision >= 1")
+        } else {
+            let max_fin = BigFloat::try_new_infinity(Sign::Positive, precision)
+                .expect("precision >= 1")
+                .next_down()
+                .0;
+            if neg {
+                max_fin.negated()
+            } else {
+                max_fin
+            }
+        };
         let status = Status::OVERFLOW | Status::INEXACT;
         auto_raise(status);
-        return (inf, status);
+        return (value, status);
     }
     if exponent < -MAX_DECIMAL_EXPONENT {
-        // Symmetric to the positive branch: past the storage budget
-        // we cannot form `pow5(|exponent|)`, so saturate to
-        // `±0 + UNDERFLOW + INEXACT`.
-        let z = BigFloat::try_new_zero(sign, precision).expect("precision >= 1");
+        // Underflow side: round away from zero (to the smallest
+        // nonzero) only toward the value's own sign; otherwise ±0.
+        let up = match mode {
+            RoundingMode::TowardZero | RoundingMode::NearestEven | RoundingMode::NearestAway => {
+                false
+            }
+            RoundingMode::TowardPositive => !neg,
+            RoundingMode::TowardNegative => neg,
+        };
+        let value = if up {
+            let min_pos = BigFloat::try_new_zero(Sign::Positive, precision)
+                .expect("precision >= 1")
+                .next_up()
+                .0;
+            if neg {
+                min_pos.negated()
+            } else {
+                min_pos
+            }
+        } else {
+            BigFloat::try_new_zero(sign, precision).expect("precision >= 1")
+        };
         let status = Status::UNDERFLOW | Status::INEXACT;
         auto_raise(status);
-        return (z, status);
+        return (value, status);
     }
 
     // 1. Build m as a multi-precision integer (little-endian limbs).

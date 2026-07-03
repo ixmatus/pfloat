@@ -70,7 +70,10 @@ use crate::fixed::FixedFloat;
 /// module builds under `big` alone. The cap is value-matched to parse's
 /// `MAX_DECIMAL_EXPONENT` (`src/parse.rs`) so the exactly-renderable
 /// range is exactly the range parse round-trips; past it a value
-/// saturates, mirroring parse's own `±inf` / `±0` saturation.
+/// saturates to `±inf` / `±0`. Parse's saturation is now mode-aware
+/// (ADR-0117); this formatter's mirroring of it is intentionally
+/// one-sided pending a public display-format decision (pf-nyfz, pf-f7vg,
+/// ADR-0117) — a huge finite still renders `inf` here.
 const MAX_FORMAT_DECIMAL_EXPONENT: i64 = 1_000_000;
 
 /// How a finite value past [`MAX_FORMAT_DECIMAL_EXPONENT`] renders: too

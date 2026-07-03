@@ -35,7 +35,7 @@ use crate::big::BigFloat;
 use crate::big::Parts;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
-use crate::status::Status;
+use crate::status::{auto_raise, Status};
 
 /// Static description of an IEEE 754 binary interchange format,
 /// shared by the `f32` and `f64` conversion paths.
@@ -226,8 +226,17 @@ fn to_ieee(value: &BigFloat, mode: RoundingMode, fmt: &Format) -> (u64, Status) 
                         return (bits, status | ovf);
                     }
                     let bits = encode(neg, er, mantissa[0], fmt);
-                    // IEEE underflow: tiny (subnormal) and inexact.
-                    if er < fmt.emin && status.inexact() {
+                    // IEEE 754 §7.5 underflow: tininess detected BEFORE
+                    // rounding (the recommended default) AND inexact. The
+                    // value is tiny before rounding iff its own exponent
+                    // is below the format's `emin` (|value| < 2^emin);
+                    // testing the DELIVERED exponent `er` missed the case
+                    // where a subnormal input rounds UP to the smallest
+                    // normal (er == emin) yet was tiny before rounding
+                    // (to_f32(2^-126 − 3·2^-152) → 2^-126 flagged INEXACT
+                    // only; pf-k08c). Both detection methods call this
+                    // input tiny; we adopt before-rounding uniformly.
+                    if exponent < fmt.emin && status.inexact() {
                         status |= Status::UNDERFLOW;
                     }
                     (bits, status)
@@ -384,6 +393,11 @@ impl BigFloat {
     /// double rounding occurs even in the subnormal range.
     pub fn to_f32_round(&self, mode: RoundingMode) -> (f32, Status) {
         let (bits, status) = to_ieee(self, mode, &F32);
+        // Feed the thread-local sticky-flag lane the docstring promises;
+        // every arithmetic kernel auto-raises, and a signaling-NaN
+        // conversion's INVALID (and INEXACT/OVER/UNDERFLOW) must reach
+        // `flags::test()`, not only the per-call Status (pf-sjgh).
+        auto_raise(status);
         (f32::from_bits(bits as u32), status)
     }
 
@@ -392,6 +406,7 @@ impl BigFloat {
     /// grid contract holds.
     pub fn to_f64_round(&self, mode: RoundingMode) -> (f64, Status) {
         let (bits, status) = to_ieee(self, mode, &F64);
+        auto_raise(status);
         (f64::from_bits(bits), status)
     }
 
