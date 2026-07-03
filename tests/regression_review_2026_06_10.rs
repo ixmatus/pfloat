@@ -182,6 +182,66 @@ fn mantissa_at_pow2(m_str: &str, k: i64, mode: RoundingMode) -> BigFloat {
     v
 }
 
+/// pf-egxm (0 − x directed rounding): `zero_plus_finite` rounded the
+/// operand at its STORED sign then flipped it, so directed modes
+/// rounded the wrong way. `sub_round(+0, 2^60+1 @64, 53)` under
+/// `TowardPositive` returned −(2^60+256); the correct result is −2^60
+/// (toward +∞ = less negative). Fix: apply the effective sign before
+/// rounding, so the directed mode sees the true signed value.
+#[test]
+fn zero_minus_finite_mirrors_directed_mode() {
+    use pfloat::Sign;
+    let zero = BigFloat::try_new_zero(Sign::Positive, 64).unwrap();
+    // 2^60 + 1, exact at p64 (61 significant bits).
+    let b = BigFloat::try_from_i64_exact(1152921504606846977, 64).unwrap();
+    let neg_2_60 = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(60)
+        .0;
+    // 2^60 + 256 = the magnitude-away neighbour at p53.
+    let neg_2_60_up = BigFloat::try_from_i64_exact(-1152921504606847232, 53).unwrap();
+    // TowardPositive → less negative → -2^60.
+    let (r_tp, st_tp) = zero
+        .sub_round(&b, 53, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(
+        r_tp.total_cmp(&neg_2_60),
+        Ordering::Equal,
+        "0-x TP: got {r_tp}"
+    );
+    assert!(st_tp.inexact());
+    // TowardNegative → more negative → -(2^60+256).
+    let (r_tn, _) = zero
+        .sub_round(&b, 53, RoundingMode::TowardNegative)
+        .unwrap();
+    assert_eq!(
+        r_tn.total_cmp(&neg_2_60_up),
+        Ordering::Equal,
+        "0-x TN: got {r_tn}"
+    );
+    // NearestEven → -2^60 (the +1 is 1/256 ulp below the tie).
+    let (r_ne, _) = zero.sub_round(&b, 53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&neg_2_60), Ordering::Equal);
+}
+
+/// pf-kh3z (add/sub exponent saturation flag): a result exponent past
+/// `i64::MAX` was clamped silently with Status OK, where mul/div/fma/
+/// remainder/scale all raise OVERFLOW. `a + a` with `a` at exponent
+/// `i64::MAX` saturates to `i64::MAX`+1 → clamped, so it must carry
+/// OVERFLOW (flag parity with the sibling kernels).
+#[test]
+fn addsub_exponent_saturation_flags_overflow() {
+    let (a, sa) = BigFloat::try_from_i64_exact(1, 64)
+        .unwrap()
+        .scale_by_pow2(i64::MAX);
+    assert!(sa.is_ok(), "1·2^(i64::MAX) is the top finite exponent");
+    let (_, st) = a.add_round(&a, 53, NE).unwrap();
+    assert!(
+        st.overflow(),
+        "add saturating the exponent past i64::MAX must flag OVERFLOW, got {st:?}"
+    );
+}
+
 /// (a) exp(-1e300): certain deep underflow. The truth is below half
 /// of `MinPos`, so every mode except `TowardPositive` rounds to +0;
 /// `TowardPositive` must round up to `MinPos`. `UNDERFLOW|INEXACT` either

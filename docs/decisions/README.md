@@ -163,3 +163,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0111: route lgamma's Spouge regime through cancellation_boosted (the pf-rlrb certified-wrong-value sibling of ADR-0110)](0111-lgamma-spouge-cancellation-boost.md) (accepted)
 - [ADR-0112: a near-zero dispatch for ζ(s), s → 0⁻ (the pf-qt7v 0·∞ form)](0112-zeta-near-zero-conditioning.md) (accepted)
 - [ADR-0113: tiny-x dispatch for Si (the pf-31ql directed-mode 1-ulp fix)](0113-si-tiny-x-dispatch.md) (accepted)
+- [ADR-0114: add/sub result fidelity — directed-mode sign mirroring and exponent-saturation flag parity](0114-addsub-flag-and-sign-fidelity.md) (accepted)
