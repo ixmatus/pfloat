@@ -2142,6 +2142,65 @@ fn zeta_fe_near_odd_integer_is_unperturbed() {
     assert!(st.inexact());
 }
 
+/// pf-qt7v (zeta near s = 0, the 0·inf indeterminate form): s = −2^−k
+/// (tiny negative normal) reaches `zeta_fe`, where sin(πs/2) → 0 while
+/// ζ(1 − s) approaches the pole at 1. For k past the working-precision
+/// cap (k > target + 4096 + `s.precision()`) the reflected argument
+/// 1 − s rounds onto the pole and `zeta_borwein` returned an HONEST NaN
+/// (never certified-wrong, but not the representable correct value
+/// either). Near 0, ζ(s) = −1/2 − (1/2)ln(2π)·s + O(s²), so for s < 0
+/// with |s| < 2^−(target+3) the value is −1/2 + δ, 0 < δ <
+/// 2^−(target+3) < half-ulp, and the correctly-rounded result is a
+/// pure function of the mode: NE/NA/TN → −1/2, TP/TZ → nextUp(−1/2).
+/// A near-zero dispatch (ADR-0112) returns it directly, DoS-free,
+/// where the FE path NaN'd. mpmath 1.4.1: ζ(−2^−k) + 1/2 = +2^(−k+0.122).
+#[test]
+fn zeta_near_zero_negative_is_the_correctly_rounded_neighbour() {
+    // Deep case the FE path NaN'd (k = 8000 > target + 4096 + prec).
+    let (s, ss) = BigFloat::try_from_i64_exact(-1, 300)
+        .unwrap()
+        .scale_by_pow2(-8000);
+    assert!(ss.is_ok(), "-2^-8000 is exact");
+    let half = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(-1)
+        .0; // -1/2
+    let up = half.next_up().0; // nextUp(-1/2)
+    for (mode, want) in [
+        (NE, &half),
+        (RoundingMode::NearestAway, &half),
+        (RoundingMode::TowardNegative, &half),
+        (RoundingMode::TowardPositive, &up),
+        (RoundingMode::TowardZero, &up),
+    ] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "zeta(-2^-8000) under {mode:?}: got {r}, want {want}"
+        );
+        assert!(
+            st.inexact(),
+            "zeta(-2^-8000) is irrational: INEXACT required under {mode:?}"
+        );
+    }
+    // Non-firing control at the boundary (k = 53 < target + 4 = 57):
+    // the dispatch must NOT fire and the FE path must still resolve the
+    // real value (δ ~ 2^-53.1 is above the p53 ulp near -1/2).
+    let (sc, _) = BigFloat::try_from_i64_exact(-1, 300)
+        .unwrap()
+        .scale_by_pow2(-53);
+    let (rc, stc) = sc.zeta_round(53, NE).unwrap();
+    assert_bit_exact(
+        "zeta(-2^-53)",
+        &rc,
+        "-0.4999999999999998979773282220903507061334671120245287316",
+        53,
+        NE,
+    );
+    assert!(stc.inexact());
+}
+
 // ===============================================================
 // Arc R3, slice R3.2 (pf-0r1l, ADR-0110): li / Ei / digamma at their
 // deep INTERIOR zeros certified wrong values (Ei and digamma with the

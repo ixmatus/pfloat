@@ -161,3 +161,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0109: zeta_fe pre-boosts its working precision by the input's proximity to the negative integers](0109-zeta-fe-trivial-zero-conditioning.md) (accepted)
 - [ADR-0110: interior-zero conditioning for li, Ei, and digamma — geometric cancellation growth, an Ei zero-window, and a Spouge digamma](0110-interior-zero-conditioning-li-ei-digamma.md) (accepted)
 - [ADR-0111: route lgamma's Spouge regime through cancellation_boosted (the pf-rlrb certified-wrong-value sibling of ADR-0110)](0111-lgamma-spouge-cancellation-boost.md) (accepted)
+- [ADR-0112: a near-zero dispatch for ζ(s), s → 0⁻ (the pf-qt7v 0·∞ form)](0112-zeta-near-zero-conditioning.md) (accepted)
