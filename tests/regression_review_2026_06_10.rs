@@ -589,6 +589,75 @@ fn lgamma_positive_root_at_one_is_boosted() {
     );
 }
 
+/// pf-rlrb (lgamma's Spouge non-window path): for `working_prec >
+/// STIRLING_REACH_THRESHOLD = 600` with `x` outside the positive
+/// root windows, `lgamma_at_w` fell through to
+/// `lgamma_positive_at_w(..).0`, which dispatches to
+/// `spouge_lgamma_scaled` and DISCARDED the returned operand scale —
+/// the Spouge S-sum's internal alternating cancellation (~0.1·working
+/// at z ≈ 2.5). The Ziv half-width `|y|·2^-(working − guard)` was
+/// then violated by ~0.1·working bits and a wrong VALUE certified:
+/// `lgamma(5/2)@1024` carried only ~73 accurate bits pre-fix (rel
+/// ~1.4e-22). The input 5/2 is exactly representable, so it carries
+/// no proximity depth — the cancellation is purely internal to the
+/// Spouge sum, the mechanism the `spouge_lgamma_scaled` docstring
+/// says the caller MUST re-drive through `cancellation_boosted`. The
+/// digamma sibling (pf-0r1l, ADR-0110) routes the whole Spouge regime
+/// through `cancellation_boosted`; lgamma now does too. The
+/// `differential_gamma` lane caps at p256 (working ≤ 320 < 600), so
+/// only these high-target rows exercise the Spouge path. References:
+/// mpmath 1.4.1 @6000 bits at the exact input 5/2.
+#[test]
+fn lgamma_high_precision_spouge_path_is_boosted() {
+    let (x, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok(), "5/2 is exactly representable");
+    const LGAMMA_5_2: &str = "0.2846828704729191596324946696827019243201376955598947292501458503867759342216325755537007359586395675549719731391654888545210665183759870006270009069022688993799045846598114482500020082760125818560974299014792940076733089815139218871348731373151368550000610073883851700695759798293745014574546300382974729188985063926850201707466788942995896750724437363955678851450165762272223341797710883195233662922241861538669886526106809705331913486076194482374424865365347274797942082567290252635013323104413157405368732329470075198720164365473094559324340985495166190893855031207388878088248615189751211402258880348932758766301836841377252204809766770961217276363882243802785949496796610068685421040097330148704";
+    for mode in [NE, RoundingMode::TowardZero, RoundingMode::TowardPositive] {
+        let (r, st) = x.lgamma_round(1024, mode).unwrap();
+        assert_bit_exact("lgamma(5/2)@1024", &r, LGAMMA_5_2, 1024, mode);
+        assert!(st.inexact());
+    }
+    // Control on the Stirling path (target 256 → working ≤ 320 < 600):
+    // untouched by the fix, correct before and after.
+    let (x256, _) = BigFloat::parse_str("2.5", 256, NE).unwrap();
+    let (r256, _) = x256.lgamma_round(256, NE).unwrap();
+    assert_bit_exact("lgamma(5/2)@256", &r256, LGAMMA_5_2, 256, NE);
+}
+
+/// pf-rlrb blast radius: gamma composes `exp(lgamma(x))` and beta
+/// composes `lgamma(a) + lgamma(b) − lgamma(a+b)`, each calling
+/// `lgamma_round(w, …)` at its own Ziv working precision `w`. Past
+/// the Spouge threshold those inner calls were the lying kernel, so
+/// gamma/beta certified wrong values transitively. gamma(5/2) =
+/// 3√π/4 and beta(5/2, 3/2) = π/16 at target 1024, mpmath 1.4.1
+/// @6000 bits.
+#[test]
+fn gamma_beta_high_precision_inherit_the_lgamma_boost() {
+    let (x52, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok());
+    let (g, sg) = x52.gamma_round(1024, NE).unwrap();
+    assert_bit_exact(
+        "gamma(5/2)@1024",
+        &g,
+        "1.329340388179137020473625612505858887098162092091790346160355842389683463443274136031212992553908499062170117718211927999677114649293316951893820282202090301346528273989828842137443879771713119671699071534450972100130979261513609790387525142638925513939085230871184480235441331644429662304064499375679798805710300108106365075250992342024388877306596588373871",
+        1024,
+        NE,
+    );
+    assert!(sg.inexact());
+    // beta routes a + b = 4 (a positive integer) through the same
+    // lgamma compositions at high working precision.
+    let (x32, _) = BigFloat::parse_str("1.5", 1024, NE).unwrap();
+    let (b, sb) = x52.beta_round(&x32, 1024, NE).unwrap();
+    assert_bit_exact(
+        "beta(5/2,3/2)@1024",
+        &b,
+        "0.196349540849362077403915211454968930262323087460944113810934037019238525392888062414252176583882316748884255407080144165443365288096911389482834963008030069840642756418871157569097477788934309683148872776800685979120840383029728014611673947829450119321603035432716271788153395415513337100453765571329607786687912894724260930095057560176828380732210272993287",
+        1024,
+        NE,
+    );
+    assert!(sb.inexact());
+}
+
 /// pf-wmv7 (digamma at its positive root 1.46163...): the p100
 /// parse of the root's 45-digit decimal sits ~2^-100.6 from the
 /// root, a ~103-bit cancellation against the O(1) composition
@@ -627,6 +696,29 @@ fn digamma_positive_root_shallow_control() {
         53,
         NE,
     );
+}
+
+/// pf-2thy (the digamma Spouge probe, resolved by pf-0r1l / ADR-0110
+/// and locked in here): digamma's positive branch now dispatches to
+/// `spouge_digamma_scaled` past `working_prec > 600` and re-drives
+/// through `cancellation_boosted`, so a high-precision evaluation off
+/// the root windows carries full accuracy (the probe's "920-bit
+/// ceiling + 2^28-iteration shift" is gone — Spouge's cost is linear
+/// in `a ∝ working` with no shift loop). digamma(5/2) at target 1024,
+/// mpmath 1.4.1 @6000 bits at the exact input 5/2.
+#[test]
+fn digamma_high_precision_spouge_path_is_boosted() {
+    let (x, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok());
+    let (r, st) = x.digamma_round(1024, NE).unwrap();
+    assert_bit_exact(
+        "digamma(5/2)@1024",
+        &r,
+        "0.703156640645243187225690333667911099473507062006232559619539412795011695949612564517992949382082542068032257375718212718335122180663862716377151165751591206551711191266986458548378646626288061477325050427202466808022754863088151740191007734417696879630107020674946735984012026572311494321432437157666747120129795446926129310661956727232590773985887649806139170",
+        1024,
+        NE,
+    );
+    assert!(st.inexact());
 }
 
 /// Residual pf-smcb family found by the slice's adversarial
