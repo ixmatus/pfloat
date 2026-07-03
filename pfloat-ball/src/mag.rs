@@ -43,8 +43,14 @@ use pfloat::{BigFloat, Parts, RoundingMode, Sign};
 ///
 /// The `Finite` fields are ordered `exponent` then `mantissa` so the
 /// derived [`Ord`] is value order on the canonical (top-bit-set) form.
+///
+/// `Deserialize` is hand-written (see below) rather than derived: the
+/// derive would admit a `Finite` whose mantissa lacks the top bit, and a
+/// non-canonical mantissa breaks the derived-`Ord`-is-value-order
+/// precondition — poisoning the total order that ball radii rely on for
+/// `max` and comparisons, which under-sizes a radius and breaks Law 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Mag {
     /// The exact magnitude zero (a radius of `0` is an *exact* ball).
     Zero,
@@ -276,6 +282,53 @@ impl Mag {
                 // i64 exponent floor (unreachable at realistic scales).
                 let (scaled, _) = m_bf.scale_by_pow2(exponent.saturating_sub(63));
                 scaled
+            }
+        }
+    }
+}
+
+/// Validating [`Deserialize`](serde::Deserialize) for [`Mag`].
+///
+/// A deserialize is a trust boundary (it may run on attacker-supplied
+/// bytes), so the canonical invariant is revalidated rather than trusted:
+/// a `Finite` mantissa missing its top bit (`mantissa < 2^63`) is rejected
+/// with a serde error, never silently accepted. A non-canonical mantissa
+/// breaks the derived-`Ord`-is-value-order precondition the ball radius
+/// pipeline depends on (`Mag::max` and radius comparisons), which would
+/// under-size a radius and break Law 1. The wire form mirrors the derived
+/// [`Serialize`](serde::Serialize) exactly (same variant and field names),
+/// so a serialized `Mag` — always canonical by construction — round-trips
+/// unchanged. Mirrors pfloat's `BigFloat` deserialize discipline
+/// (ADR-0068); ADR-0116.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Mag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A shadow enum with the identical wire form, deserialized without
+        // invariants and then validated. Its variant and field names match
+        // `Mag`'s, so it accepts exactly what the derived `Serialize`
+        // emits.
+        #[derive(serde::Deserialize)]
+        enum RawMag {
+            Zero,
+            Finite { exponent: i64, mantissa: u64 },
+            Infinity,
+        }
+        match RawMag::deserialize(deserializer)? {
+            RawMag::Zero => Ok(Mag::Zero),
+            RawMag::Infinity => Ok(Mag::Infinity),
+            RawMag::Finite { exponent, mantissa } => {
+                // Canonical form: top bit set (mantissa ≥ 2^63). This also
+                // rejects `mantissa == 0`, which denotes no finite positive
+                // magnitude (the enum carries a separate `Zero` variant).
+                if mantissa & (1u64 << 63) == 0 {
+                    return Err(serde::de::Error::custom(
+                        "pfloat-ball: Mag::Finite mantissa is not normalized (top bit clear)",
+                    ));
+                }
+                Ok(Mag::Finite { exponent, mantissa })
             }
         }
     }

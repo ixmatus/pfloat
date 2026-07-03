@@ -41,21 +41,58 @@ fn input_endpoints<T: RealScalar>(b: &Ball<T>) -> (T, T) {
     (a.sub(&ra, TN).0, a.add(&ra, TP).0)
 }
 
+/// Assemble the output ball from a directed endpoint pair `[lo, hi]`,
+/// threading the kernel `status` (the OR of the two directed evaluations)
+/// and flagging a *degenerate* enclosure with [`Status::OVERFLOW`].
+///
+/// A directed endpoint kernel raises `OVERFLOW` only at pfloat's `i64`
+/// exponent rim (the no-emax contract, ADR-0099): the returned value is a
+/// *finite* saturation whose true image is larger, so a bounded ball
+/// built from it would UNDER-cover — a Law-1 hole of the same family
+/// ADR-0099 closed for `mul`/`div`. The only sound representable response
+/// is to widen the enclosure to the entire line. A non-finite (`±∞`)
+/// endpoint reaches the same conclusion through [`Ball::from_interval`]'s
+/// rejection. Either way the enclosure degenerates to unbounded and
+/// `OVERFLOW` is surfaced; the `INEXACT`/`UNDERFLOW` bits pass through the
+/// OR-monoid untouched (Law 5). Domain-driven `entire` results are
+/// flagged `INVALID` by their callers before reaching here and are never
+/// reclassified.
+fn finish_enclosure<T: RealScalar>(prec: u32, lo: &T, hi: &T, status: Status) -> (Ball<T>, Status) {
+    if status.overflow() {
+        return (Ball::entire(prec), status | Status::OVERFLOW);
+    }
+    match Ball::from_interval(lo, hi) {
+        Ok(ball) => (ball, status),
+        Err(_) => (Ball::entire(prec), status | Status::OVERFLOW),
+    }
+}
+
 /// The ball enclosing an increasing function's image over `[alo, ahi]`:
-/// `[f(alo)↓, f(ahi)↑]`. A non-finite endpoint (overflow) → entire.
-fn enclose_increasing<T: RealScalar>(prec: u32, alo: &T, ahi: &T, k: Kernel<T>) -> Ball<T> {
-    let lo = k(alo, TN).0;
-    let hi = k(ahi, TP).0;
-    Ball::from_interval(&lo, &hi).unwrap_or_else(|_| Ball::entire(prec))
+/// `[f(alo)↓, f(ahi)↑]`, with the kernel status threaded and a degenerate
+/// (unbounded) enclosure flagged (see [`finish_enclosure`]).
+fn enclose_increasing<T: RealScalar>(
+    prec: u32,
+    alo: &T,
+    ahi: &T,
+    k: Kernel<T>,
+) -> (Ball<T>, Status) {
+    let (lo, st_lo) = k(alo, TN);
+    let (hi, st_hi) = k(ahi, TP);
+    finish_enclosure(prec, &lo, &hi, st_lo | st_hi)
 }
 
 /// The ball enclosing a decreasing function's image over `[alo, ahi]`:
-/// `[f(ahi)↓, f(alo)↑]`.
+/// `[f(ahi)↓, f(alo)↑]`, with the kernel status threaded.
 #[cfg(feature = "trig")]
-fn enclose_decreasing<T: RealScalar>(prec: u32, alo: &T, ahi: &T, k: Kernel<T>) -> Ball<T> {
-    let lo = k(ahi, TN).0;
-    let hi = k(alo, TP).0;
-    Ball::from_interval(&lo, &hi).unwrap_or_else(|_| Ball::entire(prec))
+fn enclose_decreasing<T: RealScalar>(
+    prec: u32,
+    alo: &T,
+    ahi: &T,
+    k: Kernel<T>,
+) -> (Ball<T>, Status) {
+    let (lo, st_lo) = k(ahi, TN);
+    let (hi, st_hi) = k(alo, TP);
+    finish_enclosure(prec, &lo, &hi, st_lo | st_hi)
 }
 
 /// A total monotonic-increasing function, enclosed by its endpoints.
@@ -65,10 +102,14 @@ fn increasing<T: RealScalar>(b: &Ball<T>, k: Kernel<T>) -> (Ball<T>, Status) {
         return (Ball::entire(prec), Status::OK);
     }
     let (alo, ahi) = input_endpoints(b);
-    (enclose_increasing(prec, &alo, &ahi, k), Status::OK)
+    enclose_increasing(prec, &alo, &ahi, k)
 }
 
 /// A 1-Lipschitz function (`|f'| ≤ 1`): midpoint plus `rad_mid + ra`.
+///
+/// The output is bounded (`sin`/`cos` land in `[−1, 1]`), so the kernel
+/// never overflows: the midpoint's round-to-nearest status is the whole
+/// story and is threaded straight through (Law 5).
 #[cfg(feature = "trig")]
 fn lipschitz1<T: RealScalar>(b: &Ball<T>, k: Kernel<T>) -> (Ball<T>, Status) {
     let prec = b.precision();
@@ -76,11 +117,11 @@ fn lipschitz1<T: RealScalar>(b: &Ball<T>, k: Kernel<T>) -> (Ball<T>, Status) {
         return (Ball::entire(prec), Status::OK);
     }
     let a = b.midpoint();
-    let (mid, _) = k(a, NE);
+    let (mid, status) = k(a, NE);
     let rad_mid = half_spread(&k(a, TN).0, &k(a, TP).0);
     let ra = T::radius_to_scalar(b.radius());
     let rad = rad_mid.add(&ra, TP).0.magnitude_to_mag();
-    (Ball::from_parts(mid, rad), Status::OK)
+    (Ball::from_parts(mid, rad), status)
 }
 
 /// `+1` and `-1` at the ball's precision, for domain clamping.
@@ -151,7 +192,7 @@ impl<T: RealScalar> Ball<T> {
         if alo.is_zero() || alo.is_sign_negative() {
             return (Ball::entire(prec), Status::INVALID);
         }
-        (enclose_increasing(prec, &alo, &ahi, k), Status::OK)
+        enclose_increasing(prec, &alo, &ahi, k)
     }
 
     /// `ln(1 + self)`. Increasing on `(−1, ∞)`; a ball reaching `−1` is
@@ -168,7 +209,7 @@ impl<T: RealScalar> Ball<T> {
         if !lt(&neg_one, &alo) {
             return (Ball::entire(prec), Status::INVALID);
         }
-        (enclose_increasing(prec, &alo, &ahi, T::log1p), Status::OK)
+        enclose_increasing(prec, &alo, &ahi, T::log1p)
     }
 
     /// `sinh(self)`. Increasing and total.
@@ -212,10 +253,7 @@ impl<T: RealScalar> Ball<T> {
         // smaller absolute endpoint.
         let min_mag = if straddles { T::zero(prec) } else { other };
         // cosh is increasing in |x|.
-        (
-            enclose_increasing(prec, &min_mag, &max_mag, T::cosh),
-            Status::OK,
-        )
+        enclose_increasing(prec, &min_mag, &max_mag, T::cosh)
     }
 
     /// `acosh(self)`. Increasing on `[1, ∞)`; the in-domain part is
@@ -238,10 +276,8 @@ impl<T: RealScalar> Ball<T> {
         } else {
             (alo, Status::OK)
         };
-        (
-            enclose_increasing(prec, &clamped_lo, &ahi, T::acosh),
-            status,
-        )
+        let (ball, kst) = enclose_increasing(prec, &clamped_lo, &ahi, T::acosh);
+        (ball, status | kst)
     }
 
     /// `atanh(self)`. Increasing on `(−1, 1)`; a ball reaching `±1` is
@@ -258,7 +294,7 @@ impl<T: RealScalar> Ball<T> {
         if !lt(&neg_one, &alo) || !lt(&ahi, &one) {
             return (Ball::entire(prec), Status::INVALID);
         }
-        (enclose_increasing(prec, &alo, &ahi, T::atanh), Status::OK)
+        enclose_increasing(prec, &alo, &ahi, T::atanh)
     }
 
     /// `hypot(self, other) = √(self² + other²)`. 1-Lipschitz in each
@@ -320,7 +356,8 @@ impl<T: RealScalar> Ball<T> {
             Some(v) => v,
             None => return (Ball::entire(prec), Status::INVALID),
         };
-        (enclose_increasing(prec, &lo, &hi, T::asin), status)
+        let (ball, kst) = enclose_increasing(prec, &lo, &hi, T::asin);
+        (ball, status | kst)
     }
 
     /// `acos(self)`. Decreasing on `[−1, 1]`; out-of-domain input is
@@ -336,7 +373,8 @@ impl<T: RealScalar> Ball<T> {
             Some(v) => v,
             None => return (Ball::entire(prec), Status::INVALID),
         };
-        (enclose_decreasing(prec, &lo, &hi, T::acos), status)
+        let (ball, kst) = enclose_decreasing(prec, &lo, &hi, T::acos);
+        (ball, status | kst)
     }
 
     /// `atan(self)`. Increasing and total (output in `(−π/2, π/2)`).
@@ -450,9 +488,12 @@ mod tests {
                                                         // exp is increasing: [0±ε] → around 1.
         let (e2, _) = ball(0, Mag::from_pow2(-30), 64).exp();
         assert!(contains(&e2, &bf(1, 64)));
-        // ln of a positive ball encloses the truth.
+        // ln of a positive ball encloses the truth. ln(10) is irrational,
+        // so the kernel rounds: the (now-threaded, ADR-0116) status is
+        // INEXACT — the normal correct outcome for an inexact ball op
+        // (Law 5) — not OK and not a domain error.
         let (l, st) = ptb(10, 64).ln();
-        assert!(st.is_ok() && contains(&l, &refv(BigFloat::ln, 10)));
+        assert!(st.inexact() && !st.invalid() && contains(&l, &refv(BigFloat::ln, 10)));
     }
 
     #[cfg(feature = "exp-log")]
@@ -528,7 +569,9 @@ mod tests {
     #[test]
     fn atan_encloses_and_total() {
         let (r, st) = ptb(1, 64).atan();
-        assert!(st.is_ok());
+        // atan(1) = π/4 is irrational; the threaded kernel status
+        // (ADR-0116) is INEXACT, not OK.
+        assert!(st.inexact() && !st.invalid());
         assert!(contains(&r, &refv(BigFloat::atan, 1))); // atan(1)=π/4
     }
 }
