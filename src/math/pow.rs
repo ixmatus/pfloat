@@ -188,13 +188,25 @@ fn pow_kernel(
         // Negative base: y must be an integer or we return qNaN + INVALID.
         if let Some(parity) = integer_parity(y) {
             let abs_x = x.abs();
-            let (abs_result, status) = pow_positive(&abs_x, y, target_precision, mode);
-            let result = if matches!(parity, Parity::Odd) {
-                abs_result.negated()
-            } else {
-                abs_result
-            };
-            return (result, status);
+            if matches!(parity, Parity::Odd) {
+                // The result is negated, so round |x|^y under the
+                // MIRRORED mode before negating: directed rounding is
+                // relative to the true (negative) value, and rounding
+                // |x|^y under `mode` then flipping the sign lands on the
+                // wrong side — pow(-3, 7) at target 8 under TowardPositive
+                // rounded 2187 UP to 2192 then negated to -2192, where
+                // -2176 is due (TP on a negative value rounds toward
+                // less-negative). pf-l38k, ADR-0122; the pf-egxm/pf-yprp
+                // negate-after-directed-round pattern.
+                let (abs_result, status) = pow_positive(
+                    &abs_x,
+                    y,
+                    target_precision,
+                    super::mirror_mode_for_negation(mode),
+                );
+                return (abs_result.negated(), status);
+            }
+            return pow_positive(&abs_x, y, target_precision, mode);
         }
         let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
             .expect("precision >= 1");
@@ -297,6 +309,20 @@ fn pow_positive(
         // Out of the feasible result-exponent range: fall through to
         // `exp·ln`, which produces the correct ±∞/±0 + OVERFLOW /
         // UNDERFLOW status for the extreme case.
+    }
+
+    // Exact-set dispatch for a power-of-two base (pf-vzim, ADR-0122). If
+    // x = 2^e and e·y is an exact integer, then x^y = 2^(e·y) is exactly
+    // representable, so return it with OK: the transcendental exp·ln
+    // chain below computes it to 2^(e·y)±ε and over-reports INEXACT on
+    // an exact result (pow(4, 1.5) = 8 came back INEXACT). This is the
+    // exact-value-defeats-Ziv family (ADR-0039/0063). The GENERAL exact
+    // set — a perfect-power base x = m^j with rational y (9^0.5 = 3,
+    // 27^(1/3) = 3) — needs integer-root reasoning and is filed as a
+    // follow-up (the pf-vzim Fable escalation); only the dyadic
+    // power-of-two subset is dispatched here.
+    if let Some(result) = try_pow_pow2_base_exact(x, y, target_precision) {
+        return (result, Status::OK);
     }
 
     ziv_round(
@@ -452,6 +478,41 @@ pub(super) fn integer_parity(y: &BigFloat) -> Option<Parity> {
 /// site (it needs the base); this extractor only decides integrality
 /// and `i64` range, so an out-of-range integer falls back to the
 /// `exp·ln` path (which handles overflow/underflow via `exp`).
+/// `x^y` when `x = 2^e` is a power of two and `e·y` is an exact integer
+/// in range: the result `2^(e·y)` is a single-bit value, exactly
+/// representable at any precision, so return it (the caller flags OK).
+/// `None` otherwise. `x` is positive (the caller peeled the sign). Only
+/// the dyadic power-of-two base is handled; the general perfect-power
+/// exact set (`9^0.5`, `27^(1/3)`) is a follow-up (pf-vzim escalation).
+fn try_pow_pow2_base_exact(x: &BigFloat, y: &BigFloat, target_precision: u32) -> Option<BigFloat> {
+    // x is a power of two iff it needs a single significant bit: rounding
+    // it to precision 1 is exact.
+    let (_, s1) = x.round_to_precision(1, RoundingMode::NearestEven).ok()?;
+    if !s1.is_ok() {
+        return None;
+    }
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => return None,
+    };
+    // e·y, exact (both dyadic; size the product width to hold it).
+    let e_bf = BigFloat::try_from_i64_exact(e, 64).ok()?;
+    let prod_prec = y.precision.saturating_add(72);
+    let (prod, sp) = e_bf
+        .mul_round(y, prod_prec, RoundingMode::NearestEven)
+        .ok()?;
+    if !sp.is_ok() {
+        return None;
+    }
+    // e·y must be an exact integer in the i64-representable range.
+    let new_exp = integer_exponent(&prod)?;
+    let one = BigFloat::try_from_i64_exact(1, target_precision).ok()?;
+    let (result, ss) = one.scale_by_pow2(new_exp);
+    // A representable-range overflow falls through to the Ziv path, which
+    // produces the honest ±∞/±0 + OVERFLOW/UNDERFLOW.
+    ss.is_ok().then_some(result)
+}
+
 pub(super) fn integer_exponent(y: &BigFloat) -> Option<i64> {
     match &y.class {
         Class::Zero { .. } => Some(0),
@@ -587,6 +648,64 @@ mod tests {
         BigFloat::parse_str(s, p, RoundingMode::NearestEven)
             .expect("parse should succeed")
             .0
+    }
+
+    /// pf-l38k (ADR-0122): the odd-parity negative-base result is
+    /// negated, so `|x|^y` must round under the MIRRORED mode.
+    /// `(-3)^7 = -2187`; at target 8 under TowardPositive the negated
+    /// value rounds toward +∞ (less negative) to -2176, not -2192.
+    #[test]
+    fn pow_odd_negative_base_mirrors_directed_mode() {
+        let neg3 = BigFloat::try_from_i64_exact(-3, 53).unwrap();
+        let seven = BigFloat::try_from_i64_exact(7, 53).unwrap();
+        let (r, _) = neg3
+            .pow_round(&seven, 8, RoundingMode::TowardPositive)
+            .unwrap();
+        let want = BigFloat::try_from_i64_exact(-2176, 8).unwrap();
+        assert_eq!(
+            r.partial_cmp(&want).0,
+            Some(core::cmp::Ordering::Equal),
+            "(-3)^7 @8 TowardPositive = -2176, got {r}"
+        );
+        // TowardNegative mirrors: -2187 rounds toward -∞ to -2192.
+        let (rn, _) = neg3
+            .pow_round(&seven, 8, RoundingMode::TowardNegative)
+            .unwrap();
+        let want_n = BigFloat::try_from_i64_exact(-2192, 8).unwrap();
+        assert_eq!(
+            rn.partial_cmp(&want_n).0,
+            Some(core::cmp::Ordering::Equal),
+            "(-3)^7 @8 TowardNegative = -2192, got {rn}"
+        );
+    }
+
+    /// pf-vzim (ADR-0122): `4^1.5 = 2^(2·1.5) = 2^3 = 8` is exactly
+    /// representable, so the status is OK; the exp·ln chain over-reported
+    /// INEXACT on this exact result. A non-exact non-integer power stays
+    /// INEXACT.
+    #[test]
+    fn pow_power_of_two_base_exact_is_ok() {
+        let four = BigFloat::try_from_i64_exact(4, 53).unwrap();
+        let onehalf = BigFloat::try_from_i64_exact(3, 53)
+            .unwrap()
+            .scale_by_pow2(-1)
+            .0; // 1.5
+        let (r, st) = four
+            .pow_round(&onehalf, 53, RoundingMode::NearestEven)
+            .unwrap();
+        let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
+        assert_eq!(
+            r.partial_cmp(&eight).0,
+            Some(core::cmp::Ordering::Equal),
+            "4^1.5 = 8, got {r}"
+        );
+        assert!(st.is_ok(), "4^1.5 = 8 is exact, must be OK, got {st:?}");
+        // 4^1.6 = 2^3.2 is irrational: INEXACT.
+        let onesix = parse("1.6", 53);
+        let (_, st2) = four
+            .pow_round(&onesix, 53, RoundingMode::NearestEven)
+            .unwrap();
+        assert!(st2.inexact(), "4^1.6 is irrational: INEXACT");
     }
 
     fn close_at(v: &BigFloat, expected: &BigFloat, prec: u32) -> bool {
