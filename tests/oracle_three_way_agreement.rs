@@ -32,7 +32,7 @@ mod oracle;
 
 use std::path::{Path, PathBuf};
 
-use oracle::{ArbOracle, Enclosure, FnId, MaximaOracle, MpmathOracle, OracleBackend};
+use oracle::{ArbOracle, Enclosed, FnId, MaximaOracle, MpmathOracle, OracleBackend};
 use pfloat::RoundingMode;
 use rug::float::Round;
 
@@ -127,10 +127,19 @@ fn parse_pin_file(path: &Path) -> Vec<PinEntry> {
     entries
 }
 
-/// Result of an authoritative oracle call: either the certified
-/// `f32` bit pattern, or `None` if the worker returned `INC`
-/// (NaN enclosure).
-fn certified_bits_or_none(enc: &Enclosure) -> Option<u32> {
+/// Result of an authoritative oracle call: `Some(bits)` for a
+/// certified finite `f32`, or `None` when the worker gives no single
+/// finite value to compare. `None` covers two distinct outcomes that
+/// this cross-oracle check treats alike: an [`Enclosed::Inconclusive`]
+/// (the worker's `INC` reply) and an [`Enclosed::Bracket`] whose
+/// endpoints are both NaN (a certified NaN true value). The two stay
+/// distinct at the type level (pf-41ou); a caller that must not
+/// tolerate abstention `.expect()`s the `Some`.
+fn certified_bits_or_none(enc: &Enclosed) -> Option<u32> {
+    let enc = match enc {
+        Enclosed::Bracket(b) => b,
+        Enclosed::Inconclusive => return None,
+    };
     if enc.lo.is_nan() && enc.hi.is_nan() {
         return None;
     }

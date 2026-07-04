@@ -15,7 +15,12 @@
 //! 24 mantissa bits) and caps at `MAX_PREC = 1024`. Inputs that
 //! exhaust the cap return [`Verdict::OracleInconclusive`]; they are
 //! captured to a worst-case-candidate file by the per-function
-//! driver, not the failure corpus.
+//! driver, not the failure corpus. A backend may also abstain up
+//! front by returning [`Enclosed::Inconclusive`] (an authoritative
+//! worker's `INC` reply, or the absent-oracle fallback); that maps
+//! to the same verdict and, crucially, is kept distinct from a
+//! certified NaN so an inconclusive oracle never counts as
+//! agreement (pf-41ou).
 //!
 //! The verifier does not invoke a pfloat kernel directly. The
 //! [`Kernel`] callback is the seam between the oracle side and
@@ -28,7 +33,7 @@
 use pfloat::RoundingMode;
 
 use super::convert::round_f32;
-use super::types::{Enclosure, FnId, OracleBackend, Verdict};
+use super::types::{Enclosed, Enclosure, FnId, OracleBackend, Verdict};
 
 /// First Ziv-at-oracle working precision. The oracle evaluates its
 /// first enclosure at this precision; common-case inputs (mode-
@@ -97,13 +102,26 @@ pub fn verify_input(
     // short-circuit and ask exactly once. Non-authoritative backends
     // (the MPFR backend, where the bracket tightens with
     // `working_prec`) run the doubling loop as before.
+    //
+    // An `Enclosed::Inconclusive` outcome (the authoritative worker's
+    // `INC` reply, or the absent-oracle fallback) becomes
+    // `OracleInconclusive` directly; it is NOT a bracket and must
+    // never be rounded into an `Ok`/`Mismatch` (pf-41ou).
     if oracle.is_authoritative() {
-        let enc = oracle.enclose(f, input, mode, START_PREC);
-        return finalize(input, mode, &enc, kernel(f, input, mode), f);
+        return match oracle.enclose(f, input, mode, START_PREC) {
+            Enclosed::Bracket(enc) => finalize(input, mode, &enc, kernel(f, input, mode), f),
+            Enclosed::Inconclusive => Verdict::OracleInconclusive { input, mode },
+        };
     }
     let mut prec = START_PREC;
     loop {
-        let enc = oracle.enclose(f, input, mode, prec);
+        let enc = match oracle.enclose(f, input, mode, prec) {
+            Enclosed::Bracket(enc) => enc,
+            // A non-authoritative backend that abstains cannot be
+            // refined by raising `working_prec`, so report it
+            // straight away rather than looping to the cap.
+            Enclosed::Inconclusive => return Verdict::OracleInconclusive { input, mode },
+        };
         if let Some(expected) = certified_round_f32(&enc, mode) {
             let got = kernel(f, input, mode);
             // NaN-aware equality: any pfloat NaN bit pattern

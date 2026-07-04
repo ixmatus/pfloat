@@ -8,7 +8,7 @@
 
 mod oracle;
 
-use oracle::{Enclosure, FnId, OracleBackend, Verdict};
+use oracle::{Enclosed, Enclosure, FnId, OracleBackend, Verdict};
 use pfloat::RoundingMode;
 use rug::Float;
 
@@ -87,10 +87,10 @@ impl OracleBackend for StubBackend {
         _input: u32,
         _mode: pfloat::RoundingMode,
         working_prec: u32,
-    ) -> Enclosure {
+    ) -> Enclosed {
         let lo = Float::with_val(working_prec, 0.0);
         let hi = Float::with_val(working_prec, 0.0);
-        Enclosure { lo, hi }
+        Enclosed::Bracket(Enclosure { lo, hi })
     }
 
     fn name(&self) -> &'static str {
@@ -101,7 +101,11 @@ impl OracleBackend for StubBackend {
 #[test]
 fn oracle_backend_trait_object_dispatches_through_dyn() {
     let stub: &dyn OracleBackend = &StubBackend;
-    let enc = stub.enclose(FnId::Exp, 0x3f800000, pfloat::RoundingMode::NearestEven, 64);
+    let Enclosed::Bracket(enc) =
+        stub.enclose(FnId::Exp, 0x3f800000, pfloat::RoundingMode::NearestEven, 64)
+    else {
+        panic!("stub backend always brackets");
+    };
     assert_eq!(enc.lo.prec(), 64);
     assert_eq!(stub.name(), "stub");
 }

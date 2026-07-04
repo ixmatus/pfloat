@@ -35,6 +35,40 @@ pub struct Enclosure {
     pub hi: Float,
 }
 
+/// The outcome of an [`OracleBackend::enclose`] call.
+///
+/// Two outcomes must stay distinct, and conflating them is exactly
+/// the honesty bug pf-41ou fixed:
+///
+/// - [`Self::Bracket`] carries a proven bracket. Its endpoints may be
+///   finite, infinite, or NaN. NaN endpoints certify a *genuinely
+///   NaN* true value (`ln(x)` for `x < 0`, `Ci(x)` for `x < 0`, a NaN
+///   input): the oracle *knows* the answer is NaN, and the verifier
+///   accepts a matching NaN from the kernel.
+/// - [`Self::Inconclusive`] is the backend saying "I could not
+///   certify a unique `f32`." An authoritative backend (the Arb
+///   worker) returns this when its own internal precision loop
+///   reaches its cap without the bracket collapsing to one `f32`
+///   (the worker's `INC` reply), and the `differential-arb`-absent
+///   fallback returns it because no oracle exists for the `FnId`.
+///   The verifier maps it to [`Verdict::OracleInconclusive`], never
+///   to `Ok`.
+///
+/// The old code encoded both as an [`Enclosure`] with NaN endpoints,
+/// so an `INC` reply was read as a certified NaN and silently counted
+/// as agreement whenever the kernel also returned NaN. The sum type
+/// makes that state unrepresentable: `Inconclusive` is not a bracket
+/// at all, so no rounding of it can ever certify.
+#[derive(Clone, Debug)]
+pub enum Enclosed {
+    /// A proven bracket `[lo, hi]` of the true value.
+    Bracket(Enclosure),
+    /// The backend could not certify a unique `f32` (the worker's
+    /// `INC` reply, or the absent-oracle fallback). Distinct from a
+    /// [`Self::Bracket`] with NaN endpoints (a certified NaN value).
+    Inconclusive,
+}
+
 /// A backend that can enclose a function value at a requested
 /// working precision.
 ///
@@ -55,7 +89,16 @@ pub trait OracleBackend: Send + Sync {
     /// worker-reports-certified-f32-directly protocol while keeping
     /// the trait shape uniform for the older `MpfrOracle` enclose
     /// path.
-    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure;
+    ///
+    /// Returns [`Enclosed::Inconclusive`] when the backend cannot
+    /// certify a unique `f32` (an authoritative worker's `INC` reply,
+    /// or the absent-oracle fallback). This is deliberately distinct
+    /// from an [`Enclosed::Bracket`] whose endpoints are NaN, which
+    /// certifies a genuinely-NaN true value. The verifier routes the
+    /// two differently: a bracket is rounded and compared, an
+    /// inconclusive outcome becomes [`Verdict::OracleInconclusive`]
+    /// (pf-41ou).
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosed;
 
     /// Backend identifier for the status table's `oracle` column
     /// (e.g. `"MPFR"`, `"Arb"`).

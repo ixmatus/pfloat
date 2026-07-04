@@ -32,7 +32,7 @@ mod oracle;
 
 use std::path::{Path, PathBuf};
 
-use oracle::{ArbOracle, Enclosure, FnId, OracleBackend};
+use oracle::{ArbOracle, Enclosed, FnId, OracleBackend};
 use pfloat::RoundingMode;
 use rug::float::Round;
 
@@ -181,9 +181,19 @@ fn parse_pin_file(path: &Path) -> Result<Vec<PinEntry>, String> {
     Ok(entries)
 }
 
-/// Extract the f32 bits an authoritative single-point enclosure
-/// certifies. Mirrors `oracle_arb_mpmath_agreement.rs`.
-fn extract_certified_f32(enc: &Enclosure) -> u32 {
+/// Extract the f32 bits an authoritative single-point bracket
+/// certifies. Mirrors `oracle_arb_mpmath_agreement.rs`. Both-NaN
+/// endpoints certify a NaN true value; an [`Enclosed::Inconclusive`]
+/// (`INC`) panics because the pinned corpus is curated to certify,
+/// so an abstention is a real regression rather than a NaN agreement
+/// (pf-41ou).
+fn extract_certified_f32(enc: &Enclosed) -> u32 {
+    let enc = match enc {
+        Enclosed::Bracket(b) => b,
+        Enclosed::Inconclusive => {
+            panic!("Arb worker abstained (INC) on a curated pin; expected a certified f32")
+        }
+    };
     if enc.lo.is_nan() && enc.hi.is_nan() {
         return f32::NAN.to_bits();
     }

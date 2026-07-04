@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use pfloat::RoundingMode;
 
 use super::arb::ArbError;
-use super::types::{Enclosure, FnId, OracleBackend};
+use super::types::{Enclosed, FnId, OracleBackend};
 
 /// Path to the in-tree Maxima worker launcher script. The
 /// launcher is a nix-shell wrapper so the test harness can invoke
@@ -139,7 +139,7 @@ impl MaximaOracle {
 }
 
 impl OracleBackend for MaximaOracle {
-    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure {
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosed {
         let (fn_id, order) = super::arb::fnid_to_worker_args(f);
         let mode_str = mode_to_str(mode);
         let request = format!("{fn_id} {order} {input:08x} {mode_str}");
