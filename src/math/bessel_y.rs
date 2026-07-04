@@ -278,10 +278,25 @@ fn bessel_y_kernel(
                 _ => 0,
             };
             let use_asymptotic = e_x >= super::bessel_j::bessel_yik_threshold(target_precision);
+            // Pin the near-zero fallback for the direct Y₀/Y₁ asymptotic:
+            // an input near a Y₀/Y₁ zero falls below the divergent series'
+            // truncation floor; resolve with the convergent log series,
+            // which cancellation_boosted drives to any depth (pf-1vzg,
+            // ADR-0125). n ≥ 2 climbs by recurrence from the base pair and
+            // is out of this hand-off.
+            let maclaurin_fallback = m <= 1
+                && use_asymptotic
+                && !super::ziv::asymptotic_reliable(target_precision, BESSEL_Y_ERROR_GUARD, |w| {
+                    bessel_y_asymptotic(m, x, w)
+                });
 
             let (result, status) = ziv_round(
                 |w| {
-                    let value = bessel_y_eval_normal_at_w(m, x, w, use_asymptotic);
+                    let value = if maclaurin_fallback {
+                        super::ziv::cancellation_boosted(w, |ww| bessel_y_series(m, x, ww))
+                    } else {
+                        bessel_y_eval_normal_at_w(m, x, w, use_asymptotic)
+                    };
                     if negate {
                         value.negated()
                     } else {
@@ -396,9 +411,14 @@ fn bessel_y_eval_normal_at_w(
 /// the asymptotic cut. Returns the unrounded working-precision value.
 fn bessel_y01(which: u32, x: &BigFloat, target_precision: u32, use_asymptotic: bool) -> BigFloat {
     if use_asymptotic {
-        bessel_y_asymptotic(which, x, target_precision)
+        // Reliable asymptotic (above the floor), boosted so a near-zero
+        // cancellation past the Ziv guard cap still resolves (pf-1vzg).
+        super::ziv::cancellation_boosted(target_precision, |w| {
+            let (v, op_scale, _floor) = bessel_y_asymptotic(which, x, w);
+            (v, op_scale)
+        })
     } else {
-        bessel_y_series(which, x, target_precision)
+        bessel_y_series(which, x, target_precision).0
     }
 }
 
@@ -461,7 +481,7 @@ fn ci(v: i64, p: u32) -> BigFloat {
 /// Working precision is boosted `≈ x·log₂e` for the alternating
 /// cancellation (the [`super::ci`] / [`super::bessel_j`] capped
 /// guard). Returns the unrounded working-precision value.
-fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
@@ -555,6 +575,11 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
         s.sub(&two_gamma, RoundingMode::NearestEven).0
     };
     let mut tail = c.mul(&coef0, RoundingMode::NearestEven).0;
+    // Largest tail partial term: the convergent log series' terms peak at
+    // ≈ 2^{x·log₂ e} before cancelling to Y_n; that peak (lifted to the
+    // result scale) is the operand scale that charges the deep near-zero
+    // cancellation to cancellation_boosted (pf-1vzg, ADR-0125).
+    let mut max_tail_term = magnitude(&tail);
     let max_iter: i64 = 1 << 22;
     for k in 1..=max_iter {
         c = c.mul(&neg_qxs, RoundingMode::NearestEven).0;
@@ -570,6 +595,7 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
             s.sub(&two_gamma, RoundingMode::NearestEven).0
         };
         let t = c.mul(&coef, RoundingMode::NearestEven).0;
+        max_tail_term = max_tail_term.max(magnitude(&t));
         tail = tail.add(&t, RoundingMode::NearestEven).0;
         if negligible(&t, &tail, working) {
             break;
@@ -581,7 +607,15 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
 
     let (s1, _) = head_term.add(&log_term, RoundingMode::NearestEven);
     let (y, _) = s1.add(&tail_term, RoundingMode::NearestEven);
-    y
+    // op_scale: the tail's internal peak lifted to the result scale by
+    // the (x/2)^n/π prefactor, plus the head/log pieces (already at the
+    // result scale). The largest is what cancellation_boosted charges.
+    let op_scale = max_tail_term
+        .saturating_add(magnitude(&half_pow_n))
+        .saturating_sub(magnitude(&pi))
+        .max(magnitude(&head_term))
+        .max(magnitude(&log_term));
+    (y, op_scale)
 }
 
 /// `Y_n(x)` for `n ≥ 0`, large `x > 0`, via the DLMF 10.17.4
@@ -610,8 +644,14 @@ fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
 /// `J`'s `[+cosω, −sinω, −cosω, +sinω]`). Hand-check: `j=0` →
 /// `+sinω·a_0` (`k=0` of `ΣP`); `j=1` → `+cosω·a_1` (`k=0` of
 /// `ΣQ`); `j=2` → `−sinω·a_2` (`k=1` of `ΣP`); `j=3` → `−cosω·a_3`
-/// (`k=1` of `ΣQ`). Returns the unrounded working-precision value.
-fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
+/// (`k=1` of `ΣQ`). Returns `(value, op_scale, floor_exp)`: near a `Y_n`
+/// zero the bracket cancels below its largest term (`op_scale`, lifted
+/// through the `√(2/πx)` prefactor), but this is a DIVERGENT asymptotic
+/// with an irreducible truncation floor (`floor_exp`). Below the floor
+/// the value is uncomputable at any working precision, so the caller
+/// detects it and hands off to the convergent log series (pf-1vzg,
+/// ADR-0125).
+fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> (BigFloat, i64, i64) {
     // ω = x − n·(π/2) − π/4 has magnitude ~2^e_x; cos/sin(ω) depend on
     // ω mod 2π, so the working precision must exceed x's integer width
     // to keep `target_precision` accurate FRACTIONAL bits. The prior
@@ -654,6 +694,10 @@ fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat 
     // j = 0: g_0 = a_0/x^0 = 1, factor +sin ω (Y's j≡0 term).
     let mut g = ci(1, working);
     let (mut bracket, _) = sw.mul(&g, RoundingMode::NearestEven);
+    // Largest bracket term seen (the j = 0 term +sin ω·g₀ to start); its
+    // exponent lifted by the prefactor is the operand scale that charges
+    // the near-zero cancellation to cancellation_boosted.
+    let mut max_term_exp = magnitude(&bracket);
     let mut prev_mag = magnitude(&g);
     let max_iter: i64 = 1 << 22;
     for j in 1..=max_iter {
@@ -678,11 +722,18 @@ fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat 
             2 => sw.mul(&g, RoundingMode::NearestEven).0.negated(),
             _ => cw.mul(&g, RoundingMode::NearestEven).0.negated(),
         };
+        max_term_exp = max_term_exp.max(magnitude(&contribution));
         let (b, _) = bracket.add(&contribution, RoundingMode::NearestEven);
         bracket = b;
     }
     let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
-    result
+    let op_scale = max_term_exp.saturating_add(magnitude(&prefac));
+    // Truncation floor: the smallest retained coefficient `prev_mag`
+    // lifted by the prefactor. Below it the divergent asymptotic cannot
+    // reach the true value, so the caller routes a near-zero result to
+    // the convergent log series (pf-1vzg, ADR-0125).
+    let floor_exp = prev_mag.saturating_add(magnitude(&prefac));
+    (result, op_scale, floor_exp)
 }
 
 #[cfg(test)]
@@ -852,13 +903,13 @@ mod tests {
             (3, Y3_200),
             (5, Y5_200),
         ] {
-            let r = bessel_y_asymptotic(n, &x, p);
+            let (r, _, _) = bessel_y_asymptotic(n, &x, p);
             assert!(close_at(&r, &py(want, p), p - 8), "Y_{n}(200)");
         }
         let p = 113;
         let x = at(1000, 1, p);
         for (n, want) in [(0u32, Y0_1000), (1, Y1_1000), (2, Y2_1000)] {
-            let r = bessel_y_asymptotic(n, &x, p);
+            let (r, _, _) = bessel_y_asymptotic(n, &x, p);
             assert!(close_at(&r, &py(want, p), p - 12), "Y_{n}(1000)");
         }
 
@@ -896,7 +947,7 @@ mod tests {
         let x = at(7, 2, p); // 3.5
         for n in [2u32, 3, 5] {
             let recur = bessel_y_eval_normal_at_w(n, &x, p, false);
-            let series = bessel_y_series(n, &x, p);
+            let (series, _) = bessel_y_series(n, &x, p);
             assert!(close_at(&recur, &series, p - 12), "Y_{n}(3.5) recur=series");
         }
     }
@@ -938,13 +989,13 @@ mod tests {
     fn asymptotic_series_continuity() {
         let p = 113;
         let x = at(256, 1, p);
-        let a0 = bessel_y_asymptotic(0, &x, p);
-        let s0 = bessel_y_series(0, &x, p);
+        let (a0, _, _) = bessel_y_asymptotic(0, &x, p);
+        let (s0, _) = bessel_y_series(0, &x, p);
         assert!(close_at(&a0, &s0, p - 14), "asymp vs series Y_0(256)");
         assert!(close_at(&a0, &py(Y0_256, p), p - 12), "asymp Y_0(256)");
         assert!(close_at(&s0, &py(Y0_256, p), p - 12), "series Y_0(256)");
-        let a1 = bessel_y_asymptotic(1, &x, p);
-        let s1 = bessel_y_series(1, &x, p);
+        let (a1, _, _) = bessel_y_asymptotic(1, &x, p);
+        let (s1, _) = bessel_y_series(1, &x, p);
         assert!(close_at(&a1, &s1, p - 14), "asymp vs series Y_1(256)");
         assert!(close_at(&a1, &py(Y1_256, p), p - 12), "asymp Y_1(256)");
     }

@@ -283,8 +283,10 @@ fn si_asymptotic(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
         .expect("precision >= 1")
         .0;
 
-    let f = si_ci_f(&x_w, working_prec);
-    let g = si_ci_g(&x_w, working_prec);
+    // Si(x) → π/2 with no real zero for x > 0, so its asymptotic never
+    // sits below the truncation floor; the floor return is for Ci only.
+    let (f, _) = si_ci_f(&x_w, working_prec);
+    let (g, _) = si_ci_g(&x_w, working_prec);
     let (cos_x, _) = x_w.cos(RoundingMode::NearestEven);
     let (sin_x, _) = x_w.sin(RoundingMode::NearestEven);
     let half_pi = pi_over_2_at(working_prec);
@@ -299,7 +301,7 @@ fn si_asymptotic(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
 /// Shared asymptotic auxiliary `f(x) ∼ (1/x)·Σ_{k≥0} (−1)ᵏ (2k)!/x^{2k}`
 /// (DLMF 6.12.1), summed to its smallest term. Used by both `Si` and
 /// `Ci`. `x > 0` is assumed (callers pass `|x|`).
-pub(super) fn si_ci_f(x: &BigFloat, working_prec: u32) -> BigFloat {
+pub(super) fn si_ci_f(x: &BigFloat, working_prec: u32) -> (BigFloat, i64) {
     let (x_sq, _) = x.mul(x, RoundingMode::NearestEven);
     let mut term = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     let mut sum = term.clone();
@@ -326,13 +328,19 @@ pub(super) fn si_ci_f(x: &BigFloat, working_prec: u32) -> BigFloat {
         }
     }
     let (f, _) = sum.div(x, RoundingMode::NearestEven);
-    f
+    // The asymptotic series is divergent; its irreducible truncation
+    // floor is the smallest retained term `prev_mag` (at sum scale),
+    // carried to the value scale by the final `/x`. Ci uses this to
+    // detect that a near-zero result has fallen below what the
+    // asymptotic can compute (pf-1vzg, ADR-0125). Si ignores it.
+    let floor_exp = prev_mag.saturating_sub(magnitude(x));
+    (f, floor_exp)
 }
 
 /// Shared asymptotic auxiliary
 /// `g(x) ∼ (1/x²)·Σ_{k≥0} (−1)ᵏ (2k+1)!/x^{2k}` (DLMF 6.12.2),
 /// summed to its smallest term. Used by both `Si` and `Ci`.
-pub(super) fn si_ci_g(x: &BigFloat, working_prec: u32) -> BigFloat {
+pub(super) fn si_ci_g(x: &BigFloat, working_prec: u32) -> (BigFloat, i64) {
     let (x_sq, _) = x.mul(x, RoundingMode::NearestEven);
     let mut term = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     let mut sum = term.clone();
@@ -359,7 +367,10 @@ pub(super) fn si_ci_g(x: &BigFloat, working_prec: u32) -> BigFloat {
         }
     }
     let (g1, _) = sum.div(&x_sq, RoundingMode::NearestEven);
-    g1
+    // Truncation floor of the divergent series at the value scale: the
+    // smallest retained term `prev_mag` carried through the final `/x²`.
+    let floor_exp = prev_mag.saturating_sub(2i64.saturating_mul(magnitude(x)));
+    (g1, floor_exp)
 }
 
 fn acc_exponent(v: &BigFloat) -> i64 {

@@ -219,9 +219,25 @@ fn bessel_j_kernel(
     let negate = (m % 2 == 1) && ((n < 0) ^ x.is_sign_negative());
     let ax = x.abs();
 
+    // Pin the near-zero fallback from target_precision. In the asymptotic
+    // regime an input near a J_m zero falls below the divergent series'
+    // truncation floor; resolve those with the convergent Maclaurin
+    // series (cancellation_boosted drives it to any depth) — the correct
+    // fix the bare asymptotic cannot provide (pf-1vzg, ADR-0125).
+    let e_x = match &ax.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => 0,
+    };
+    let maclaurin_fallback = e_x >= bessel_j_threshold(target_precision)
+        && !bessel_j_asymptotic_reliable(m, &ax, target_precision);
+
     let (result, status) = ziv_round(
         |working_prec| {
-            let v = bessel_j_eval_normal(m, &ax, working_prec);
+            let v = if maclaurin_fallback {
+                super::ziv::cancellation_boosted(working_prec, |w| bessel_j_tiny(m, &ax, w))
+            } else {
+                bessel_j_eval_normal(m, &ax, working_prec)
+            };
             if negate {
                 v.negated()
             } else {
@@ -294,7 +310,7 @@ fn bessel_j_tiny_threshold() -> i64 {
 /// `J_1` → `t_0 = x/2, t_1 = −(x/2)³/2 = −x³/16`. Both match the
 /// standard expansions. Returns the unrounded working-precision
 /// value; the kernel performs the single final round.
-fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let working = target_precision.saturating_add(64);
     let x = ax
         .round_to_precision(working, RoundingMode::NearestEven)
@@ -318,6 +334,12 @@ fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     }
 
     let mut sum = term.clone();
+    // Largest partial term: the operand scale for the alternating
+    // cancellation. Trivial in the tiny regime (terms decay from t_0),
+    // but this convergent series is also the large-x near-zero fallback,
+    // where the terms peak at ≈ 2^{x·log₂ e} and drive the deep
+    // cancellation (pf-1vzg, ADR-0125).
+    let mut max_term_exp = magnitude(&term);
     let max_iter: i64 = 1 << 22;
     for k in 1..=max_iter {
         let (t1, _) = term.mul(&half_sq, RoundingMode::NearestEven);
@@ -326,13 +348,14 @@ fn bessel_j_tiny(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
         let (t2, _) = t1.div(&dk, RoundingMode::NearestEven);
         let (t3, _) = t2.div(&dmk, RoundingMode::NearestEven);
         term = t3.negated();
+        max_term_exp = max_term_exp.max(magnitude(&term));
         let (s, _) = sum.add(&term, RoundingMode::NearestEven);
         sum = s;
         if negligible(&term, &sum, working) {
             break;
         }
     }
-    sum
+    (sum, max_term_exp)
 }
 
 /// Smallest Miller backward-recurrence starting index `M` such that
@@ -666,9 +689,15 @@ pub(super) fn bessel_yik_threshold(target_precision: u32) -> i64 {
 /// `(2k−1)`-divisor defect is the precedent. Folding the explicit
 /// `(−1)^k` into the trig assignment, the per-`j` factor on
 /// `a_j(m)/x^j` is the period-4 cycle `[+cosω, −sinω, −cosω, +sinω]`
-/// for `j ≡ 0,1,2,3 (mod 4)`. Returns the unrounded
-/// working-precision value.
-fn bessel_j_asymptotic(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+/// for `j ≡ 0,1,2,3 (mod 4)`. Returns `(value, op_scale, floor_exp)`:
+/// near a `J_m` zero the `[+cosω, −sinω, …]` bracket cancels below its
+/// largest term (`op_scale`, lifted through the `√(2/πx)` prefactor),
+/// but this is a DIVERGENT asymptotic with an irreducible truncation
+/// floor (`floor_exp`, the smallest retained term). Below the floor the
+/// value is uncomputable at any working precision, so the caller detects
+/// it and hands off to the convergent Maclaurin series (pf-1vzg,
+/// ADR-0125).
+fn bessel_j_asymptotic(m: u32, ax: &BigFloat, target_precision: u32) -> (BigFloat, i64, i64) {
     // ω = x − m·(π/2) − π/4 has magnitude ~2^e_x; cos/sin(ω) depend on
     // ω mod 2π, so the working precision must exceed x's integer width
     // to keep `target_precision` accurate FRACTIONAL bits. The prior
@@ -713,6 +742,10 @@ fn bessel_j_asymptotic(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat
     // j = 0: g_0 = a_0/x^0 = 1, factor +cos ω.
     let mut g = BigFloat::try_from_i64_exact(1, working).expect("precision >= 1");
     let (mut bracket, _) = cw.mul(&g, RoundingMode::NearestEven);
+    // Largest bracket term seen (the j = 0 term +cos ω·g₀ to start); its
+    // exponent lifted by the prefactor is the operand scale that charges
+    // the near-zero cancellation to cancellation_boosted.
+    let mut max_term_exp = magnitude(&bracket);
     let mut prev_mag = magnitude(&g);
     let max_iter: i64 = 1 << 22;
     for j in 1..=max_iter {
@@ -737,11 +770,19 @@ fn bessel_j_asymptotic(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat
             2 => cw.mul(&g, RoundingMode::NearestEven).0.negated(),
             _ => sw.mul(&g, RoundingMode::NearestEven).0,
         };
+        max_term_exp = max_term_exp.max(magnitude(&contribution));
         let (b, _) = bracket.add(&contribution, RoundingMode::NearestEven);
         bracket = b;
     }
     let (result, _) = prefac.mul(&bracket, RoundingMode::NearestEven);
-    result
+    let op_scale = max_term_exp.saturating_add(magnitude(&prefac));
+    // Truncation floor: the smallest retained coefficient `prev_mag`
+    // (its `|trig| ≤ 1` contribution is no larger), lifted by the
+    // prefactor. Below it the divergent asymptotic cannot reach the true
+    // value at any working precision, so the caller routes a near-zero
+    // result to the convergent Maclaurin fallback (pf-1vzg, ADR-0125).
+    let floor_exp = prev_mag.saturating_add(magnitude(&prefac));
+    (result, op_scale, floor_exp)
 }
 
 /// `J_m(ax)` for `m ≥ 0`, `ax > 0`, normal: the three-regime
@@ -754,12 +795,29 @@ fn bessel_j_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloa
         _ => 0,
     };
     if e_x <= bessel_j_tiny_threshold() {
-        bessel_j_tiny(m, ax, target_precision)
+        bessel_j_tiny(m, ax, target_precision).0
     } else if e_x >= bessel_j_threshold(target_precision) {
-        bessel_j_asymptotic(m, ax, target_precision)
+        // Reliable asymptotic (above the floor), boosted so a near-zero
+        // cancellation past the Ziv guard cap still resolves (pf-1vzg).
+        super::ziv::cancellation_boosted(target_precision, |w| {
+            let (v, op_scale, _floor) = bessel_j_asymptotic(m, ax, w);
+            (v, op_scale)
+        })
     } else {
         bessel_j_miller(m, ax, target_precision)
     }
+}
+
+/// Whether the Hankel asymptotic can correctly round `J_m(ax)` at
+/// `target_precision`, or whether `ax` sits near a `J_m` zero below the
+/// truncation floor and must hand off to the convergent Maclaurin
+/// series. The shared [`super::ziv::asymptotic_reliable`] driver grows
+/// the working precision until the result resolves, then applies the
+/// soundness test (pf-1vzg, ADR-0125; matches `ci::ci_asymptotic_reliable`).
+fn bessel_j_asymptotic_reliable(m: u32, ax: &BigFloat, target_precision: u32) -> bool {
+    super::ziv::asymptotic_reliable(target_precision, BESSEL_J_ERROR_GUARD, |w| {
+        bessel_j_asymptotic(m, ax, w)
+    })
 }
 
 #[cfg(test)]
@@ -984,12 +1042,12 @@ mod tests {
     fn tiny_miller_continuity_at_boundary() {
         let p = 160;
         let x = at(1, 1, p);
-        let t0 = bessel_j_tiny(0, &x, p);
+        let (t0, _) = bessel_j_tiny(0, &x, p);
         let m0 = bessel_j_miller(0, &x, p);
         assert!(close_at(&t0, &m0, p - 12), "tiny vs Miller J_0(1)");
         assert!(close_at(&t0, &pj(J0_1, p), p - 12), "tiny J_0(1)");
         assert!(close_at(&m0, &pj(J0_1, p), p - 12), "Miller J_0(1)");
-        let t1 = bessel_j_tiny(1, &x, p);
+        let (t1, _) = bessel_j_tiny(1, &x, p);
         let m1 = bessel_j_miller(1, &x, p);
         assert!(close_at(&t1, &m1, p - 12), "tiny vs Miller J_1(1)");
         assert!(close_at(&m1, &pj(J1_1, p), p - 12), "Miller J_1(1)");
@@ -1051,12 +1109,12 @@ mod tests {
     fn asymptotic_miller_continuity() {
         let p = 113;
         let x = at(256, 1, p);
-        let a0 = bessel_j_asymptotic(0, &x, p);
+        let (a0, _, _) = bessel_j_asymptotic(0, &x, p);
         let mi0 = bessel_j_miller(0, &x, p);
         assert!(close_at(&a0, &mi0, p - 12), "asymp vs Miller J_0(256)");
         assert!(close_at(&a0, &pj(J0_256, p), p - 12), "asymp J_0(256)");
         assert!(close_at(&mi0, &pj(J0_256, p), p - 12), "Miller J_0(256)");
-        let a1 = bessel_j_asymptotic(1, &x, p);
+        let (a1, _, _) = bessel_j_asymptotic(1, &x, p);
         let mi1 = bessel_j_miller(1, &x, p);
         assert!(close_at(&a1, &mi1, p - 12), "asymp vs Miller J_1(256)");
         assert!(close_at(&a1, &pj(J1_256, p), p - 12), "asymp J_1(256)");

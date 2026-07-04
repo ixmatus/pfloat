@@ -144,20 +144,30 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision);
+    // The asymptotic path is cheap but has an irreducible truncation
+    // floor (`ci_asymptotic`); near a Ci zero the result falls below it
+    // and the asymptotic certifies a wrong value. Use the asymptotic
+    // only where it can correctly round, otherwise the convergent series
+    // (which cancellation_boosted drives to any depth). ci_series carries
+    // Ci's real zero at x ≈ 0.6165 for the small-x path and every
+    // large-x near-zero the asymptotic hands off (pf-1vzg, ADR-0125).
+    let use_asymptotic = e_x >= asymptotic_threshold_exponent(target_precision)
+        && ci_asymptotic_reliable(x, target_precision);
 
     let (result, status) = ziv_round(
         |w| {
             if use_asymptotic {
-                ci_asymptotic(x, w)
+                // Reliable (above the floor), but still boost: at large x
+                // the near-zero cancellation can exceed the Ziv guard cap,
+                // and cancellation_boosted resolves it (the asymptotic is
+                // above its floor here, so it converges to the true value,
+                // not the floor).
+                super::ziv::cancellation_boosted(w, |ww| {
+                    let (v, op_scale, _floor) = ci_asymptotic(x, ww);
+                    (v, op_scale)
+                })
             } else {
-                // Ci has a real zero (~0.61650549) where γ + ln|x| + Σ
-                // is a near-total cancellation of O(1) terms; boost by
-                // the realised cancellation so the Ziv half-width stays
-                // sound (review 2026-05-29, root cause 2). The operands
-                // are O(1) near that zero, so the operand scale is a
-                // small constant.
-                super::ziv::cancellation_boosted(w, |ww| (ci_series(x, ww), 4))
+                super::ziv::cancellation_boosted(w, |ww| ci_series(x, ww))
             }
         },
         target_precision,
@@ -181,7 +191,16 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
 /// Convergent alternating series for `Ci(x)`, `x > 0` (DLMF 6.6.6).
 /// Working precision boosted by `≈ x·log₂ e` for the alternating
 /// cancellation (the [`super::erf`] guard idiom).
-fn ci_series(x: &BigFloat, target_precision: u32) -> BigFloat {
+///
+/// Returns `(value, op_scale)` for [`super::ziv::cancellation_boosted`],
+/// where `op_scale` is the largest partial-term exponent. Near the
+/// small-`x` root `x ≈ 0.6165` the terms are `O(1)`, but as the
+/// convergent (non-asymptotic) representation this series is also the
+/// large-`x` near-zero fallback, where the terms peak at `≈ 2^{x·log₂ e}`
+/// and the true operand scale is what charges the deep cancellation
+/// (pf-1vzg, ADR-0125). The prior hardcoded `op_scale = 4` undercharged
+/// the large-`x` regime.
+fn ci_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
@@ -207,6 +226,11 @@ fn ci_series(x: &BigFloat, target_precision: u32) -> BigFloat {
     let gamma = euler_gamma_at(working_prec);
     let (mut acc, _) = gamma.add(&ln_x, RoundingMode::NearestEven);
 
+    // Largest partial term seen: the operand scale for the alternating
+    // cancellation (charged by cancellation_boosted at the call site).
+    let mut max_term_exp =
+        super::ziv::value_exponent(&gamma).max(super::ziv::value_exponent(&ln_x));
+
     // U_k = (−1)ᵏ x^{2k}/((2k)·(2k)!), k ≥ 1. U_1 = −x²/4.
     // (2k)! = (2k)(2k−1)(2k−2)! gives the ratio
     // U_k/U_{k-1} = −x²·(2k−2) / [(2k)²·(2k−1)] (verified at
@@ -214,6 +238,7 @@ fn ci_series(x: &BigFloat, target_precision: u32) -> BigFloat {
     let four = BigFloat::try_from_i64_exact(4, working_prec).expect("precision >= 1");
     let (mut term, _) = x_sq.div(&four, RoundingMode::NearestEven);
     term = term.negated();
+    max_term_exp = max_term_exp.max(super::ziv::value_exponent(&term));
     let (acc1, _) = acc.add(&term, RoundingMode::NearestEven);
     acc = acc1;
 
@@ -230,6 +255,7 @@ fn ci_series(x: &BigFloat, target_precision: u32) -> BigFloat {
         let (t4, _) = t3.div(&d2, RoundingMode::NearestEven);
         let (t5, _) = t4.div(&d3, RoundingMode::NearestEven);
         term = t5.negated();
+        max_term_exp = max_term_exp.max(super::ziv::value_exponent(&term));
         let (acc_next, _) = acc.add(&term, RoundingMode::NearestEven);
         acc = acc_next;
 
@@ -244,12 +270,32 @@ fn ci_series(x: &BigFloat, target_precision: u32) -> BigFloat {
             }
         }
     }
-    acc
+    (acc, max_term_exp)
+}
+
+/// Whether the asymptotic path can correctly round `Ci(x)` at
+/// `target_precision`, or whether `x` sits near a Ci zero below the
+/// asymptotic truncation floor and must hand off to [`ci_series`]. The
+/// shared [`super::ziv::asymptotic_reliable`] driver grows the working
+/// precision until the result resolves, then applies the soundness test
+/// (pf-1vzg, ADR-0125).
+fn ci_asymptotic_reliable(x: &BigFloat, target_precision: u32) -> bool {
+    super::ziv::asymptotic_reliable(target_precision, CI_ERROR_GUARD, |w| ci_asymptotic(x, w))
 }
 
 /// `Ci(x) = f(x)·sin x − g(x)·cos x` (DLMF 6.12.4) for large `x > 0`,
 /// reusing the shared `Si`/`Ci` auxiliaries.
-fn ci_asymptotic(x: &BigFloat, target_precision: u32) -> BigFloat {
+///
+/// Returns `(value, op_scale, floor_exp)`. `f·sin` and `g·cos` cancel
+/// near each large-`x` Ci zero, so `op_scale` (their larger exponent) is
+/// the realised cancellation scale. But `f`/`g` are DIVERGENT asymptotic
+/// series with an irreducible truncation floor `≈ e^{−x}`: below it the
+/// value cannot be computed at any working precision (pf-1vzg,
+/// ADR-0125). `floor_exp` carries that floor to the result scale so the
+/// caller can detect a near-zero result that has fallen below it and
+/// route to the convergent [`ci_series`] instead. `cancellation_boosted`
+/// on the asymptotic would only converge to the wrong floor value.
+fn ci_asymptotic(x: &BigFloat, target_precision: u32) -> (BigFloat, i64, i64) {
     let working_prec = target_precision
         .saturating_add(64)
         .min(target_precision.saturating_add(512));
@@ -258,15 +304,21 @@ fn ci_asymptotic(x: &BigFloat, target_precision: u32) -> BigFloat {
         .expect("precision >= 1")
         .0;
 
-    let f = si_ci_f(&x_w, working_prec);
-    let g = si_ci_g(&x_w, working_prec);
+    let (f, floor_f) = si_ci_f(&x_w, working_prec);
+    let (g, floor_g) = si_ci_g(&x_w, working_prec);
     let (cos_x, _) = x_w.cos(RoundingMode::NearestEven);
     let (sin_x, _) = x_w.sin(RoundingMode::NearestEven);
 
     let (f_sin, _) = f.mul(&sin_x, RoundingMode::NearestEven);
     let (g_cos, _) = g.mul(&cos_x, RoundingMode::NearestEven);
     let (result, _) = f_sin.sub(&g_cos, RoundingMode::NearestEven);
-    result
+    let op_scale = super::ziv::value_exponent(&f_sin).max(super::ziv::value_exponent(&g_cos));
+    // Floor of f·sin − g·cos: each series' truncation floor scaled by its
+    // trig factor (exponents ≤ 0). The larger (shallower) dominates.
+    let floor_exp = floor_f
+        .saturating_add(super::ziv::value_exponent(&sin_x))
+        .max(floor_g.saturating_add(super::ziv::value_exponent(&cos_x)));
+    (result, op_scale, floor_exp)
 }
 
 fn acc_exponent(v: &BigFloat) -> i64 {

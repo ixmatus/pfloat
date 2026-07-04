@@ -380,6 +380,64 @@ pub(crate) fn cancellation_boosted(
     last.unwrap_or_else(|| eval(w).0)
 }
 
+/// Whether a DIVERGENT asymptotic oscillatory evaluation can correctly
+/// round at `target`, or whether the input sits near a function zero
+/// below the series' irreducible truncation floor and must hand off to a
+/// convergent method (pf-1vzg, ADR-0125).
+///
+/// `eval(w)` returns `(value, op_scale, floor_exp)`: `op_scale` is the
+/// largest cancelling term's exponent, `floor_exp` the smallest retained
+/// term's (both at the result scale). A single low-working probe is NOT
+/// enough — a deep near-zero input is truncated there to a shallow,
+/// large-magnitude result that looks resolvable. So we grow the working
+/// precision exactly like [`cancellation_boosted`] until the result
+/// resolves (to its true value, or to the floor it cannot cross), then
+/// apply the soundness test: the asymptotic can correctly round only when
+/// the realised cancellation `C = op_scale − result_exp` is resolved
+/// before the working precision reaches the floor. The Ziv driver needs
+/// `target + C` working bits to resolve `C`, and its half-width stays
+/// sound only while working `≤ (result_exp − floor_exp) + guard`;
+/// combining and cancelling `guard` gives `2·C + target ≤ op_scale −
+/// floor_exp`. A result stuck at the floor has `C = op_scale − floor_exp`
+/// and fails the test, routing to the fallback.
+#[allow(dead_code)] // unused under transcendental-without-specials combos
+pub(crate) fn asymptotic_reliable(
+    target: u32,
+    guard: u32,
+    eval: impl Fn(u32) -> (BigFloat, i64, i64),
+) -> bool {
+    let base = target.saturating_add(guard);
+    let mut w = base;
+    for _ in 0..40 {
+        let (value, op_scale, floor_exp) = eval(w);
+        let result_exp = match &value.class {
+            Class::Normal { exponent, .. } => *exponent,
+            // Collapsed at this precision: the cancellation exceeds w.
+            // Double and retry to reach the true result or the floor.
+            _ => {
+                w = w.saturating_mul(2);
+                continue;
+            }
+        };
+        let cancel = op_scale.saturating_sub(result_exp).max(0);
+        let cancel_u = u32::try_from(cancel).unwrap_or(u32::MAX);
+        let needed = base.saturating_add(cancel_u).saturating_add(8);
+        if w >= needed {
+            // Resolved. Sound to round via the asymptotic iff the
+            // cancellation is resolvable before the floor. The `+8`
+            // absorbs the ±1 exponent slop in op_scale / floor_exp.
+            let range = op_scale.saturating_sub(floor_exp);
+            return 2i64
+                .saturating_mul(cancel)
+                .saturating_add(i64::from(target))
+                .saturating_add(8)
+                <= range;
+        }
+        w = needed.max(w.saturating_mul(2));
+    }
+    false // exhausted: fall back (the convergent path is always correct)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
