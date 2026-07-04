@@ -7,10 +7,12 @@
 //! [`super::li`] precedent (cosine / logarithmic integral, same
 //! "real-only, complex off the positive axis" shape):
 //!
-//! - `Y_n(+0) = −∞`, raising `DIV_BY_ZERO` (a pole: the DLMF 10.8.1
-//!   `−(½x)^{−n}/π` head, and `(2/π) ln(½x) J_0` for `n = 0`, both
-//!   diverge to `−∞` as `x → 0⁺`).
-//! - `x < 0` (and `−0`, `−∞`) ⇒ `NaN` + `INVALID` (`Y` is complex in
+//! - `Y_n(±0)` is a pole for BOTH zero signs (`log(±0) = −∞` groups
+//!   `−0` with the pole, IEEE 754-2019 §9.2 / C11 F.10.3.7; pf-k8ax,
+//!   ADR-0123), raising `DIV_BY_ZERO`. The sign follows the order
+//!   parity `Y_{−n} = (−1)^n Y_n` (DLMF 10.4.1) and POSIX `yn`:
+//!   `Y_n(±0) = −∞` unless `n` is negative AND odd, then `+∞`.
+//! - `x < 0` (and `−∞`) ⇒ `NaN` + `INVALID` (`Y` is complex in
 //!   the reals there).
 //! - `Y_n(+∞) = +0` for every order, by the decaying-envelope
 //!   convention (ADR-0021/0023, the [`super::airy`] / J precedent):
@@ -201,20 +203,25 @@ fn bessel_y_kernel(
                 .expect("precision >= 1");
             (nan, Status::OK)
         }
-        Class::Zero { sign } => {
-            if matches!(sign, Sign::Negative) {
-                // −0: Y is complex off the positive axis (the Ci/li
-                // convention; −0 groups with x < 0).
-                let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
-                    .expect("precision >= 1");
-                auto_raise(Status::INVALID);
-                return (nan, Status::INVALID);
-            }
-            // Y_n(+0) = −∞ + DIV_BY_ZERO (a pole, DLMF 10.8.1).
-            let ninf = BigFloat::try_new_infinity(Sign::Negative, target_precision)
-                .expect("precision >= 1");
+        Class::Zero { .. } => {
+            // Y_n(±0) is the POLE, not the negative axis: `log(±0) = −∞`
+            // groups −0 with the pole (IEEE 754-2019 §9.2, C11 F.10.3.7;
+            // `Y_0 ~ (2/π) ln x` inherits `ln`'s zero convention), for
+            // BOTH zero signs — −0 was wrongly returning NaN + INVALID
+            // (pf-k8ax, ADR-0123). The pole's sign follows the order
+            // parity `Y_{−n} = (−1)^n Y_n` (DLMF 10.4.1) and POSIX yn:
+            // `Y_n(0) = −∞` unless `n` is negative AND odd, then `+∞`
+            // (the prior code was unconditionally −∞, a latent
+            // negative-odd-order sign bug the audit surfaced).
+            let pole_sign = if n < 0 && m % 2 == 1 {
+                Sign::Positive
+            } else {
+                Sign::Negative
+            };
+            let inf =
+                BigFloat::try_new_infinity(pole_sign, target_precision).expect("precision >= 1");
             auto_raise(Status::DIV_BY_ZERO);
-            (ninf, Status::DIV_BY_ZERO)
+            (inf, Status::DIV_BY_ZERO)
         }
         Class::Infinity { sign } => {
             if matches!(sign, Sign::Negative) {
@@ -671,6 +678,20 @@ mod tests {
     use super::*;
     use core::cmp::Ordering;
 
+    /// pf-k8ax (ADR-0123): `Y_n(±0)` is the pole for BOTH zero signs —
+    /// −0 wrongly returned NaN + INVALID where −∞ + `DIV_BY_ZERO` is due
+    /// (log(±0) = −∞ groups −0 with the pole). Order 0 → −∞.
+    #[test]
+    fn y0_negative_zero_is_the_pole_not_nan() {
+        let nz = BigFloat::try_new_zero(Sign::Negative, 53).unwrap();
+        let (r, st) = nz.y0_round(53, RoundingMode::NearestEven).unwrap();
+        assert!(
+            r.is_infinite() && r.is_sign_negative(),
+            "y0(-0) = -inf (the pole), got {r}"
+        );
+        assert!(!st.invalid(), "y0(-0) is a pole (DIV_BY_ZERO), not INVALID");
+    }
+
     /// `|v − expected| ≤ 2^(−bits)·|expected|` (the `bessel_j`/`erf`
     /// test helper). Reference decimals: `mpmath` `bessely(n, x)` at
     /// `mp.dps = 330`
@@ -955,11 +976,14 @@ mod tests {
     }
 
     #[test]
-    fn y_negative_zero_is_invalid() {
+    fn y_negative_zero_is_the_pole() {
+        // pf-k8ax (ADR-0123): Y0(±0) is the pole −∞ + DIV_BY_ZERO for
+        // BOTH zero signs (−0 groups with the pole, not the negative
+        // axis); it used to wrongly return NaN + INVALID.
         let z = BigFloat::try_new_zero(Sign::Negative, 53).unwrap();
         let (r, s) = z.y0(RoundingMode::NearestEven);
-        assert!(r.is_quiet_nan(), "Y0(−0) = NaN");
-        assert!(s.invalid());
+        assert!(r.is_infinite() && r.is_sign_negative(), "Y0(−0) = −∞");
+        assert!(s.div_by_zero() && !s.invalid());
     }
 
     #[test]

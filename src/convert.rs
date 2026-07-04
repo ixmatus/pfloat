@@ -130,7 +130,22 @@ fn from_ieee(sign_neg: bool, exp_field: u32, mant_field: u64, fmt: &Format) -> B
         if mant_field == 0 {
             return BigFloat::try_new_infinity(sign, fmt.prec).expect("precision valid");
         }
-        return BigFloat::try_new_quiet_nan(sign, fmt.prec, &[]).expect("precision valid");
+        // NaN: preserve the signaling bit AND the payload verbatim — a
+        // LOSSLESS representation embed in the IEEE §5.5.1 quiet-copy
+        // class (like copysign/abs, which do not signal on sNaN), NOT a
+        // §5.4.2 convertFormat arithmetic op. from_f32/f64 return a bare
+        // BigFloat with no Status, so they cannot honestly signal, and
+        // BigFloat represents sNaN + payload exactly; quieting would
+        // destroy information the docstring promises to keep (pf-jd4s,
+        // ADR-0123). The quiet bit is the top mantissa bit; the low
+        // `mant_bits − 1` bits are the payload, LSB-anchored.
+        let quiet_bit = 1u64 << (fmt.mant_bits - 1);
+        let payload = [mant_field & (quiet_bit - 1)];
+        return if mant_field & quiet_bit != 0 {
+            BigFloat::try_new_quiet_nan(sign, fmt.prec, &payload).expect("precision valid")
+        } else {
+            BigFloat::try_new_signaling_nan(sign, fmt.prec, &payload).expect("precision valid")
+        };
     }
 
     // (integer mantissa, binary scale): value = mantissa * 2^scale.
@@ -427,6 +442,22 @@ impl BigFloat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// pf-jd4s (ADR-0123): `from_f32`/`f64` are a LOSSLESS representation
+    /// embed (§5.5.1 quiet-copy class) — a signaling NaN stays
+    /// signaling, not quieted, and the payload is preserved.
+    #[test]
+    fn from_f32_f64_preserve_signaling_ness_losslessly() {
+        let s = BigFloat::from_f32(f32::from_bits(0x7F80_0001)); // sNaN, payload 1
+        assert!(s.is_signaling_nan(), "from_f32(sNaN) stays signaling");
+        let q = BigFloat::from_f32(f32::from_bits(0x7FC0_0001)); // qNaN
+        assert!(
+            q.is_quiet_nan() && !q.is_signaling_nan(),
+            "from_f32(qNaN) stays quiet"
+        );
+        let s64 = BigFloat::from_f64(f64::from_bits(0x7FF0_0000_0000_0001));
+        assert!(s64.is_signaling_nan(), "from_f64(sNaN) stays signaling");
+    }
 
     fn rt32(bits: u32) {
         let x = f32::from_bits(bits);

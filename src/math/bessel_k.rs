@@ -6,11 +6,14 @@
 //! [`super::li`] / [`super::bessel_y`] precedent (real-only, complex
 //! off the positive axis):
 //!
-//! - `Kₙ(+0) = +∞`, raising `DIV_BY_ZERO` (a pole: DLMF 10.30.2
-//!   `Kν(z) ∼ ½Γ(ν)(½z)⁻ν` for `ν > 0` and DLMF 10.30.3
-//!   `K₀(z) ∼ −ln z` both diverge to **+∞** as `x → 0⁺`). Note the
-//!   sign is the opposite of `Yₙ(+0) = −∞`.
-//! - `x < 0` (and `−0`, `−∞`) ⇒ `NaN` + `INVALID` (`K` is complex in
+//! - `Kₙ(±0) = +∞`, raising `DIV_BY_ZERO` (a pole for BOTH zero signs:
+//!   DLMF 10.30.2 `Kν(z) ∼ ½Γ(ν)(½z)⁻ν` for `ν > 0` and DLMF 10.30.3
+//!   `K₀(z) ∼ −ln z` both diverge to **+∞** as `x → 0⁺`, and `log(±0)
+//!   = −∞` groups `−0` with the pole, IEEE 754-2019 §9.2 / C11
+//!   F.10.3.7; pf-k8ax, ADR-0123). `K` is even in order and positive,
+//!   so `+∞` for every order — no parity flip; the sign is the opposite
+//!   of `Yₙ(+0) = −∞`.
+//! - `x < 0` (and `−∞`) ⇒ `NaN` + `INVALID` (`K` is complex in
 //!   the reals there).
 //! - `Kₙ(+∞) = +0` for every order, `Status::OK`. This is a
 //!   **genuine exponential-decay limit** (DLMF 10.40.2
@@ -199,17 +202,14 @@ fn bessel_k_kernel(
                 .expect("precision >= 1");
             (nan, Status::OK)
         }
-        Class::Zero { sign } => {
-            if matches!(sign, Sign::Negative) {
-                // −0: K is complex off the positive axis (the Ci/li
-                // convention; −0 groups with x < 0).
-                let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
-                    .expect("precision >= 1");
-                auto_raise(Status::INVALID);
-                return (nan, Status::INVALID);
-            }
-            // Kₙ(+0) = +∞ + DIV_BY_ZERO (a pole, DLMF 10.30.2/10.30.3;
-            // +∞, the opposite sign of Yₙ(+0) = −∞).
+        Class::Zero { .. } => {
+            // Kₙ(±0) = +∞ + DIV_BY_ZERO (a pole, DLMF 10.30.2/10.30.3),
+            // for BOTH zero signs: `log(±0) = −∞` groups −0 with the pole
+            // (IEEE 754-2019 §9.2, C11 F.10.3.7; `K_0 ~ −ln(x/2)` inherits
+            // `ln`'s zero convention), so −0 was wrongly returning NaN +
+            // INVALID (pf-k8ax, ADR-0123). `K` is even in order
+            // (`K_{−n} = K_n`, DLMF 10.27.3) and positive, so the pole is
+            // `+∞` for every order — no parity flip.
             let pinf = BigFloat::try_new_infinity(Sign::Positive, target_precision)
                 .expect("precision >= 1");
             auto_raise(Status::DIV_BY_ZERO);
@@ -986,11 +986,13 @@ mod tests {
     }
 
     #[test]
-    fn k_negative_zero_is_invalid() {
+    fn k_negative_zero_is_the_pole() {
+        // pf-k8ax (ADR-0123): K0(±0) is the pole +∞ + DIV_BY_ZERO for
+        // BOTH zero signs; it used to wrongly return NaN + INVALID.
         let z = BigFloat::try_new_zero(Sign::Negative, 53).unwrap();
         let (r, s) = z.k0(RoundingMode::NearestEven);
-        assert!(r.is_quiet_nan(), "K0(−0) = NaN");
-        assert!(s.invalid());
+        assert!(r.is_infinite() && !r.is_sign_negative(), "K0(−0) = +∞");
+        assert!(s.div_by_zero() && !s.invalid());
     }
 
     #[test]

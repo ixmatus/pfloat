@@ -171,3 +171,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0120: render a past-cap finite as an approximate magnitude `±1e{D}`, not `inf`/`0`](0120-fmt-approximate-magnitude-for-huge-finites.md) (accepted)
 - [ADR-0121: tiny-x dispatch for the near-zero `x ± c·x³` trig/inverse family (sin, tan, asin)](0121-trig-tiny-x-dispatch-near-zero-family.md) (accepted)
 - [ADR-0122: pow — mirror the mode under odd-parity negation, and dispatch the power-of-two exact set](0122-pow-mirror-mode-and-power-of-two-exact.md) (accepted)
+- [ADR-0123: IEEE convention trio — 754-2019 minimumNumber/maximumNumber, lossless from_f32/f64, log-pole ±0, and LSB-anchored payload order](0123-ieee-convention-trio-minmax-fromf-poles-totalcmp.md) (accepted)
