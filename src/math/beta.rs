@@ -228,6 +228,25 @@ fn beta_kernel(
         );
     }
 
+    // B(1, b) = 1/b and B(a, 1) = 1/a EXACTLY, for every finite non-pole
+    // operand: Γ(1) = 1 and Γ(1+y) = y·Γ(y) give
+    // B(1, y) = Γ(y)/Γ(1+y) = 1/y. The reflection/pole cases above have
+    // peeled off every argument for which 1+y is a Γ pole, so 1/y is the
+    // finite value here. Construct it directly: the division is
+    // correctly rounded and its INEXACT flag is the exact-dyadicity
+    // verdict — a power-of-two operand returns the exact reciprocal with
+    // OK, where the exp(lgamma) Ziv path over-reported INEXACT and risked
+    // a directed-mode ulp (β(1, 1/8) = 8 came back INEXACT; pf-k5ll,
+    // ADR-0118, extending the ADR-0065 construct-and-check from the
+    // integer b the positive-integer dispatch already covers to the
+    // non-integer dyadic b = 2^-k it missed). A non-power-of-two operand
+    // yields the correctly-rounded inexact reciprocal, still the exact
+    // value of B, so this supersedes the Ziv path for the unit case.
+    if let Some((value, status)) = try_beta_one_reciprocal(a, b, target_precision, mode) {
+        auto_raise(status);
+        return (value, status);
+    }
+
     // Positive-integer exact dispatch (pf-umlm). For positive integers
     // a, b, β(a,b) = (a−1)!(b−1)!/(a+b−1)! is rational, and the
     // exp(lgamma) Ziv path mis-rounds the exactly-dyadic ones: β(1,2ᵏ)
@@ -364,6 +383,38 @@ fn rising_product_exact(l: &BigFloat, s: &BigFloat) -> Option<BigFloat> {
 /// denominator are built as exact integers and divided once, so the
 /// division's flag is the exact dyadicity verdict. `None` when the
 /// build overflows (the caller then uses the Ziv path).
+/// `B(1, b) = 1/b` (and `B(a, 1) = 1/a`) correctly rounded to
+/// `target_precision` under `mode`, with the division's `INEXACT` flag
+/// (`OK` iff the operand is a power of two). `None` unless one operand
+/// is exactly 1. The reciprocal is the exact value of `B` for the unit
+/// case, so this is correct for every operand, not only dyadic ones.
+fn try_beta_one_reciprocal(
+    a: &BigFloat,
+    b: &BigFloat,
+    target_precision: u32,
+    mode: RoundingMode,
+) -> Option<(BigFloat, Status)> {
+    let is_one = |x: &BigFloat| {
+        BigFloat::try_from_i64_exact(1, 1)
+            .ok()
+            .and_then(|one| x.partial_cmp(&one).0)
+            == Some(core::cmp::Ordering::Equal)
+    };
+    let reciprocal = |x: &BigFloat| -> Option<(BigFloat, Status)> {
+        BigFloat::try_from_i64_exact(1, target_precision)
+            .ok()?
+            .div_round(x, target_precision, mode)
+            .ok()
+    };
+    if is_one(a) {
+        return reciprocal(b);
+    }
+    if is_one(b) {
+        return reciprocal(a);
+    }
+    None
+}
+
 fn try_beta_pos_integer_exact(
     a: &BigFloat,
     b: &BigFloat,
@@ -394,9 +445,27 @@ fn try_beta_case4_exact(
 ) -> Option<(BigFloat, Status)> {
     let ne = RoundingMode::NearestEven;
     let one = BigFloat::try_from_i64_exact(1, BETA_EXACT_BUILD_PREC).ok()?;
-    let n = neg.negated(); // +n ≥ 1
-    let fm = factorial_below_exact(pos)?; // (m−1)!
-    let (n_minus_m, _) = n.sub(pos, ne); // n − m ≥ 0
+    // Lift n and m to the exact-build precision BEFORE the integer
+    // arithmetic: n and pos arrive at OPERAND precision, so `n − m` and
+    // the factorial arguments rounded there (B(−128@p1, 1@p1) computed
+    // n − m = 127 at p1 → rounded to 128, giving (128)!/128! · 0! = 1
+    // and returning −1 with OK where −1/128 is due; pf-ihsp, ADR-0118).
+    // The lift is exact for any integer that could pass
+    // factorial_below_exact's cap; a non-representable operand rounds
+    // inexactly and bails to the Ziv path.
+    let (n, ln) = neg
+        .negated()
+        .round_to_precision(BETA_EXACT_BUILD_PREC, ne)
+        .ok()?; // +n ≥ 1
+    if ln.inexact() {
+        return None;
+    }
+    let (pos, lp) = pos.round_to_precision(BETA_EXACT_BUILD_PREC, ne).ok()?;
+    if lp.inexact() {
+        return None;
+    }
+    let fm = factorial_below_exact(&pos)?; // (m−1)!
+    let (n_minus_m, _) = n.sub(&pos, ne); // n − m ≥ 0
     let (n_minus_m_plus_1, _) = n_minus_m.add(&one, ne);
     let fnm = factorial_below_exact(&n_minus_m_plus_1)?; // (n−m)!
     let (n_plus_1, _) = n.add(&one, ne);
@@ -405,7 +474,7 @@ fn try_beta_case4_exact(
     if status.inexact() {
         return None;
     }
-    let signed_num = if matches!(integer_parity(pos), Some(Parity::Odd)) {
+    let signed_num = if matches!(integer_parity(&pos), Some(Parity::Odd)) {
         num.negated()
     } else {
         num

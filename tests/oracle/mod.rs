@@ -55,5 +55,5 @@ pub use mpfr::MpfrOracle;
 pub use mpmath::MpmathOracle;
 pub use pfloat_kernels::pfloat_kernel;
 pub use status::{DomainCoverage, PerModeStatus, RoundingStatus, StatusRow};
-pub use types::{Enclosure, FnId, OracleBackend, Verdict};
+pub use types::{Enclosed, Enclosure, FnId, OracleBackend, Verdict};
 pub use verify::{certified_round_f32, verify_input, Kernel, MAX_PREC, START_PREC};

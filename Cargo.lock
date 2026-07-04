@@ -273,6 +273,7 @@ version = "1.0.0"
 dependencies = [
  "pfloat",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

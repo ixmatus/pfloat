@@ -210,6 +210,18 @@ fn bessel_i_kernel(
             (inf, Status::OK)
         }
         Class::Normal { .. } => {
+            // Resource budget (pf-ap01, ADR-0124): Miller backward
+            // recurrence runs O(m) steps at a working precision that grows
+            // with the order, so an attacker-controlled order is an
+            // unbounded DoS. Refuse an order past the feasible cap with
+            // NaN + INVALID (the exact x = 0 cases were dispatched above).
+            if m > super::bessel_j::MAX_BESSEL_ORDER {
+                let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+                    .expect("precision >= 1");
+                auto_raise(Status::INVALID);
+                return (nan, Status::INVALID);
+            }
+
             // I is entire: no domain restriction. Reduce to I_m(|x|)
             // with one argument-parity sign. Iₙ(−x) = (−1)ⁿ Iₙ(x);
             // I₋ₙ(x) = Iₙ(x) (no order sign). Negate exactly when m is

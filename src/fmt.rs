@@ -32,9 +32,10 @@
 //!
 //! A value whose `|decimal exponent|` exceeds
 //! [`MAX_FORMAT_DECIMAL_EXPONENT`] (value-matched to parse's
-//! `MAX_DECIMAL_EXPONENT`) has no bounded exact rendering, so it
-//! saturates the way parse does: too large to print reads back as
-//! `inf`, too small as `0` (ADR-0051). Within the cap the output
+//! `MAX_DECIMAL_EXPONENT`) has no bounded EXACT rendering, so it
+//! saturates to an APPROXIMATE order of magnitude `±1e{D}` (a finite is
+//! not `inf`; pf-nyfz, pf-f7vg, ADR-0120, superseding ADR-0051's `inf`/
+//! `0` token). Within the cap the output
 //! round-trips at the operand's own precision; it is not the
 //! shortest such string. The shortest round-trip output (Dragon4 /
 //! Steele-White) is `to_shortest_decimal_string` (ADR-0071).
@@ -70,31 +71,33 @@ use crate::fixed::FixedFloat;
 /// module builds under `big` alone. The cap is value-matched to parse's
 /// `MAX_DECIMAL_EXPONENT` (`src/parse.rs`) so the exactly-renderable
 /// range is exactly the range parse round-trips; past it a value
-/// saturates, mirroring parse's own `±inf` / `±0` saturation.
+/// renders an approximate finite magnitude `±1e{D}` rather than the old
+/// `±inf` / `±0` token (pf-nyfz, pf-f7vg, ADR-0120): a finite is not
+/// infinite, and the approximate order of magnitude is more honest for
+/// diagnostics and for `pfloat-ball`'s printed intervals. Parse's
+/// past-cap saturation is separately mode-aware (ADR-0117).
 const MAX_FORMAT_DECIMAL_EXPONENT: i64 = 1_000_000;
 
-/// How a finite value past [`MAX_FORMAT_DECIMAL_EXPONENT`] renders: too
-/// large to print reads back as `inf`, too small as `0`, matching parse.
-#[derive(Clone, Copy)]
-enum Saturation {
-    Infinite,
-    Zero,
-}
-
-/// Render a sign-carrying saturation token (`inf` / `-inf` / `0` / `-0`)
-/// for a finite value whose magnitude is past the format cap. The token
-/// is a resource bound, not an arithmetic claim that the value is
-/// infinite or zero; it is the value parse would itself produce for any
-/// decimal that large or small (ADR-0051).
-fn saturated_string(sign: Sign, kind: Saturation) -> String {
+/// Render a finite value past [`MAX_FORMAT_DECIMAL_EXPONENT`] as an
+/// APPROXIMATE order of magnitude `±1e{D}` rather than the misleading
+/// `inf`/`0` token the cap used to emit (a finite is not infinite;
+/// pf-nyfz, pf-f7vg, ADR-0120). `D` is the rational-`log10(2)` estimate
+/// of the decimal exponent (`approximate_log10_floor`), and the mantissa
+/// is not resolved — a **documented saturation**: `log10`/`exp10` are
+/// `exp-log`-gated out of this `big`-only module, so the exact digits
+/// have no bounded-cost rendering. The result is a valid, finite decimal
+/// literal conveying the magnitude order; its low-order exponent digits
+/// are approximate at astronomical magnitudes (the `30103/100000`
+/// residual), and it is not a directed bound (mode-independent).
+fn approximate_magnitude_string(sign: Sign, decimal_exp: i64) -> String {
+    use core::fmt::Write as _;
     let mut s = String::new();
     if matches!(sign, Sign::Negative) {
         s.push('-');
     }
-    s.push_str(match kind {
-        Saturation::Infinite => "inf",
-        Saturation::Zero => "0",
-    });
+    // `decimal_exp` carries its own sign (large negative for a tiny
+    // value), so `1e{decimal_exp}` renders `1e2770000…` or `1e-2770000…`.
+    let _ = write!(s, "1e{decimal_exp}");
     s
 }
 
@@ -271,11 +274,9 @@ fn format_normal(
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if decimal_exp_estimate > MAX_FORMAT_DECIMAL_EXPONENT {
-        return saturated_string(sign, Saturation::Infinite);
-    }
-    if decimal_exp_estimate < -MAX_FORMAT_DECIMAL_EXPONENT {
-        return saturated_string(sign, Saturation::Zero);
+    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
+    {
+        return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 
     let (digits, decimal_exp) = extract_digits(&m_int, scale, digit_count, mode, sign);
@@ -464,11 +465,9 @@ fn format_shortest(mantissa: &[u64], precision: u32, exponent: i64, sign: Sign) 
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if decimal_exp_estimate > MAX_FORMAT_DECIMAL_EXPONENT {
-        return saturated_string(sign, Saturation::Infinite);
-    }
-    if decimal_exp_estimate < -MAX_FORMAT_DECIMAL_EXPONENT {
-        return saturated_string(sign, Saturation::Zero);
+    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
+    {
+        return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 
     let (digits, decimal_exp) = dragon4(&m_int, precision, scale);
@@ -1043,26 +1042,38 @@ mod tests {
     }
 
     #[test]
-    fn format_cap_saturates_finite_huge_to_inf_and_zero() {
+    fn format_cap_renders_finite_huge_as_approximate_magnitude() {
         // 2^(2^40): finite (exponent ≈ 1.1e12 ≪ i64::MAX), decimal
-        // exponent ≈ 3.3e11 — far past the 1e6 cap. Must saturate to a
-        // bounded token, never panic or OOM (regression for finding 11).
+        // exponent ≈ 3.3e11 — far past the 1e6 cap. Must render an
+        // APPROXIMATE finite magnitude `±1e{D}`, never the misleading
+        // `inf`/`0` (pf-nyfz, pf-f7vg, ADR-0120), and never panic or OOM
+        // (regression for review finding 11).
         let ne = RoundingMode::NearestEven;
         let mut x = BigFloat::try_from_i64_exact(2, 53).unwrap();
         for _ in 0..40 {
             x = x.mul(&x, ne).0;
         }
         assert!(!x.is_infinite(), "2^(2^40) is finite, not Inf");
-        assert_eq!(x.to_decimal_string(17, ne), "inf");
-        assert_eq!(x.to_string(), "inf");
-        assert_eq!(x.negated().to_string(), "-inf");
+        let s = x.to_decimal_string(17, ne);
+        assert_ne!(s, "inf", "a finite must not render as inf");
+        assert!(
+            s.starts_with("1e3") && !s.contains('-'),
+            "2^(2^40) ~ 1e3.3e11, a large positive finite magnitude: {s}"
+        );
+        assert_eq!(x.to_string(), s, "Display agrees with to_decimal_string");
+        assert!(x.negated().to_string().starts_with("-1e3"));
 
         // 2^(-2^40): finite nonzero, decimal exponent ≈ -3.3e11.
         let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
         let tiny = one.div(&x, ne).0;
         assert!(!tiny.is_zero(), "2^(-2^40) is finite nonzero");
-        assert_eq!(tiny.to_string(), "0");
-        assert_eq!(tiny.negated().to_string(), "-0");
+        let ts = tiny.to_string();
+        assert_ne!(ts, "0", "a finite nonzero must not render as 0");
+        assert!(
+            ts.starts_with("1e-3"),
+            "2^(-2^40) ~ 1e-3.3e11, a tiny positive finite magnitude: {ts}"
+        );
+        assert!(tiny.negated().to_string().starts_with("-1e-3"));
     }
 
     #[test]
@@ -1088,7 +1099,12 @@ mod tests {
         );
 
         let over = under.mul(&under, ne).0; // 2^(2^22)
-        assert_eq!(over.to_string(), "inf", "just past the cap saturates");
+        let os = over.to_string();
+        assert_ne!(os, "inf", "just past the cap renders an approximate finite");
+        assert!(
+            os.starts_with("1e1") && os.len() > 3,
+            "2^(2^22) ~ 1e1.26e6, an approximate finite magnitude past the cap: {os}"
+        );
     }
 
     #[cfg(feature = "fixed")]

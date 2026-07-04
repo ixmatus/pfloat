@@ -115,23 +115,28 @@ impl Ball<BigFloat> {
         if !lo.is_finite() || !hi.is_finite() {
             return Err(BallParseError::NonFinite);
         }
-        // pfloat's parser saturates past-budget tiny magnitudes to ±0
-        // mode-blind (pf-mw6u) but flags UNDERFLOW; the directed pair
-        // then collapses to the exact [0, 0] ball, excluding the
-        // nonzero truth — Law 1 unsoundness (pf-1bqy, ADR-0099).
-        // Route the flagged collapse through a containing interval by
-        // replacing the collapsed end with a cheap decimal-magnitude
-        // bound: |value| < 10^(E + D + 1) ≤ 2^bound_exp for E the
-        // literal's decimal exponent and D its digit count. Loose
-        // (the truth is far below the bound) but sound; tightness
-        // returns when pf-mw6u lands a mode-aware parse.
+        // pfloat's parser saturates a past-budget tiny magnitude to a
+        // near-zero token and flags UNDERFLOW. Since pf-mw6u (ADR-0117)
+        // that token is mode-aware — the toward-zero end is ±0, the
+        // away-from-zero (outer) end is ±MinPos — but BOTH are still far
+        // too close to zero to bound the truth: a past-budget literal
+        // like `1e-2000000` has magnitude ~2^-6.6e6, astronomically
+        // larger than `MinPos = 2^(i64::MIN)`, so a ±MinPos outer end
+        // excludes it just as the old mode-blind ±0 did — Law 1
+        // unsoundness (pf-1bqy, ADR-0099). Replace the saturated OUTER
+        // end (hi for a positive literal, lo for a negative one) with a
+        // cheap decimal-magnitude bound `|value| < 10^(E + D + 1) ≤
+        // 2^bound_exp` (E the literal's decimal exponent, D its digit
+        // count). Loose but sound; the toward-zero end (±0) is already a
+        // sound inner bound. Keyed off the UNDERFLOW flag (the
+        // saturation verdict), not the token's exact value, so it stays
+        // correct under the mode-aware parse.
         if st_lo.underflow() || st_hi.underflow() {
             let bound = decimal_magnitude_bound(s, precision.max(1))?;
             let negative = s.trim_start().starts_with('-');
-            if negative && lo.is_zero() {
+            if negative {
                 lo = bound.negated();
-            }
-            if !negative && hi.is_zero() {
+            } else {
                 hi = bound;
             }
         }

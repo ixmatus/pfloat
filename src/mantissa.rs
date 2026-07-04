@@ -21,6 +21,36 @@ pub const fn limbs_for(precision: u32) -> usize {
     (precision as usize).div_ceil(64)
 }
 
+/// Compile-time proof that a const-generic precision is at least one
+/// bit. Returns `0` for every `precision >= 1` so it can sit in a
+/// zero-length array bound (`where [(); require_nonzero_precision(P)]:`)
+/// without enlarging the storage; the returned value is never read.
+///
+/// For `precision == 0` the `assert!` fails, and because this function
+/// is only ever evaluated inside a const-generic where-clause the
+/// failure surfaces as a compile error rather than a runtime panic.
+/// This is the mechanism that makes every `FixedFloat<0>` constructor
+/// a compile error (ADR-0119, pf-sn3n): a zero-significand-bit
+/// fixed-precision float is a nonsensical illegal state, so no value
+/// of it can be born.
+///
+/// Declared `pub` (like [`limbs_for`]) so that it is not "more
+/// private" than the public constructors whose where-clauses reference
+/// it (the `private_interfaces` lint). It is deliberately **not**
+/// re-exported from the crate root, and `mod mantissa` is private, so
+/// it adds nothing to the public API.
+#[allow(dead_code)] // consumed only by `fixed`'s const-generic bounds
+#[inline]
+#[must_use]
+pub const fn require_nonzero_precision(precision: u32) -> usize {
+    assert!(
+        precision >= 1,
+        "FixedFloat<0> is not a valid type: a fixed-precision float \
+         needs at least one significand bit (PREC >= 1)"
+    );
+    0
+}
+
 /// Internal abstraction over mantissa storage.
 ///
 /// Slice 1a defines the trait; slice 1c (Add/Sub) is the first

@@ -67,6 +67,12 @@ pfloat = { path = "..", default-features = false }
 # Optional serialization, gated behind `serde`.
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
 
+[dev-dependencies]
+# JSON round-trip + malformed-input rejection for the `serde` feature's
+# regression tests (`tests/regression_pf8iji.rs`, ADR-0116). Dev-only; not
+# in the shipped graph. Mirrors pfloat's serde test setup (ADR-0068).
+serde_json = "1"
+
 # The blocking FTIA self-consistency lane exercises the elementary
 # surface, so it builds only when `trig` is on.
 [[test]]

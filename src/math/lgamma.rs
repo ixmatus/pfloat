@@ -253,7 +253,23 @@ fn lgamma_at_w(x: &BigFloat, z_min: u32, working_prec: u32) -> BigFloat {
     // z_min must be re-derived from the boosted precision (a z_min
     // sized for the original target caps Stirling's truncation
     // accuracy no matter how far the working precision grows).
-    if in_positive_root_window(x) {
+    //
+    // A SECOND cancellation routes the positive branch through
+    // cancellation_boosted regardless of the root windows: the whole
+    // Spouge regime (working_prec > STIRLING_REACH_THRESHOLD), whose
+    // S-sum internal alternating cancellation grows with the argument
+    // (~0.1·w at z ≈ 2.5, ~0.4·w at z ≈ 1e6) and so is uncoverable by
+    // a fixed margin. spouge_lgamma_scaled reports that depth in its
+    // operand scale, but the non-window fall-through discarded it,
+    // violating the Ziv half-width and certifying a wrong VALUE
+    // (lgamma(5/2)@1024 → ~857 accurate bits where 1024 were promised;
+    // pf-rlrb, ADR-0111). The scale-driven iteration is the only sound
+    // recovery — the exact mechanism the digamma sibling adopted
+    // (pf-0r1l, ADR-0110) and the spouge_lgamma_scaled docstring
+    // mandates. Below the threshold the shift-Stirling path has no sum
+    // cancellation and runs directly (the differential_gamma lane,
+    // p ≤ 256 → working ≤ 320, stays on this fast path).
+    if in_positive_root_window(x) || working_prec > STIRLING_REACH_THRESHOLD {
         return super::ziv::cancellation_boosted(working_prec, |w| {
             lgamma_positive_at_w(x, z_min_for_target(w), w)
         });

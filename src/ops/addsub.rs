@@ -234,13 +234,19 @@ fn zero_plus_finite(
     target_precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
-    // operand is finite non-zero; re-round to target_precision and
-    // override the sign.
-    let (mut rounded, status) = operand
+    // operand is finite non-zero; re-round to target_precision under
+    // the EFFECTIVE (result) sign. Directed modes round relative to the
+    // true signed value, so rounding the stored-sign operand and
+    // flipping afterward mis-rounds when the effective sign differs:
+    // 0 − (2^60+1) under TowardPositive rounded the positive operand
+    // toward +∞ (to 2^60+256) then negated, landing away from zero at
+    // −(2^60+256) where −2^60 is due (pf-egxm). Apply the sign first so
+    // the rounding sees the correct direction.
+    let mut signed = operand.clone();
+    apply_sign_in_place(&mut signed, effective_sign);
+    signed
         .round_to_precision(target_precision, mode)
-        .expect("target_precision validated above");
-    apply_sign_in_place(&mut rounded, effective_sign);
-    (rounded, status)
+        .expect("target_precision validated above")
 }
 
 fn apply_sign_in_place(value: &mut BigFloat, new_sign: Sign) {
@@ -407,11 +413,23 @@ fn add_finite_finite(
     let result_exponent_i = i128::from(
         i64::try_from(leading_bit).expect("leading bit fits in i64 at any practical precision"),
     ) + common_scale;
-    let result_exponent = i64::try_from(result_exponent_i).unwrap_or(if result_exponent_i < 0 {
+    // Saturate the exponent to the i64 range, flagging OVERFLOW/UNDERFLOW
+    // like mul/div/fma/remainder/scale: pfloat has no emax, so an
+    // exponent of i64::MAX/i64::MIN is a saturated finite value, and the
+    // clamp is an inexact overflow/underflow that must set the sticky
+    // flag (a+a at exponent i64::MAX silently returned Status OK,
+    // pf-kh3z). Below the rims i64::try_from succeeds and the status
+    // stays OK.
+    let mut exp_saturation = Status::OK;
+    let result_exponent = if result_exponent_i > i128::from(i64::MAX) {
+        exp_saturation = Status::OVERFLOW;
+        i64::MAX
+    } else if result_exponent_i < i128::from(i64::MIN) {
+        exp_saturation = Status::UNDERFLOW;
         i64::MIN
     } else {
-        i64::MAX
-    });
+        i64::try_from(result_exponent_i).expect("checked to be in i64 range")
+    };
 
     // Build a normalized intermediate at intermediate_precision = leading_bit + 1
     // bits, top-bit-set.
@@ -438,7 +456,7 @@ fn add_finite_finite(
     );
 
     // Route through the rounding pipeline.
-    let (value, status) = round_finite_to_precision(
+    let (value, round_status) = round_finite_to_precision(
         result_sign,
         result_exponent,
         &intermediate,
@@ -448,6 +466,7 @@ fn add_finite_finite(
         mode,
     );
 
+    let status = round_status | exp_saturation;
     auto_raise(status);
     (value, status)
 }

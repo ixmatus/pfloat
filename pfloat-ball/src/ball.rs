@@ -21,8 +21,14 @@ use crate::scalar::RealScalar;
 /// Equality is structural (same `mid`, same `rad`), matching pfloat's
 /// scalar equality: `+0` and `−0` midpoints are distinct, as are two
 /// balls denoting the same interval through different `(mid, rad)` pairs.
+///
+/// `Deserialize` is hand-written (see below) rather than derived: the
+/// derive would admit a non-finite midpoint (NaN or `±∞`), violating the
+/// ball's core invariant that a midpoint is a finite real. The custom
+/// impl reconstructs through [`Ball::new`], which enforces it, and the
+/// `rad` field's own validating [`Mag`] deserialize guards the radius.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Ball<T> {
     mid: T,
     rad: Mag,
@@ -170,6 +176,44 @@ impl<T: RealScalar> Ball<T> {
         // mid is finite (sum of two finite values, halved); new() still
         // guards defensively.
         Self::new(mid, rad)
+    }
+}
+
+/// Validating [`Deserialize`](serde::Deserialize) for [`Ball<T>`].
+///
+/// Deserialize is a trust boundary. The derived impl would admit a NaN or
+/// `±∞` midpoint, breaking the finite-midpoint invariant; this impl routes
+/// the deserialized parts through [`Ball::new`], which rejects a
+/// non-finite midpoint, while the `rad` field is a [`Mag`] whose own
+/// validating deserialize (see `mag.rs`) revalidates the radius canonical
+/// form. Malformed input is rejected with a serde error, never silently
+/// coerced. Mirrors pfloat's `BigFloat` deserialize discipline
+/// (ADR-0068); ADR-0116.
+#[cfg(feature = "serde")]
+impl<'de, T> serde::Deserialize<'de> for Ball<T>
+where
+    T: RealScalar + serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A shadow struct with the identical wire form (same field names),
+        // deserialized without invariants and then validated through the
+        // normal constructor.
+        #[derive(serde::Deserialize)]
+        struct RawBall<T> {
+            mid: T,
+            rad: Mag,
+        }
+        let raw = RawBall::<T>::deserialize(deserializer)?;
+        // The only construction failure is a non-finite midpoint; the
+        // radius is already a validated `Mag`.
+        Ball::new(raw.mid, raw.rad).map_err(|_| {
+            serde::de::Error::custom(
+                "pfloat-ball: Ball midpoint must be finite (NaN or ±∞ rejected)",
+            )
+        })
     }
 }
 

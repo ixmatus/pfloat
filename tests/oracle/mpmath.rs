@@ -4,7 +4,8 @@
 //! shared code lineage with FLINT/Arb).
 //!
 //! Structurally identical to [`super::arb::ArbOracle`]: subprocess
-//! ownership, worker protocol, single-point [`Enclosure`] return.
+//! ownership, worker protocol, single-point [`Enclosed::Bracket`]
+//! return (or [`Enclosed::Inconclusive`] on the worker's `INC`).
 //! The two oracles must agree per input on the certified `f32`;
 //! any divergence is a strong signal that one of the two has a
 //! silent defect, since correlated bugs between two independent
@@ -32,7 +33,7 @@ use super::arb::{
     // We reuse ArbError to avoid duplicating the error enum; the
     // failure modes are identical.
 };
-use super::types::{Enclosure, FnId, OracleBackend};
+use super::types::{Enclosed, FnId, OracleBackend};
 
 /// Resolve the venv path: env var override, otherwise
 /// `${HOME}/.cache/pfloat-arb-oracle/venv` (same venv as the Arb
@@ -149,7 +150,7 @@ impl MpmathOracle {
 }
 
 impl OracleBackend for MpmathOracle {
-    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure {
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosed {
         let (fn_id, order) = super::arb::fnid_to_worker_args(f);
         let mode_str = mode_to_str(mode);
         let request = format!("{fn_id} {order} {input:08x} {mode_str}");

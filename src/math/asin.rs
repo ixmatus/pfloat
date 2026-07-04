@@ -105,6 +105,29 @@ fn asin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: asin(x) = x + x³/6 + … grows in magnitude (the +x³/6
+    // correction agrees with x's sign), so round x with that
+    // magnitude-growing infinitesimal directly — the ADR-0059/0104
+    // tiny-x pattern (pf-7nnw, ADR-0121). Past the Ziv guard cap the
+    // 1−x² composition collapses to x and directed modes returned x
+    // itself where asin(x) > x for x > 0. |x| ≤ 2^-(target+2) ≪ 1 is
+    // trivially in-domain; arm-failing inputs fall to the driver.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("special classes dispatched above"),
+    };
+    if e <= -(i64::from(target_precision) + 2)
+        && e.saturating_mul(-2) >= i64::from(x.precision).saturating_add(6)
+    {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            false, // asin(x) = x + x³/6: magnitude grows
+            target_precision,
+            mode,
+        );
+    }
+
     // Domain dispatch on |x| vs 1.
     let sign = x.sign();
     let abs_x = x.abs();

@@ -27,7 +27,7 @@ use rug::float::Round;
 use rug::ops::{AssignRound, CompleteRound};
 use rug::Float;
 
-use super::types::{Enclosure, FnId, OracleBackend};
+use super::types::{Enclosed, Enclosure, FnId, OracleBackend};
 
 /// In-process MPFR-backed oracle. A unit struct: `rug` carries no
 /// per-backend state, so one `MpfrOracle` value serves every call.
@@ -167,13 +167,18 @@ impl OracleBackend for MpfrOracle {
         input: u32,
         _mode: pfloat::RoundingMode,
         working_prec: u32,
-    ) -> Enclosure {
+    ) -> Enclosed {
         // Convert the f32 bit pattern exactly into a high-precision
         // Float; an f32 is representable without rounding at any
         // precision >= 24, so working_prec >= 64 (Phase 1's
         // START_PREC) is comfortably exact.
+        //
+        // MPFR always produces a directed-rounding bracket (it never
+        // abstains), so every arm yields an `Enclosed::Bracket`; the
+        // `Inconclusive` outcome is reserved for the authoritative
+        // Arb worker's `INC` reply (pf-41ou).
         let x = Float::with_val(working_prec, f32::from_bits(input));
-        match f {
+        Enclosed::Bracket(match f {
             // Elementary.
             FnId::Sqrt => bracket!(x, working_prec, sqrt_ref),
             FnId::Cbrt => bracket!(x, working_prec, cbrt_ref),
@@ -240,7 +245,7 @@ impl OracleBackend for MpfrOracle {
             | FnId::Csc => {
                 unimplemented!("FnId::{f:?} requires the Arb backend")
             }
-        }
+        })
     }
 
     fn name(&self) -> &'static str {

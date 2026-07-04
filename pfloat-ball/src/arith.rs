@@ -265,11 +265,15 @@ impl<T: RealScalar> Ball<T> {
             alo
         };
 
-        let lo_out = domain_lo.sqrt(TN).0; // √lo rounded down
-        let hi_out = ahi.sqrt(TP).0; // √hi rounded up
+        // √ is contractive toward 1, so a finite non-negative input never
+        // overflows: the endpoints stay finite and ordered, and the kernel
+        // status carries only INEXACT. Thread it (Law 5, ADR-0116) rather
+        // than dropping it on the floor.
+        let (lo_out, st_lo) = domain_lo.sqrt(TN); // √lo rounded down
+        let (hi_out, st_hi) = ahi.sqrt(TP); // √hi rounded up
         let ball =
             Self::from_interval(&lo_out, &hi_out).expect("√ endpoints are finite and ordered");
-        (ball, status)
+        (ball, status | st_lo | st_hi)
     }
 
     /// `∛self`. Total and increasing (defined for negatives too), so
@@ -284,10 +288,15 @@ impl<T: RealScalar> Ball<T> {
         }
         let a = self.midpoint();
         let ra = T::radius_to_scalar(self.radius());
-        let lo = a.sub(&ra, TN).0.cbrt(TN).0;
-        let hi = a.add(&ra, TP).0.cbrt(TP).0;
+        let (lo, st_lo) = a.sub(&ra, TN).0.cbrt(TN);
+        let (hi, st_hi) = a.add(&ra, TP).0.cbrt(TP);
+        // ∛ is total and contractive toward 1, so a finite input yields
+        // finite ordered endpoints and the kernel status carries only
+        // INEXACT; thread it (Law 5, ADR-0116). The `unwrap_or_else` is an
+        // unreachable safety net that stays sound (entire) were an
+        // endpoint ever non-finite.
         let ball = Self::from_interval(&lo, &hi).unwrap_or_else(|_| Self::entire(prec));
-        (ball, Status::OK)
+        (ball, st_lo | st_hi)
     }
 }
 

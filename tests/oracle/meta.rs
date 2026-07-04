@@ -8,25 +8,19 @@
 //! Compilation: this module is gated under `differential-mpfr` (the
 //! base feature; MPFR backend is always present in the oracle
 //! harness). The Arb backend is opt-in via `differential-arb`; when
-//! absent, the Arb-primary `FnId`s route through a NaN-enclosure
-//! fallback that propagates as `Verdict::OracleInconclusive`
-//! downstream (the verifier's `certified_round_f32` returns
-//! `Some(f32::NAN)` only when *both* endpoints are NaN, which the
-//! pfloat-side `kernel(f, input, mode)` will not match unless
-//! pfloat also returns NaN — i.e. the inconclusive verdict is
-//! honest about the absence of an oracle for the `FnId`).
+//! absent, the Arb-primary `FnId`s route through a fallback that
+//! returns [`Enclosed::Inconclusive`], which the verifier maps to
+//! `Verdict::OracleInconclusive`. That is honest about the absence
+//! of an oracle for the `FnId` and, unlike the earlier NaN-enclosure
+//! fallback, cannot be mistaken for a certified NaN that a NaN
+//! kernel output would silently match (pf-41ou).
 
 #![cfg(all(unix, feature = "differential-mpfr"))]
 
 #[cfg(feature = "differential-arb")]
 use super::arb::{ArbError, ArbOracle};
 use super::mpfr::MpfrOracle;
-use super::types::{Enclosure, FnId, OracleBackend};
-
-#[cfg(not(feature = "differential-arb"))]
-use rug::float::Special;
-#[cfg(not(feature = "differential-arb"))]
-use rug::Float;
+use super::types::{Enclosed, FnId, OracleBackend};
 
 /// Errors `MetaOracle::new` can surface. Today the only failure
 /// mode is the Arb backend's setup error; when the
@@ -95,13 +89,20 @@ impl MetaOracle {
         }
     }
 
-    /// Dispatch to the Arb backend when available, otherwise return
-    /// a NaN enclosure (the verifier will then report
-    /// `Verdict::OracleInconclusive` since the pfloat kernel's
-    /// output will not match the certified `Some(f32::NAN)` unless
-    /// the pfloat kernel also returns NaN). The `&self` argument
-    /// stays for signature parity with the `differential-arb` arm
-    /// where it dispatches to the owned `ArbOracle`.
+    /// Dispatch to the Arb backend when available, otherwise report
+    /// [`Enclosed::Inconclusive`]: without the `differential-arb`
+    /// feature no oracle exists for the Arb-primary `FnId`s, so the
+    /// honest answer is "could not certify," which the verifier maps
+    /// to `Verdict::OracleInconclusive`. The `&self` argument stays
+    /// for signature parity with the `differential-arb` arm where it
+    /// dispatches to the owned `ArbOracle`.
+    ///
+    /// The earlier fallback returned a NaN-endpoint enclosure and
+    /// leaned on the verifier reading it as a certified NaN that the
+    /// kernel would fail to match; that shared the pf-41ou conflation
+    /// (a NaN kernel output would have matched and counted as `Ok`,
+    /// masking the absence of an oracle). `Inconclusive` is the
+    /// unambiguous signal.
     #[cfg(feature = "differential-arb")]
     fn enclose_arb(
         &self,
@@ -109,7 +110,7 @@ impl MetaOracle {
         input: u32,
         mode: pfloat::RoundingMode,
         working_prec: u32,
-    ) -> Enclosure {
+    ) -> Enclosed {
         self.arb.enclose(f, input, mode, working_prec)
     }
 
@@ -120,13 +121,9 @@ impl MetaOracle {
         _f: FnId,
         _input: u32,
         _mode: pfloat::RoundingMode,
-        working_prec: u32,
-    ) -> Enclosure {
-        let nan = Float::with_val(working_prec, Special::Nan);
-        Enclosure {
-            lo: nan.clone(),
-            hi: nan,
-        }
+        _working_prec: u32,
+    ) -> Enclosed {
+        Enclosed::Inconclusive
     }
 }
 
@@ -137,7 +134,7 @@ impl OracleBackend for MetaOracle {
         input: u32,
         mode: pfloat::RoundingMode,
         working_prec: u32,
-    ) -> Enclosure {
+    ) -> Enclosed {
         if is_arb_primary(f) {
             self.enclose_arb(f, input, mode, working_prec)
         } else {

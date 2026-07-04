@@ -17,10 +17,10 @@ mod oracle;
 
 use oracle::{
     bf24_of_bits, bf_to_f32_bits, certified_round_f32, pfloat_kernel, round_f32, verify_input,
-    Enclosure, FnId, Kernel, MpfrOracle, Verdict, MAX_PREC, START_PREC,
+    Enclosed, Enclosure, FnId, Kernel, MpfrOracle, OracleBackend, Verdict, MAX_PREC, START_PREC,
 };
 use pfloat::RoundingMode;
-use rug::float::Round;
+use rug::float::{Round, Special};
 use rug::Float;
 
 const NE: RoundingMode = RoundingMode::NearestEven;
@@ -246,6 +246,97 @@ fn verify_sqrt_dense_sweep_first_1024_normals_returns_ok() {
     assert_eq!(
         inconclusive, 0,
         "sqrt sweep had {inconclusive} inconclusives"
+    );
+}
+
+// --- pf-41ou: an inconclusive oracle must not count as agreement ---
+
+/// An authoritative backend that always abstains (returns
+/// [`Enclosed::Inconclusive`]), standing in for the Arb worker's
+/// `INC` reply without needing a live python-flint subprocess.
+struct AlwaysInconclusive;
+
+impl OracleBackend for AlwaysInconclusive {
+    fn enclose(&self, _f: FnId, _input: u32, _mode: RoundingMode, _working_prec: u32) -> Enclosed {
+        Enclosed::Inconclusive
+    }
+    fn name(&self) -> &'static str {
+        "always-inconclusive"
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+}
+
+/// An authoritative backend that certifies a genuinely-NaN true
+/// value: a single-point [`Enclosed::Bracket`] with NaN endpoints.
+/// This is the outcome the old code could not tell apart from `INC`.
+struct CertifiesNan;
+
+impl OracleBackend for CertifiesNan {
+    fn enclose(&self, _f: FnId, _input: u32, _mode: RoundingMode, working_prec: u32) -> Enclosed {
+        let nan = Float::with_val(working_prec, Special::Nan);
+        Enclosed::Bracket(Enclosure {
+            lo: nan.clone(),
+            hi: nan,
+        })
+    }
+    fn name(&self) -> &'static str {
+        "certifies-nan"
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+}
+
+/// The regression this fix guards: even when the kernel returns NaN,
+/// an inconclusive oracle verdict must surface as
+/// `OracleInconclusive`, never `Ok`. Before pf-41ou the `INC` reply
+/// became a `(NaN, NaN)` enclosure that `certified_round_f32` read as
+/// a certified NaN, so a NaN kernel output matched it and the verdict
+/// was silently `Ok` — an inconclusive oracle masquerading as
+/// agreement.
+#[test]
+fn inconclusive_oracle_does_not_count_as_ok_even_when_kernel_returns_nan() {
+    let o = AlwaysInconclusive;
+    // Kernel returns a NaN bit pattern; under the old conflation this
+    // "agreed" with the NaN certified answer and produced Verdict::Ok.
+    let nan_kernel = |_f: FnId, _input: u32, _mode: RoundingMode| f32::NAN.to_bits();
+    let k: &Kernel = &nan_kernel;
+    let v = verify_input(&o, FnId::Si, 0x3f80_0000, NE, k);
+    assert!(
+        matches!(v, Verdict::OracleInconclusive { .. }),
+        "inconclusive oracle must yield OracleInconclusive, got {v:?}"
+    );
+}
+
+/// The complementary half: a *certified* NaN is distinct from `INC`
+/// and must still match a NaN kernel output as `Ok`. This proves the
+/// fix separates the two outcomes rather than blanket-rejecting NaN.
+#[test]
+fn certified_nan_still_matches_a_nan_kernel_as_ok() {
+    let o = CertifiesNan;
+    let nan_kernel = |_f: FnId, _input: u32, _mode: RoundingMode| f32::NAN.to_bits();
+    let k: &Kernel = &nan_kernel;
+    let v = verify_input(&o, FnId::Si, 0x3f80_0000, NE, k);
+    assert!(
+        matches!(v, Verdict::Ok),
+        "certified NaN vs NaN kernel must be Ok, got {v:?}"
+    );
+}
+
+/// A certified NaN against a *non-NaN* kernel output is a genuine
+/// disagreement (`Mismatch`), not an inconclusive result: the oracle
+/// knows the answer is NaN and the kernel produced something else.
+#[test]
+fn certified_nan_vs_finite_kernel_is_a_mismatch() {
+    let o = CertifiesNan;
+    let finite_kernel = |_f: FnId, _input: u32, _mode: RoundingMode| 1.0_f32.to_bits();
+    let k: &Kernel = &finite_kernel;
+    let v = verify_input(&o, FnId::Si, 0x3f80_0000, NE, k);
+    assert!(
+        matches!(v, Verdict::Mismatch { .. }),
+        "certified NaN vs finite kernel must be Mismatch, got {v:?}"
     );
 }
 

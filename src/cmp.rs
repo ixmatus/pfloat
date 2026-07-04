@@ -81,29 +81,22 @@ impl BigFloat {
     /// raises [`Status::INVALID`] and returns a quiet NaN.
     #[must_use]
     pub fn min(&self, other: &Self) -> (Self, Status) {
-        if self.is_signaling_nan() || other.is_signaling_nan() {
-            // Return a quiet NaN at the higher of the two precisions.
-            // Slice 1b's NaN-payload-propagation rules are minimal:
-            // empty payload, positive sign. The arithmetic kernels
-            // (1c+) refine payload propagation per IEEE 754-2019 §6.2.3.
-            let prec = self.precision.max(other.precision);
-            let nan = BigFloat::try_new_quiet_nan(Sign::Positive, prec, &[])
-                .expect("BigFloat invariant: precision >= 1");
-            crate::status::auto_raise(Status::INVALID);
-            return (nan, Status::INVALID);
-        }
-        if self.is_quiet_nan() && other.is_quiet_nan() {
-            return (self.clone(), Status::OK);
-        }
-        if self.is_quiet_nan() {
-            return (other.clone(), Status::OK);
-        }
-        if other.is_quiet_nan() {
-            return (self.clone(), Status::OK);
+        // IEEE 754-2019 §9.6 minimumNumber (C23 fminimum_num, N3088
+        // 7.12.12.9 / F.10.9.5): a NaN argument is missing data — return
+        // the NUMBER when the other is a number; a signaling-NaN argument
+        // raises INVALID (even though the number is returned); only a
+        // both-NaN pair returns a quiet NaN. This replaces the withdrawn
+        // 754-2008 minNum, whose "sNaN and the NaN wins" rule was
+        // non-associative (pf-l5en, ADR-0123). §9.6 also fixes the signed-
+        // zero order: −0 < +0.
+        if let Some(r) = nan_number_reduce(self, other) {
+            return r;
         }
         match numeric_cmp_no_nan(self, other) {
-            Ordering::Less | Ordering::Equal => (self.clone(), Status::OK),
+            Ordering::Less => (self.clone(), Status::OK),
             Ordering::Greater => (other.clone(), Status::OK),
+            // Equal magnitudes (including ±0): −0 is the minimum.
+            Ordering::Equal => (min_signed_zero(self, other), Status::OK),
         }
     }
 
@@ -113,31 +106,82 @@ impl BigFloat {
     /// Symmetric to [`min`](Self::min).
     #[must_use]
     pub fn max(&self, other: &Self) -> (Self, Status) {
-        if self.is_signaling_nan() || other.is_signaling_nan() {
-            let prec = self.precision.max(other.precision);
-            let nan = BigFloat::try_new_quiet_nan(Sign::Positive, prec, &[])
-                .expect("BigFloat invariant: precision >= 1");
-            // Mirror `min`: a signaling-NaN operand must also raise the
-            // std thread-local INVALID, not only the returned Status
-            // (the status.rs "both patterns identical" invariant).
-            // Review 2026-05-29.
-            crate::status::auto_raise(Status::INVALID);
-            return (nan, Status::INVALID);
-        }
-        if self.is_quiet_nan() && other.is_quiet_nan() {
-            return (self.clone(), Status::OK);
-        }
-        if self.is_quiet_nan() {
-            return (other.clone(), Status::OK);
-        }
-        if other.is_quiet_nan() {
-            return (self.clone(), Status::OK);
+        // §9.6 maximumNumber (C23 fmaximum_num, N3088 7.12.12.8 /
+        // F.10.9.5): mirror of `min` — the NaN-as-missing-data rule with
+        // sNaN raising INVALID, and +0 > −0 (pf-l5en, ADR-0123).
+        if let Some(r) = nan_number_reduce(self, other) {
+            return r;
         }
         match numeric_cmp_no_nan(self, other) {
-            Ordering::Greater | Ordering::Equal => (self.clone(), Status::OK),
+            Ordering::Greater => (self.clone(), Status::OK),
             Ordering::Less => (other.clone(), Status::OK),
+            // Equal magnitudes (including ±0): +0 is the maximum.
+            Ordering::Equal => (max_signed_zero(self, other), Status::OK),
         }
     }
+}
+
+/// Shared NaN handling for `min`/`max` under IEEE 754-2019 §9.6
+/// `minimumNumber`/`maximumNumber`: `None` if neither operand is NaN;
+/// otherwise the number when exactly one is NaN (INVALID iff the NaN is
+/// signaling), or a quiet NaN when both are NaN (INVALID iff either is
+/// signaling). A signaling NaN also raises the thread-local INVALID.
+fn nan_number_reduce(a: &BigFloat, b: &BigFloat) -> Option<(BigFloat, Status)> {
+    let a_nan = a.is_nan();
+    let b_nan = b.is_nan();
+    if !a_nan && !b_nan {
+        return None;
+    }
+    let signaling = a.is_signaling_nan() || b.is_signaling_nan();
+    if signaling {
+        crate::status::auto_raise(Status::INVALID);
+    }
+    if a_nan && b_nan {
+        let prec = a.precision.max(b.precision);
+        let nan = BigFloat::try_new_quiet_nan(Sign::Positive, prec, &[])
+            .expect("BigFloat invariant: precision >= 1");
+        let status = if signaling {
+            Status::INVALID
+        } else {
+            Status::OK
+        };
+        return Some((nan, status));
+    }
+    // Exactly one is NaN: return the number (the non-NaN operand).
+    let number = if a_nan { b } else { a };
+    let status = if signaling {
+        Status::INVALID
+    } else {
+        Status::OK
+    };
+    Some((number.clone(), status))
+}
+
+/// The minimum of two numerically-equal values: `−0 < +0`, so for a pair
+/// of signed zeros return the negative one; equal non-zeros are
+/// interchangeable (return the first).
+fn min_signed_zero(a: &BigFloat, b: &BigFloat) -> BigFloat {
+    if a.is_zero() && b.is_zero() {
+        return if a.is_sign_negative() {
+            a.clone()
+        } else {
+            b.clone()
+        };
+    }
+    a.clone()
+}
+
+/// The maximum of two numerically-equal values: `+0 > −0`, so for a pair
+/// of signed zeros return the positive one.
+fn max_signed_zero(a: &BigFloat, b: &BigFloat) -> BigFloat {
+    if a.is_zero() && b.is_zero() {
+        return if a.is_sign_negative() {
+            b.clone()
+        } else {
+            a.clone()
+        };
+    }
+    a.clone()
 }
 
 /// Map a [`Class`] variant to a kind-tag for total ordering.
@@ -220,7 +264,14 @@ fn total_cmp_within_kind(a: &Class, b: &Class) -> Ordering {
                 ..
             },
         ) => {
-            let raw = limb_cmp_aligned(pa, pb);
+            // Payloads are LSB-anchored (`pad_payload` stores them in the
+            // low limbs, zero-extended at the HIGH end), unlike the
+            // left-aligned mantissas `limb_cmp_aligned` handles. Comparing
+            // a payload MSB-aligned made two equal payloads at different
+            // precisions (different limb counts) compare unequal — the
+            // value V sat at limb 0 of both, but top-aligning offset it
+            // (pf-qe5c, ADR-0123). Compare LSB-anchored instead.
+            let raw = limb_cmp_lsb_aligned(pa, pb);
             // Negative-signed NaNs reverse the encoding order:
             // a "more negative" NaN has the larger encoding, so we
             // flip the comparison.
@@ -334,6 +385,26 @@ pub(crate) fn magnitude_cmp(a: &BigFloat, b: &BigFloat) -> Ordering {
 /// Both inputs are expected to be in canonical form (top-bit-set
 /// for normalized non-zero mantissas; LSL-padding zeros for the
 /// precision granularity invariant).
+/// Compare two LSB-anchored limb slices (NaN payloads) as unsigned
+/// integers: limb `i` holds bits `[64i, 64i+64)`, so the most
+/// significant limb is the highest index, and a missing high limb is
+/// zero. Equal payloads at different precisions (different limb counts)
+/// therefore compare equal, unlike the MSB-aligned `limb_cmp_aligned`
+/// used for left-aligned mantissas (pf-qe5c).
+#[cfg(feature = "big")]
+fn limb_cmp_lsb_aligned(a: &[u64], b: &[u64]) -> Ordering {
+    let len = a.len().max(b.len());
+    for i in (0..len).rev() {
+        let av = a.get(i).copied().unwrap_or(0);
+        let bv = b.get(i).copied().unwrap_or(0);
+        let ord = av.cmp(&bv);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
+}
+
 #[cfg(feature = "big")]
 fn limb_cmp_aligned(a: &[u64], b: &[u64]) -> Ordering {
     let len = a.len().max(b.len());
@@ -360,6 +431,63 @@ fn limb_cmp_aligned(a: &[u64], b: &[u64]) -> Ordering {
 #[cfg(feature = "big")]
 mod tests {
     use super::*;
+
+    /// pf-l5en (ADR-0123): IEEE 754-2019 §9.6 minimumNumber/maximumNumber
+    /// fix the signed-zero order (−0 < +0) deterministically, replacing
+    /// the withdrawn 754-2008 minNum's order-dependent result.
+    #[test]
+    fn min_max_signed_zero_is_deterministic() {
+        let pz = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
+        let nz = BigFloat::try_new_zero(Sign::Negative, 53).unwrap();
+        // min(+0, −0) = −0 and min(−0, +0) = −0 (order-independent).
+        assert!(pz.min(&nz).0.is_sign_negative(), "min(+0,-0) = -0");
+        assert!(nz.min(&pz).0.is_sign_negative(), "min(-0,+0) = -0");
+        // max(−0, +0) = +0 and max(+0, −0) = +0.
+        assert!(!nz.max(&pz).0.is_sign_negative(), "max(-0,+0) = +0");
+        assert!(!pz.max(&nz).0.is_sign_negative(), "max(+0,-0) = +0");
+    }
+
+    /// pf-l5en (ADR-0123): §9.6 minimumNumber returns the NUMBER and
+    /// raises INVALID for a signaling-NaN argument (the 754-2019
+    /// replacement for minNum's sNaN-wins rule).
+    #[test]
+    fn min_max_signaling_nan_returns_the_number() {
+        let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        let snan = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[1]).unwrap();
+        let (r, st) = snan.min(&one);
+        assert_eq!(
+            r.partial_cmp(&one).0,
+            Some(Ordering::Equal),
+            "min(sNaN,1) = 1"
+        );
+        assert!(st.invalid(), "sNaN argument raises INVALID");
+        // A quiet NaN returns the number with NO flag.
+        let qnan = BigFloat::try_new_quiet_nan(Sign::Positive, 53, &[]).unwrap();
+        let (rq, stq) = qnan.max(&one);
+        assert_eq!(
+            rq.partial_cmp(&one).0,
+            Some(Ordering::Equal),
+            "max(qNaN,1) = 1"
+        );
+        assert!(stq.is_ok(), "quiet NaN raises nothing");
+    }
+
+    /// pf-qe5c (ADR-0123): equal NaN payloads at different precisions
+    /// must compare equal under `total_cmp` — payloads are LSB-anchored,
+    /// so the comparison aligns from the low limb, not the top.
+    #[test]
+    fn total_cmp_equal_payload_across_precisions() {
+        let a = BigFloat::try_new_quiet_nan(Sign::Positive, 53, &[42]).unwrap();
+        let b = BigFloat::try_new_quiet_nan(Sign::Positive, 300, &[42]).unwrap();
+        assert_eq!(
+            a.total_cmp(&b),
+            Ordering::Equal,
+            "same payload 42 at p53 vs p300 must be total_cmp-equal"
+        );
+        // A genuinely larger payload still orders after.
+        let c = BigFloat::try_new_quiet_nan(Sign::Positive, 300, &[43]).unwrap();
+        assert_eq!(a.total_cmp(&c), Ordering::Less, "payload 42 < payload 43");
+    }
 
     fn at_each_precision<F: Fn(u32)>(f: F) {
         for &p in &[1, 53, 113, 256] {
@@ -528,11 +656,17 @@ mod tests {
         let (m3, s3) = q.min(&q);
         assert!(m3.is_quiet_nan());
         assert!(s3.is_ok());
-        // sNaN: raises INVALID and returns qNaN.
-        let s_nan = BigFloat::try_new_signaling_nan(Sign::Positive, p, &[]).unwrap();
+        // sNaN: IEEE 754-2019 §9.6 minimumNumber returns the NUMBER and
+        // raises INVALID (the 754-2019 replacement for minNum, which
+        // returned a qNaN; pf-l5en, ADR-0123).
+        let s_nan = BigFloat::try_new_signaling_nan(Sign::Positive, p, &[1]).unwrap();
         let (m4, s4) = s_nan.min(&one);
-        assert!(m4.is_quiet_nan());
+        assert_eq!(m4, one, "min(sNaN, 1) = 1 (§9.6, not qNaN)");
         assert!(s4.invalid());
+        // Both NaN with one signaling: a quiet NaN is returned + INVALID.
+        let (m5, s5) = s_nan.min(&q);
+        assert!(m5.is_quiet_nan());
+        assert!(s5.invalid());
     }
 
     #[test]

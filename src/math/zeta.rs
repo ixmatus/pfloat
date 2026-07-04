@@ -215,6 +215,40 @@ fn zeta_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
                 );
             }
 
+            // Near s = 0 from below (s < 0, |s| tiny): the functional
+            // equation is a 0·∞ indeterminate form — sin(πs/2) → 0 while
+            // ζ(1 − s) approaches the pole at 1 — and for |s| deeper than
+            // the FE working-precision cap can resolve, 1 − s rounds onto
+            // the pole and the reflected Borwein evaluation returns an
+            // honest NaN (pf-qt7v, ADR-0112). But ζ(s) = −1/2 −
+            // (1/2)ln(2π)·s + O(s²) near 0, so for s < 0 with
+            // |s| < 2^−(target+3) the value is −1/2 + δ with
+            // 0 < δ < |s| < 2^−(target+3), strictly below the half-ulp
+            // 2^−(target+2) of the neighbour above −1/2. The correctly-
+            // rounded result is then a pure function of the mode
+            // (NE/NA/TN → −1/2, TP/TZ → nextUp(−1/2)), returned directly
+            // and DoS-free by round_with_infinitesimal on the exact base
+            // −1/2 with a magnitude-shrinking infinitesimal. The bound
+            // δ < |s| holds for all s ∈ [−2^−4, 0) (ζ(s)+1/2 ∈
+            // (0.86, 0.92)·|s|, verified vs mpmath 1.4.1); the trigger
+            // e_s ≤ −(target+4) keeps |s| ≤ 2^−5 well inside that range
+            // and fires strictly before the FE cap (target+4096+prec)
+            // could NaN, so it is complete over every NaN'ing input and
+            // agrees with the FE path's slow-but-correct value elsewhere.
+            if matches!(x.sign(), Sign::Negative)
+                && exponent_of(x) <= -(i64::from(target_precision).saturating_add(4))
+            {
+                let two = ci(2, target_precision);
+                let (half, _) = ci(-1, target_precision).div(&two, RoundingMode::NearestEven);
+                return crate::rounding::round_with_infinitesimal(
+                    &half,
+                    Sign::Negative,
+                    true,
+                    target_precision,
+                    mode,
+                );
+            }
+
             // Ziv-driven correct rounding under every IEEE mode. The
             // eval closure dispatches on sign(s) (binary, mode- and
             // precision-independent) to zeta_borwein (s > 0) or

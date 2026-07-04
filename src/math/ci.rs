@@ -24,7 +24,10 @@
 //! - `Ci(+0) = −∞`, raising `DIV_BY_ZERO` (a pole: `Ci(x) ∼ γ + ln x`
 //!   as `x → 0⁺`).
 //! - `Ci(+∞) = +0`.
-//! - `x < 0` (and `−∞`, `−0`) ⇒ `NaN` + `INVALID` (complex in the
+//! - `Ci(±0) = −∞` + `DIV_BY_ZERO` (a pole for BOTH zero signs:
+//!   `γ + ln x → −∞`, and `log(±0) = −∞` groups `−0` with the pole per
+//!   IEEE 754-2019 §9.2 / C11 F.10.3.7; pf-k8ax, ADR-0123).
+//! - `x < 0` (and `−∞`) ⇒ `NaN` + `INVALID` (complex in the
 //!   reals; supersedes any "Ci is even" shorthand).
 //! - `Ci(NaN) = NaN`; `sNaN` raises `INVALID`.
 

@@ -35,7 +35,7 @@ use crate::big::BigFloat;
 use crate::big::Parts;
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
-use crate::status::Status;
+use crate::status::{auto_raise, Status};
 
 /// Static description of an IEEE 754 binary interchange format,
 /// shared by the `f32` and `f64` conversion paths.
@@ -130,7 +130,22 @@ fn from_ieee(sign_neg: bool, exp_field: u32, mant_field: u64, fmt: &Format) -> B
         if mant_field == 0 {
             return BigFloat::try_new_infinity(sign, fmt.prec).expect("precision valid");
         }
-        return BigFloat::try_new_quiet_nan(sign, fmt.prec, &[]).expect("precision valid");
+        // NaN: preserve the signaling bit AND the payload verbatim — a
+        // LOSSLESS representation embed in the IEEE §5.5.1 quiet-copy
+        // class (like copysign/abs, which do not signal on sNaN), NOT a
+        // §5.4.2 convertFormat arithmetic op. from_f32/f64 return a bare
+        // BigFloat with no Status, so they cannot honestly signal, and
+        // BigFloat represents sNaN + payload exactly; quieting would
+        // destroy information the docstring promises to keep (pf-jd4s,
+        // ADR-0123). The quiet bit is the top mantissa bit; the low
+        // `mant_bits − 1` bits are the payload, LSB-anchored.
+        let quiet_bit = 1u64 << (fmt.mant_bits - 1);
+        let payload = [mant_field & (quiet_bit - 1)];
+        return if mant_field & quiet_bit != 0 {
+            BigFloat::try_new_quiet_nan(sign, fmt.prec, &payload).expect("precision valid")
+        } else {
+            BigFloat::try_new_signaling_nan(sign, fmt.prec, &payload).expect("precision valid")
+        };
     }
 
     // (integer mantissa, binary scale): value = mantissa * 2^scale.
@@ -226,8 +241,17 @@ fn to_ieee(value: &BigFloat, mode: RoundingMode, fmt: &Format) -> (u64, Status) 
                         return (bits, status | ovf);
                     }
                     let bits = encode(neg, er, mantissa[0], fmt);
-                    // IEEE underflow: tiny (subnormal) and inexact.
-                    if er < fmt.emin && status.inexact() {
+                    // IEEE 754 §7.5 underflow: tininess detected BEFORE
+                    // rounding (the recommended default) AND inexact. The
+                    // value is tiny before rounding iff its own exponent
+                    // is below the format's `emin` (|value| < 2^emin);
+                    // testing the DELIVERED exponent `er` missed the case
+                    // where a subnormal input rounds UP to the smallest
+                    // normal (er == emin) yet was tiny before rounding
+                    // (to_f32(2^-126 − 3·2^-152) → 2^-126 flagged INEXACT
+                    // only; pf-k08c). Both detection methods call this
+                    // input tiny; we adopt before-rounding uniformly.
+                    if exponent < fmt.emin && status.inexact() {
                         status |= Status::UNDERFLOW;
                     }
                     (bits, status)
@@ -384,6 +408,11 @@ impl BigFloat {
     /// double rounding occurs even in the subnormal range.
     pub fn to_f32_round(&self, mode: RoundingMode) -> (f32, Status) {
         let (bits, status) = to_ieee(self, mode, &F32);
+        // Feed the thread-local sticky-flag lane the docstring promises;
+        // every arithmetic kernel auto-raises, and a signaling-NaN
+        // conversion's INVALID (and INEXACT/OVER/UNDERFLOW) must reach
+        // `flags::test()`, not only the per-call Status (pf-sjgh).
+        auto_raise(status);
         (f32::from_bits(bits as u32), status)
     }
 
@@ -392,6 +421,7 @@ impl BigFloat {
     /// grid contract holds.
     pub fn to_f64_round(&self, mode: RoundingMode) -> (f64, Status) {
         let (bits, status) = to_ieee(self, mode, &F64);
+        auto_raise(status);
         (f64::from_bits(bits), status)
     }
 
@@ -412,6 +442,22 @@ impl BigFloat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// pf-jd4s (ADR-0123): `from_f32`/`f64` are a LOSSLESS representation
+    /// embed (§5.5.1 quiet-copy class) — a signaling NaN stays
+    /// signaling, not quieted, and the payload is preserved.
+    #[test]
+    fn from_f32_f64_preserve_signaling_ness_losslessly() {
+        let s = BigFloat::from_f32(f32::from_bits(0x7F80_0001)); // sNaN, payload 1
+        assert!(s.is_signaling_nan(), "from_f32(sNaN) stays signaling");
+        let q = BigFloat::from_f32(f32::from_bits(0x7FC0_0001)); // qNaN
+        assert!(
+            q.is_quiet_nan() && !q.is_signaling_nan(),
+            "from_f32(qNaN) stays quiet"
+        );
+        let s64 = BigFloat::from_f64(f64::from_bits(0x7FF0_0000_0000_0001));
+        assert!(s64.is_signaling_nan(), "from_f64(sNaN) stays signaling");
+    }
 
     fn rt32(bits: u32) {
         let x = f32::from_bits(bits);

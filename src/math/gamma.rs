@@ -198,14 +198,26 @@ fn try_gamma_pos_integer_exact(x: &BigFloat, target_precision: u32) -> Option<Bi
     if !matches!(x.sign(), Sign::Positive) || x.is_zero() || !is_integer_test(x) {
         return None;
     }
-    let one = BigFloat::try_from_i64_exact(1, target_precision).ok()?;
+    // Walk 1·2·…·(n−1) at a BUILD precision, not at target_precision.
+    // Walking at target rounded the COUNTER as well as the product: for
+    // a tiny target the increment 2 → 3 rounded to 4, so the loop
+    // terminated one step early with a wrong accumulated value
+    // (gamma(4)@p1 returned 2, not the correctly-rounded 8; pf-8scf,
+    // ADR-0118). `target + 64` holds every factorial that could fit at
+    // target (a factorial that fits at target is ≤ target bits) and the
+    // counter (≤ 513 by the iteration cap), so the walk is exact; a
+    // product past the build width means the factorial exceeds it (and
+    // hence target), so bail. The final exactness check decides
+    // representability at target.
+    let build = target_precision.saturating_add(64);
+    let one = BigFloat::try_from_i64_exact(1, build).ok()?;
     let mut acc = one.clone();
-    let mut k = BigFloat::try_from_i64_exact(2, target_precision).ok()?;
+    let mut k = BigFloat::try_from_i64_exact(2, build).ok()?;
     for _ in 0..512 {
         // Stop when k ≥ x (so the loop multiplies by 2, 3, …, n−1).
         match k.partial_cmp(x).0 {
             Some(core::cmp::Ordering::Less) => {}
-            _ => return Some(acc),
+            _ => break,
         }
         let (next_acc, status) = acc.mul(&k, RoundingMode::NearestEven);
         if status.inexact() {
@@ -215,7 +227,16 @@ fn try_gamma_pos_integer_exact(x: &BigFloat, target_precision: u32) -> Option<Bi
         let (next_k, _) = k.add(&one, RoundingMode::NearestEven);
         k = next_k;
     }
-    None
+    // acc = (n−1)! exactly. Return it only if it is representable at
+    // target_precision; otherwise fall through to the Ziv envelope,
+    // which correctly rounds the (irrational-at-target) factorial.
+    let (rounded, status) = acc
+        .round_to_precision(target_precision, RoundingMode::NearestEven)
+        .ok()?;
+    if status.inexact() {
+        return None;
+    }
+    Some(rounded)
 }
 
 /// Sign of `Γ(x)` for finite non-zero `x` that is not a negative

@@ -20,7 +20,7 @@
 #[path = "oracle/mod.rs"]
 mod oracle;
 
-use oracle::{ArbOracle, Enclosure, FnId, MpmathOracle, OracleBackend};
+use oracle::{ArbOracle, Enclosed, FnId, MpmathOracle, OracleBackend};
 use pfloat::RoundingMode;
 use rug::float::Round;
 
@@ -61,15 +61,26 @@ const ARB_PRIMARY_FNIDS: &[FnId] = &[
 ];
 
 /// Extract the f32 bit pattern that an authoritative backend's
-/// single-point [`Enclosure`] certifies. Authoritative backends
-/// (per ADR-0035) return an enclosure with both endpoints equal to
-/// the certified `f32`; the bit pattern is recovered via
+/// single-point bracket certifies. Authoritative backends (per
+/// ADR-0035) return an [`Enclosed::Bracket`] with both endpoints
+/// equal to the certified `f32`; the bit pattern is recovered via
 /// `to_f32_round(Round::Nearest)` on either endpoint (the value is
 /// exactly representable at f32 precision so the rounding is
-/// trivial). NaN endpoints decode as a sentinel `f32::NAN` bit
-/// pattern (worker returned `INC`); the cross-check treats two NaN
-/// sentinels as agreeing.
-fn extract_certified_f32(enc: &Enclosure) -> u32 {
+/// trivial). Both-NaN endpoints certify a NaN true value and decode
+/// as the canonical `f32::NAN` bit pattern.
+///
+/// An [`Enclosed::Inconclusive`] (the worker's `INC` reply) is a
+/// separate outcome and panics here: these are curated smoke inputs
+/// the workers are expected to certify, so an abstention is a real
+/// signal, not something to silently fold into a NaN agreement
+/// (pf-41ou).
+fn extract_certified_f32(enc: &Enclosed) -> u32 {
+    let enc = match enc {
+        Enclosed::Bracket(b) => b,
+        Enclosed::Inconclusive => {
+            panic!("worker abstained (INC) on a curated smoke input; expected a certified f32")
+        }
+    };
     if enc.lo.is_nan() && enc.hi.is_nan() {
         return f32::NAN.to_bits();
     }

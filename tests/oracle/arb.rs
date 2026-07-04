@@ -38,11 +38,16 @@
 //! The worker runs the Ziv-at-oracle loop in-process (ball
 //! arithmetic stays in binary, no decimal bridge); the
 //! [`ArbOracle::enclose`] response is wrapped as a single-point
-//! [`Enclosure`] at the certified `f32` (or NaN endpoints for
-//! `INC`, which the verifier surfaces as `OracleInconclusive`).
-//! [`ArbOracle::is_authoritative`] returns `true` so the verifier
-//! short-circuits its outer Ziv loop and accepts the worker's
-//! single answer.
+//! [`Enclosed::Bracket`] at the certified `f32`, or as
+//! [`Enclosed::Inconclusive`] for `INC`, which the verifier reports
+//! as `OracleInconclusive`. A certified NaN (`OK 7fc00000`, a
+//! genuinely-undefined true value) is a [`Enclosed::Bracket`] with
+//! NaN endpoints and stays distinct from `INC`: conflating the two
+//! (both were once NaN-endpoint enclosures) let an inconclusive
+//! Arb verdict silently pass as agreement whenever the kernel also
+//! returned NaN (pf-41ou). [`ArbOracle::is_authoritative`] returns
+//! `true` so the verifier short-circuits its outer Ziv loop and
+//! accepts the worker's single answer.
 
 #![cfg(all(unix, feature = "differential-arb"))]
 
@@ -56,7 +61,7 @@ use rug::{Complete, Float};
 
 use pfloat::RoundingMode;
 
-use super::types::{Enclosure, FnId, OracleBackend};
+use super::types::{Enclosed, Enclosure, FnId, OracleBackend};
 
 /// Errors the Arb oracle can surface at construction time. Per-call
 /// failures (worker died mid-request, malformed response) escalate
@@ -384,7 +389,7 @@ fn parse_midpoint_response(line: &str, oracle_prec: u32) -> Result<Float, Midpoi
 }
 
 impl OracleBackend for ArbOracle {
-    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosure {
+    fn enclose(&self, f: FnId, input: u32, mode: RoundingMode, working_prec: u32) -> Enclosed {
         let (fn_id, order) = fnid_to_worker_args(f);
         let mode_str = mode_to_str(mode);
         let request = format!("{fn_id} {order} {input:08x} {mode_str}");
@@ -454,23 +459,34 @@ pub(super) fn fnid_to_worker_args(f: FnId) -> (&'static str, String) {
     }
 }
 
-/// Parse one worker response line into an [`Enclosure`].
+/// Parse one worker response line into an [`Enclosed`].
 ///
-/// Under the ADR-0035 protocol the response is one of:
+/// This is the pure classifier at the heart of pf-41ou: the worker's
+/// four response classes map to distinct Rust outcomes, and `INC` is
+/// never conflated with a certified NaN. Under the ADR-0035 protocol
+/// the response is one of:
 ///
-/// - `OK <f32_bits_hex>`: the certified `f32` bit pattern. The
-///   enclosure returned is a single-point bracket at that `f32`
+/// - `OK <f32_bits_hex>`: the certified `f32` bit pattern. Returned
+///   as an [`Enclosed::Bracket`] single-point bracket at that `f32`
 ///   value (both endpoints equal). The verifier's
 ///   `certified_round_f32` on the single point under any rounding
-///   mode returns the same `f32`.
+///   mode returns the same `f32`. When the certified value is NaN
+///   (`OK 7fc00000`, a genuinely-undefined true value) both endpoints
+///   are NaN and the bracket certifies `Some(f32::NAN)`.
 /// - `INC`: the worker's Ziv loop could not certify a unique `f32`
-///   at its max precision. We return an Enclosure with NaN
-///   endpoints; the verifier's NaN-aware certified-rounding then
-///   reports `OracleInconclusive` because the pfloat kernel's
-///   non-NaN output cannot match a NaN certified answer.
+///   at its max precision. Returned as [`Enclosed::Inconclusive`], a
+///   value the verifier maps to [`super::types::Verdict::OracleInconclusive`].
+///   It is emphatically NOT a certified NaN: an inconclusive Arb
+///   verdict must never count as agreement (the earlier code returned
+///   a NaN-endpoint enclosure here, which the verifier read as a
+///   certified NaN and silently passed as `Ok` whenever the kernel
+///   also returned NaN — pf-41ou).
 /// - `ERR <message>`: an error processing the request. Propagated
 ///   as a `Result::Err` for the caller to panic.
-fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
+///
+/// `working_prec` is threaded through only for the `OK` finite-value
+/// path; the `INC` and `ERR` classifications are precision-free.
+fn parse_response(line: &str, working_prec: u32) -> Result<Enclosed, String> {
     let mut parts = line.split_whitespace();
     let tag = parts.next().ok_or_else(|| "empty response".to_string())?;
     if tag == "ERR" {
@@ -478,11 +494,11 @@ fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
         return Err(format!("worker reported: {msg}"));
     }
     if tag == "INC" {
-        let nan = Float::with_val(working_prec, Special::Nan);
-        return Ok(Enclosure {
-            lo: nan.clone(),
-            hi: nan,
-        });
+        // The worker abstained. This is NOT a certified NaN: return
+        // the dedicated inconclusive outcome so the verifier reports
+        // OracleInconclusive rather than folding it into an Ok/NaN
+        // agreement (pf-41ou).
+        return Ok(Enclosed::Inconclusive);
     }
     if tag != "OK" {
         return Err(format!("unexpected response tag: {tag}"));
@@ -495,17 +511,21 @@ fn parse_response(line: &str, working_prec: u32) -> Result<Enclosure, String> {
     }
     let bits = u32::from_str_radix(bits_str, 16)
         .map_err(|e| format!("parse `{bits_str}` as u32 hex: {e}"))?;
+    // A certified NaN (`OK 7fc00000`) becomes a bracket with NaN
+    // endpoints here; that is a genuinely-undefined true value the
+    // verifier accepts against a NaN kernel output, and it stays
+    // distinct from the `INC` outcome above.
     let value = f32_to_float_endpoint(bits, working_prec);
-    Ok(Enclosure {
+    Ok(Enclosed::Bracket(Enclosure {
         lo: value.clone(),
         hi: value,
-    })
+    }))
 }
 
 /// Wrapper that exposes [`parse_response`] across modules; the
 /// mpmath oracle uses identical response parsing because both
 /// workers speak the same wire protocol.
-pub(super) fn parse_response_external(line: &str, working_prec: u32) -> Result<Enclosure, String> {
+pub(super) fn parse_response_external(line: &str, working_prec: u32) -> Result<Enclosed, String> {
     parse_response(line, working_prec)
 }
 
@@ -532,4 +552,60 @@ fn f32_to_float_endpoint(bits: u32, working_prec: u32) -> Float {
     // Float::with_val at any precision >= 24 holds the value
     // without rounding (f32 has at most 24 bits of precision).
     Float::with_val(working_prec, f32::from_bits(bits))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // pf-41ou. The worker's four response classes must map to four
+    // distinct Rust outcomes; the honesty bug was `INC` collapsing
+    // into the same NaN-endpoint enclosure a *certified* NaN uses,
+    // so an inconclusive Arb verdict silently passed as agreement.
+    // These exercise the pure line -> Enclosed classifier directly,
+    // so they run without a live Arb worker (no python-flint needed).
+
+    #[test]
+    fn inc_classifies_as_inconclusive_not_a_bracket() {
+        match parse_response("INC", 64) {
+            Ok(Enclosed::Inconclusive) => {}
+            other => panic!("`INC` must map to Enclosed::Inconclusive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn certified_nan_is_a_bracket_distinct_from_inc() {
+        // `OK 7fc00000` is a *certified* NaN true value: a bracket
+        // with NaN endpoints, emphatically NOT the inconclusive
+        // outcome. This is the distinction pf-41ou preserves.
+        match parse_response("OK 7fc00000", 64) {
+            Ok(Enclosed::Bracket(enc)) => {
+                assert!(
+                    enc.lo.is_nan() && enc.hi.is_nan(),
+                    "certified NaN must have NaN endpoints"
+                );
+            }
+            other => panic!("certified NaN must be Enclosed::Bracket, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn certified_finite_is_a_single_point_bracket() {
+        // `OK 3f800000` = 1.0_f32.
+        match parse_response("OK 3f800000", 64) {
+            Ok(Enclosed::Bracket(enc)) => {
+                assert_eq!(enc.lo.to_f32_round(rug::float::Round::Nearest), 1.0);
+                assert_eq!(enc.hi.to_f32_round(rug::float::Round::Nearest), 1.0);
+            }
+            other => panic!("certified finite must be Enclosed::Bracket, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn err_propagates_as_error() {
+        assert!(
+            parse_response("ERR something broke", 64).is_err(),
+            "`ERR` must propagate as Result::Err"
+        );
+    }
 }

@@ -182,6 +182,138 @@ fn mantissa_at_pow2(m_str: &str, k: i64, mode: RoundingMode) -> BigFloat {
     v
 }
 
+/// pf-egxm (0 − x directed rounding): `zero_plus_finite` rounded the
+/// operand at its STORED sign then flipped it, so directed modes
+/// rounded the wrong way. `sub_round(+0, 2^60+1 @64, 53)` under
+/// `TowardPositive` returned −(2^60+256); the correct result is −2^60
+/// (toward +∞ = less negative). Fix: apply the effective sign before
+/// rounding, so the directed mode sees the true signed value.
+#[test]
+fn zero_minus_finite_mirrors_directed_mode() {
+    use pfloat::Sign;
+    let zero = BigFloat::try_new_zero(Sign::Positive, 64).unwrap();
+    // 2^60 + 1, exact at p64 (61 significant bits).
+    let b = BigFloat::try_from_i64_exact(1152921504606846977, 64).unwrap();
+    let neg_2_60 = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(60)
+        .0;
+    // 2^60 + 256 = the magnitude-away neighbour at p53.
+    let neg_2_60_up = BigFloat::try_from_i64_exact(-1152921504606847232, 53).unwrap();
+    // TowardPositive → less negative → -2^60.
+    let (r_tp, st_tp) = zero
+        .sub_round(&b, 53, RoundingMode::TowardPositive)
+        .unwrap();
+    assert_eq!(
+        r_tp.total_cmp(&neg_2_60),
+        Ordering::Equal,
+        "0-x TP: got {r_tp}"
+    );
+    assert!(st_tp.inexact());
+    // TowardNegative → more negative → -(2^60+256).
+    let (r_tn, _) = zero
+        .sub_round(&b, 53, RoundingMode::TowardNegative)
+        .unwrap();
+    assert_eq!(
+        r_tn.total_cmp(&neg_2_60_up),
+        Ordering::Equal,
+        "0-x TN: got {r_tn}"
+    );
+    // NearestEven → -2^60 (the +1 is 1/256 ulp below the tie).
+    let (r_ne, _) = zero.sub_round(&b, 53, NE).unwrap();
+    assert_eq!(r_ne.total_cmp(&neg_2_60), Ordering::Equal);
+}
+
+/// pf-kh3z (add/sub exponent saturation flag): a result exponent past
+/// `i64::MAX` was clamped silently with Status OK, where mul/div/fma/
+/// remainder/scale all raise OVERFLOW. `a + a` with `a` at exponent
+/// `i64::MAX` saturates to `i64::MAX`+1 → clamped, so it must carry
+/// OVERFLOW (flag parity with the sibling kernels).
+#[test]
+fn addsub_exponent_saturation_flags_overflow() {
+    let (a, sa) = BigFloat::try_from_i64_exact(1, 64)
+        .unwrap()
+        .scale_by_pow2(i64::MAX);
+    assert!(sa.is_ok(), "1·2^(i64::MAX) is the top finite exponent");
+    let (_, st) = a.add_round(&a, 53, NE).unwrap();
+    assert!(
+        st.overflow(),
+        "add saturating the exponent past i64::MAX must flag OVERFLOW, got {st:?}"
+    );
+}
+
+/// pf-mw6u (parse cap saturation is mode-blind): the parse cost cap
+/// (`MAX_DECIMAL_EXPONENT` = 10^6) fires far inside pfloat's exponent
+/// range, so the saturated value is a directional approximation, not a
+/// true overflow. `1e2000000` under `TowardZero` must stay FINITE (not
+/// +inf); `1e-2000000` under `TowardPositive` must round to a nonzero
+/// (not +0). Mirrors the convert.rs overflow/tiny mode conventions
+/// (ADR-0117).
+#[test]
+fn parse_cap_saturation_is_mode_aware() {
+    let (big_tz, st_o) = BigFloat::parse_str("1e2000000", 53, RoundingMode::TowardZero).unwrap();
+    assert!(
+        !big_tz.is_infinite(),
+        "1e2000000 TZ must stay finite, got {big_tz}"
+    );
+    assert!(st_o.overflow());
+    let (big_ne, _) = BigFloat::parse_str("1e2000000", 53, NE).unwrap();
+    assert!(big_ne.is_infinite(), "1e2000000 NE still saturates to inf");
+    let (tiny_tp, st_u) =
+        BigFloat::parse_str("1e-2000000", 53, RoundingMode::TowardPositive).unwrap();
+    assert!(
+        !tiny_tp.is_zero() && !tiny_tp.is_sign_negative(),
+        "1e-2000000 TP must be a nonzero positive, got {tiny_tp}"
+    );
+    assert!(st_u.underflow());
+    let (tiny_tz, _) = BigFloat::parse_str("1e-2000000", 53, RoundingMode::TowardZero).unwrap();
+    assert!(tiny_tz.is_zero(), "1e-2000000 TZ collapses to +0");
+}
+
+/// pf-k08c (`to_f32`/`f64` underflow before rounding): `x = 2^-126 −
+/// 3·2^-152` is tiny before rounding (below the smallest f32 normal
+/// `2^-126`) and rounds up to `0x00800000 = 2^-126` under NE. IEEE 754
+/// §7.5 tininess-before-rounding flags UNDERFLOW; testing the
+/// DELIVERED exponent missed the round-up-to-normal case (INEXACT
+/// only). ADR-0117.
+#[test]
+fn to_f32_tiny_before_rounding_flags_underflow() {
+    let a = BigFloat::try_from_i64_exact(1, 60)
+        .unwrap()
+        .scale_by_pow2(-126)
+        .0;
+    let b = BigFloat::try_from_i64_exact(3, 60)
+        .unwrap()
+        .scale_by_pow2(-152)
+        .0;
+    let (x, sx) = a.sub(&b, NE);
+    assert!(sx.is_ok(), "2^-126 - 3*2^-152 exact at p60");
+    let (f, st) = x.to_f32_round(NE);
+    assert_eq!(f.to_bits(), 0x0080_0000, "rounds up to the smallest normal");
+    assert!(
+        st.underflow() && st.inexact(),
+        "tiny before rounding + inexact => UNDERFLOW, got {st:?}"
+    );
+}
+
+/// pf-sjgh (conversion feeds the sticky-flag lane): `to_f32`/`f64` return
+/// the per-call Status but never auto-raised the thread-local sticky
+/// flags their docstring promises, so `pfloat::flags::test()` stayed 0
+/// for an sNaN→f32 INVALID. ADR-0117.
+#[test]
+fn to_f32_feeds_the_sticky_flag_lane() {
+    use pfloat::{flags, Sign};
+    let snan = BigFloat::try_new_signaling_nan(Sign::Positive, 53, &[]).unwrap();
+    flags::clear();
+    let (_f, st) = snan.to_f32_round(NE);
+    assert!(st.invalid(), "sNaN→f32 per-call Status must carry INVALID");
+    assert!(
+        flags::test().invalid(),
+        "sNaN→f32 must raise the sticky INVALID flag, test()={:?}",
+        flags::test()
+    );
+}
+
 /// (a) exp(-1e300): certain deep underflow. The truth is below half
 /// of `MinPos`, so every mode except `TowardPositive` rounds to +0;
 /// `TowardPositive` must round up to `MinPos`. `UNDERFLOW|INEXACT` either
@@ -589,6 +721,75 @@ fn lgamma_positive_root_at_one_is_boosted() {
     );
 }
 
+/// pf-rlrb (lgamma's Spouge non-window path): for `working_prec >
+/// STIRLING_REACH_THRESHOLD = 600` with `x` outside the positive
+/// root windows, `lgamma_at_w` fell through to
+/// `lgamma_positive_at_w(..).0`, which dispatches to
+/// `spouge_lgamma_scaled` and DISCARDED the returned operand scale —
+/// the Spouge S-sum's internal alternating cancellation (~0.1·working
+/// at z ≈ 2.5). The Ziv half-width `|y|·2^-(working − guard)` was
+/// then violated by ~0.1·working bits and a wrong VALUE certified:
+/// `lgamma(5/2)@1024` carried only ~73 accurate bits pre-fix (rel
+/// ~1.4e-22). The input 5/2 is exactly representable, so it carries
+/// no proximity depth — the cancellation is purely internal to the
+/// Spouge sum, the mechanism the `spouge_lgamma_scaled` docstring
+/// says the caller MUST re-drive through `cancellation_boosted`. The
+/// digamma sibling (pf-0r1l, ADR-0110) routes the whole Spouge regime
+/// through `cancellation_boosted`; lgamma now does too. The
+/// `differential_gamma` lane caps at p256 (working ≤ 320 < 600), so
+/// only these high-target rows exercise the Spouge path. References:
+/// mpmath 1.4.1 @6000 bits at the exact input 5/2.
+#[test]
+fn lgamma_high_precision_spouge_path_is_boosted() {
+    let (x, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok(), "5/2 is exactly representable");
+    const LGAMMA_5_2: &str = "0.2846828704729191596324946696827019243201376955598947292501458503867759342216325755537007359586395675549719731391654888545210665183759870006270009069022688993799045846598114482500020082760125818560974299014792940076733089815139218871348731373151368550000610073883851700695759798293745014574546300382974729188985063926850201707466788942995896750724437363955678851450165762272223341797710883195233662922241861538669886526106809705331913486076194482374424865365347274797942082567290252635013323104413157405368732329470075198720164365473094559324340985495166190893855031207388878088248615189751211402258880348932758766301836841377252204809766770961217276363882243802785949496796610068685421040097330148704";
+    for mode in [NE, RoundingMode::TowardZero, RoundingMode::TowardPositive] {
+        let (r, st) = x.lgamma_round(1024, mode).unwrap();
+        assert_bit_exact("lgamma(5/2)@1024", &r, LGAMMA_5_2, 1024, mode);
+        assert!(st.inexact());
+    }
+    // Control on the Stirling path (target 256 → working ≤ 320 < 600):
+    // untouched by the fix, correct before and after.
+    let (x256, _) = BigFloat::parse_str("2.5", 256, NE).unwrap();
+    let (r256, _) = x256.lgamma_round(256, NE).unwrap();
+    assert_bit_exact("lgamma(5/2)@256", &r256, LGAMMA_5_2, 256, NE);
+}
+
+/// pf-rlrb blast radius: gamma composes `exp(lgamma(x))` and beta
+/// composes `lgamma(a) + lgamma(b) − lgamma(a+b)`, each calling
+/// `lgamma_round(w, …)` at its own Ziv working precision `w`. Past
+/// the Spouge threshold those inner calls were the lying kernel, so
+/// gamma/beta certified wrong values transitively. gamma(5/2) =
+/// 3√π/4 and beta(5/2, 3/2) = π/16 at target 1024, mpmath 1.4.1
+/// @6000 bits.
+#[test]
+fn gamma_beta_high_precision_inherit_the_lgamma_boost() {
+    let (x52, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok());
+    let (g, sg) = x52.gamma_round(1024, NE).unwrap();
+    assert_bit_exact(
+        "gamma(5/2)@1024",
+        &g,
+        "1.329340388179137020473625612505858887098162092091790346160355842389683463443274136031212992553908499062170117718211927999677114649293316951893820282202090301346528273989828842137443879771713119671699071534450972100130979261513609790387525142638925513939085230871184480235441331644429662304064499375679798805710300108106365075250992342024388877306596588373871",
+        1024,
+        NE,
+    );
+    assert!(sg.inexact());
+    // beta routes a + b = 4 (a positive integer) through the same
+    // lgamma compositions at high working precision.
+    let (x32, _) = BigFloat::parse_str("1.5", 1024, NE).unwrap();
+    let (b, sb) = x52.beta_round(&x32, 1024, NE).unwrap();
+    assert_bit_exact(
+        "beta(5/2,3/2)@1024",
+        &b,
+        "0.196349540849362077403915211454968930262323087460944113810934037019238525392888062414252176583882316748884255407080144165443365288096911389482834963008030069840642756418871157569097477788934309683148872776800685979120840383029728014611673947829450119321603035432716271788153395415513337100453765571329607786687912894724260930095057560176828380732210272993287",
+        1024,
+        NE,
+    );
+    assert!(sb.inexact());
+}
+
 /// pf-wmv7 (digamma at its positive root 1.46163...): the p100
 /// parse of the root's 45-digit decimal sits ~2^-100.6 from the
 /// root, a ~103-bit cancellation against the O(1) composition
@@ -627,6 +828,29 @@ fn digamma_positive_root_shallow_control() {
         53,
         NE,
     );
+}
+
+/// pf-2thy (the digamma Spouge probe, resolved by pf-0r1l / ADR-0110
+/// and locked in here): digamma's positive branch now dispatches to
+/// `spouge_digamma_scaled` past `working_prec > 600` and re-drives
+/// through `cancellation_boosted`, so a high-precision evaluation off
+/// the root windows carries full accuracy (the probe's "920-bit
+/// ceiling + 2^28-iteration shift" is gone — Spouge's cost is linear
+/// in `a ∝ working` with no shift loop). digamma(5/2) at target 1024,
+/// mpmath 1.4.1 @6000 bits at the exact input 5/2.
+#[test]
+fn digamma_high_precision_spouge_path_is_boosted() {
+    let (x, sx) = BigFloat::parse_str("2.5", 1024, NE).unwrap();
+    assert!(sx.is_ok());
+    let (r, st) = x.digamma_round(1024, NE).unwrap();
+    assert_bit_exact(
+        "digamma(5/2)@1024",
+        &r,
+        "0.703156640645243187225690333667911099473507062006232559619539412795011695949612564517992949382082542068032257375718212718335122180663862716377151165751591206551711191266986458548378646626288061477325050427202466808022754863088151740191007734417696879630107020674946735984012026572311494321432437157666747120129795446926129310661956727232590773985887649806139170",
+        1024,
+        NE,
+    );
+    assert!(st.inexact());
 }
 
 /// Residual pf-smcb family found by the slice's adversarial
@@ -2048,6 +2272,246 @@ fn zeta_fe_near_odd_integer_is_unperturbed() {
         NE,
     );
     assert!(st.inexact());
+}
+
+/// pf-qt7v (zeta near s = 0, the 0·inf indeterminate form): s = −2^−k
+/// (tiny negative normal) reaches `zeta_fe`, where sin(πs/2) → 0 while
+/// ζ(1 − s) approaches the pole at 1. For k past the working-precision
+/// cap (k > target + 4096 + `s.precision()`) the reflected argument
+/// 1 − s rounds onto the pole and `zeta_borwein` returned an HONEST NaN
+/// (never certified-wrong, but not the representable correct value
+/// either). Near 0, ζ(s) = −1/2 − (1/2)ln(2π)·s + O(s²), so for s < 0
+/// with |s| < 2^−(target+3) the value is −1/2 + δ, 0 < δ <
+/// 2^−(target+3) < half-ulp, and the correctly-rounded result is a
+/// pure function of the mode: NE/NA/TN → −1/2, TP/TZ → nextUp(−1/2).
+/// A near-zero dispatch (ADR-0112) returns it directly, DoS-free,
+/// where the FE path NaN'd. mpmath 1.4.1: ζ(−2^−k) + 1/2 = +2^(−k+0.122).
+#[test]
+fn zeta_near_zero_negative_is_the_correctly_rounded_neighbour() {
+    // Deep case the FE path NaN'd (k = 8000 > target + 4096 + prec).
+    let (s, ss) = BigFloat::try_from_i64_exact(-1, 300)
+        .unwrap()
+        .scale_by_pow2(-8000);
+    assert!(ss.is_ok(), "-2^-8000 is exact");
+    let half = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(-1)
+        .0; // -1/2
+    let up = half.next_up().0; // nextUp(-1/2)
+    for (mode, want) in [
+        (NE, &half),
+        (RoundingMode::NearestAway, &half),
+        (RoundingMode::TowardNegative, &half),
+        (RoundingMode::TowardPositive, &up),
+        (RoundingMode::TowardZero, &up),
+    ] {
+        let (r, st) = s.zeta_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "zeta(-2^-8000) under {mode:?}: got {r}, want {want}"
+        );
+        assert!(
+            st.inexact(),
+            "zeta(-2^-8000) is irrational: INEXACT required under {mode:?}"
+        );
+    }
+    // Non-firing control at the boundary (k = 53 < target + 4 = 57):
+    // the dispatch must NOT fire and the FE path must still resolve the
+    // real value (δ ~ 2^-53.1 is above the p53 ulp near -1/2).
+    let (sc, _) = BigFloat::try_from_i64_exact(-1, 300)
+        .unwrap()
+        .scale_by_pow2(-53);
+    let (rc, stc) = sc.zeta_round(53, NE).unwrap();
+    assert_bit_exact(
+        "zeta(-2^-53)",
+        &rc,
+        "-0.4999999999999998979773282220903507061334671120245287316",
+        53,
+        NE,
+    );
+    assert!(stc.inexact());
+}
+
+/// pf-31ql (Si tiny-x directed modes): Si(x) = x − x³/18 + … shrinks
+/// toward x in magnitude (the −x³/18 correction opposes x's sign), so
+/// for tiny x the collapsed Ziv path returned x itself under every
+/// mode — 1 ulp wrong under `TowardZero` and `TowardNegative`, where
+/// the correct result is pred(x) (Si(x) < x for x > 0). Si lacked the
+/// ADR-0059/0104 tiny-x dispatch; ADR-0113 adds it. The defect needs
+/// x deep enough that the cubic correction (~2·|`e_x`| bits below x)
+/// falls past the Ziv guard cap (target + 1024) so the driver never
+/// resolves it and falls through to x: x = 2^−1000 at target 53 has
+/// its correction ~2004 bits down, unreachable, so pre-fix TZ/TN
+/// returned x itself. NE/NA/TP → x and TZ/TN → pred(x), all INEXACT.
+#[test]
+fn si_tiny_x_directed_modes_shrink_toward_zero() {
+    let (x, sx) = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-1000);
+    assert!(sx.is_ok());
+    let down = x.next_down().0; // pred(2^-60)
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardPositive, &x),
+        (RoundingMode::TowardNegative, &down),
+        (RoundingMode::TowardZero, &down),
+    ] {
+        let (r, st) = x.si_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "Si(2^-1000) under {mode:?}: got {r}, want {want}"
+        );
+        assert!(
+            st.inexact(),
+            "Si(2^-1000) is irrational: INEXACT under {mode:?}"
+        );
+    }
+    // Odd symmetry: Si(−x) = −Si(x); |Si(−x)| < |x|, so TowardZero
+    // rounds to −pred(x).
+    let (rn, _) = x.negated().si_round(53, RoundingMode::TowardZero).unwrap();
+    assert_eq!(rn.total_cmp(&down.negated()), Ordering::Equal);
+}
+
+/// pf-8scf (gamma positive-integer exact walk at target precision):
+/// `try_gamma_pos_integer_exact` walked the factorial AND the counter
+/// at `target_precision`, so at a tiny target the counter increment
+/// rounded (2 → 3 rounds to 4) and the loop terminated early with a
+/// wrong accumulated value: `gamma(4)@p1` returned `Some(2)` with OK,
+/// where `gamma(4) = 6` is not representable at p1 (a tie between 4 and
+/// 8) and must go to the Ziv envelope. Walk at a build precision and
+/// check target-representability at the end (ADR-0118). Assert under
+/// `TowardZero`, where 6 truncates unambiguously to 4 (no tie, so the
+/// Ziv envelope certifies on the first rung — fast and deterministic),
+/// never the bug value 2; `gamma(3)@p1 = 2! = 2 = 2^1` stays exact on
+/// the fast path.
+#[test]
+fn gamma_positive_integer_exact_walk_at_build_precision() {
+    let four = BigFloat::try_from_i64_exact(4, 8).unwrap();
+    let (g4, s4) = four.gamma_round(1, RoundingMode::TowardZero).unwrap();
+    let c4 = BigFloat::try_from_i64_exact(1, 1)
+        .unwrap()
+        .scale_by_pow2(2)
+        .0; // 4
+    assert_eq!(
+        g4.total_cmp(&c4),
+        Ordering::Equal,
+        "gamma(4)@p1 under TZ truncates 6 to 4, never the bug value 2, got {g4}"
+    );
+    assert!(s4.inexact());
+    let three = BigFloat::try_from_i64_exact(3, 8).unwrap();
+    let (g3, s3) = three.gamma_round(1, NE).unwrap();
+    let two = BigFloat::try_from_i64_exact(2, 1).unwrap();
+    assert_eq!(g3.total_cmp(&two), Ordering::Equal, "gamma(3)@p1 = 2 exact");
+    assert!(s3.is_ok(), "2! = 2 is exact at p1");
+}
+
+/// pf-ihsp (beta case-4 exact path at operand precision): `B(−n, m)`
+/// via the pole-cancellation closed form computed `n − m` at OPERAND
+/// precision, so `B(−128@p1, 1@p1)` rounded `n − m = 127` to 128 and
+/// returned −1 with OK where −1/128 is due. Lift n, m to
+/// `BETA_EXACT_BUILD_PREC` before the integer arithmetic (ADR-0118).
+#[test]
+fn beta_case4_exact_lifts_to_build_precision() {
+    let a = BigFloat::try_from_i64_exact(-128, 1).unwrap(); // -2^7, exact at p1
+    let b = BigFloat::try_from_i64_exact(1, 1).unwrap();
+    let (v, st) = a.beta_round(&b, 53, NE).unwrap();
+    let want = BigFloat::try_from_i64_exact(-1, 53)
+        .unwrap()
+        .scale_by_pow2(-7)
+        .0; // -1/128
+    assert_eq!(
+        v.total_cmp(&want),
+        Ordering::Equal,
+        "B(-128,1) = -1/128, got {v}"
+    );
+    assert!(st.is_ok(), "-1/128 is exact at p53");
+}
+
+/// pf-k5ll (beta B(1, dyadic) reciprocal): `B(1, b) = 1/b` exactly. The
+/// positive-integer dispatch covered integer b (`B(1, 8) = 1/8`) but
+/// missed the non-integer dyadic `b = 1/8`: `B(1, 1/8)` went through
+/// Ziv and returned 8 with INEXACT over-reported. The construct-and-
+/// check reciprocal returns 8 exactly with OK (ADR-0118).
+#[test]
+fn beta_one_reciprocal_is_exact_for_powers_of_two() {
+    let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
+    let eighth = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-3)
+        .0; // 1/8
+    let (v, st) = one.beta_round(&eighth, 53, NE).unwrap();
+    let eight = BigFloat::try_from_i64_exact(8, 53).unwrap();
+    assert_eq!(
+        v.total_cmp(&eight),
+        Ordering::Equal,
+        "B(1, 1/8) = 8, got {v}"
+    );
+    assert!(st.is_ok(), "B(1, 1/8) = 8 is exact");
+    // Symmetric: B(8, 1) = 1/8 exactly.
+    let (v2, st2) = eight.beta_round(&one, 53, NE).unwrap();
+    assert_eq!(v2.total_cmp(&eighth), Ordering::Equal, "B(8, 1) = 1/8");
+    assert!(st2.is_ok());
+}
+
+/// pf-7nnw (deep-tiny directed modes, near-0 `x ± c·x³` family): past
+/// the Ziv guard cap the reduced Taylor collapses to x and directed
+/// modes returned x, 1 ulp wrong. `sin(x) = x − x³/6` shrinks (TZ/TN →
+/// pred(x)); `tan(x) = x + x³/3` and `asin(x) = x + x³/6` grow (TP →
+/// succ(x)). Same ADR-0059/0104 dispatch as Si (ADR-0121). x = 2^-1000
+/// at target 53 puts the cubic ~3000 bits down, past the 53+1024 cap.
+/// (`atan` already had the dispatch; the near-1 family cos/exp/cosh and
+/// the reciprocals sec/csc/cot are a filed follow-up — a distinct
+/// near-1 shape.)
+#[test]
+fn trig_tiny_x_directed_modes_shrink_and_grow() {
+    let (x, sx) = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-1000);
+    assert!(sx.is_ok());
+    let down = x.next_down().0;
+    let up = x.next_up().0;
+    // sin shrinks: TZ/TN → pred(x), NE/NA/TP → x.
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardPositive, &x),
+        (RoundingMode::TowardZero, &down),
+        (RoundingMode::TowardNegative, &down),
+    ] {
+        let (r, st) = x.sin_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "sin(2^-1000) {mode:?}: {r}"
+        );
+        assert!(st.inexact());
+    }
+    // tan, asin grow: TP → succ(x), others → x.
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardZero, &x),
+        (RoundingMode::TowardNegative, &x),
+        (RoundingMode::TowardPositive, &up),
+    ] {
+        let (rt, stt) = x.tan_round(53, mode).unwrap();
+        assert_eq!(
+            rt.total_cmp(want),
+            Ordering::Equal,
+            "tan(2^-1000) {mode:?}: {rt}"
+        );
+        assert!(stt.inexact());
+        let (ra, sta) = x.asin_round(53, mode).unwrap();
+        assert_eq!(
+            ra.total_cmp(want),
+            Ordering::Equal,
+            "asin(2^-1000) {mode:?}: {ra}"
+        );
+        assert!(sta.inexact());
+    }
 }
 
 // ===============================================================
