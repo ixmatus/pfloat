@@ -341,12 +341,13 @@ fn conformance_max_snan_raises_threadlocal_invalid() {
 // fix caps the formatter at the parse round-trip boundary
 // (`MAX_FORMAT_DECIMAL_EXPONENT = 1e6`, matching parse's
 // `MAX_DECIMAL_EXPONENT`) and saturates past it, mirroring parse: a value
-// too large to render reads back as `inf`, too small as `0`. The leading
-// digits of such a value are not obtainable at bounded cost without the
-// O(exponent) `5^|shift|` bridge, and `log10`/`exp10` are `exp-log`-gated
-// while `fmt` builds under `big` alone, so a bounded scientific fallback
-// is unavailable here; saturation is the bounded, parse-consistent
-// contract (ADR-0051). Must never panic or OOM.
+// too large/small to render exactly reads back as an APPROXIMATE finite
+// magnitude `±1e{D}` (pf-nyfz, pf-f7vg, ADR-0120, superseding ADR-0051's
+// `inf`/`0` token — a finite is not infinite). The leading digits are not
+// obtainable at bounded cost without the O(exponent) `5^|shift|` bridge,
+// and `log10`/`exp10` are `exp-log`-gated while `fmt` builds under `big`
+// alone, so the mantissa is a documented saturation. Must never panic or
+// OOM.
 #[test]
 fn panic_fmt_large_exponent_does_not_overflow() {
     // 2^(2^40) by 40 squarings: exponent ≈ 2^40 ≈ 1.1e12, decimal
@@ -356,10 +357,10 @@ fn panic_fmt_large_exponent_does_not_overflow() {
         x = x.mul(&x, NE).0;
     }
     assert!(!x.is_infinite(), "2^(2^40) is a finite value, not Inf");
-    assert_eq!(
-        x.to_decimal_string(17, NE),
-        "inf",
-        "a finite value past the format cap saturates to inf"
+    let s = x.to_decimal_string(17, NE);
+    assert!(
+        s.starts_with("1e3") && !s.contains("inf"),
+        "past the cap renders an approximate finite magnitude ~1e3.3e11, not inf: {s}"
     );
     // Display path must also be bounded (no panic, no OOM).
     let _ = format!("{x}");
@@ -368,10 +369,10 @@ fn panic_fmt_large_exponent_does_not_overflow() {
     let one = BigFloat::try_from_i64_exact(1, 53).unwrap();
     let (tiny, _) = one.div(&x, NE);
     assert!(!tiny.is_zero(), "2^(-2^40) is a finite nonzero value");
-    assert_eq!(
-        tiny.to_decimal_string(17, NE),
-        "0",
-        "a finite value below the format cap saturates to 0"
+    let ts = tiny.to_decimal_string(17, NE);
+    assert!(
+        ts.starts_with("1e-3") && ts != "0",
+        "a tiny finite past the cap renders ~1e-3.3e11, not 0: {ts}"
     );
 }
 
