@@ -168,6 +168,7 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0116: Ball kernel-status fidelity and validating serde deserialize](0116-ball-status-serde-fidelity.md) (accepted)
 - [ADR-0117: conversion & parse fidelity — mode-aware parse-cap saturation, tininess-before-rounding underflow, and the sticky-flag lane](0117-conversion-saturation-and-flag-fidelity.md) (accepted)
 - [ADR-0118: gamma/beta exact-dispatch precision — walk factorials at build precision, not at target](0118-gamma-beta-exact-dispatch-precision.md) (accepted)
+- [ADR-0119: make FixedFloat<0> uninstantiable at compile time](0119-fixedfloat-zero-exclusion.md) (accepted)
 - [ADR-0120: render a past-cap finite as an approximate magnitude `±1e{D}`, not `inf`/`0`](0120-fmt-approximate-magnitude-for-huge-finites.md) (accepted)
 - [ADR-0121: tiny-x dispatch for the near-zero `x ± c·x³` trig/inverse family (sin, tan, asin)](0121-trig-tiny-x-dispatch-near-zero-family.md) (accepted)
 - [ADR-0122: pow — mirror the mode under odd-parity negation, and dispatch the power-of-two exact set](0122-pow-mirror-mode-and-power-of-two-exact.md) (accepted)
