@@ -652,7 +652,7 @@ mod tests {
 
     /// pf-l38k (ADR-0122): the odd-parity negative-base result is
     /// negated, so `|x|^y` must round under the MIRRORED mode.
-    /// `(-3)^7 = -2187`; at target 8 under TowardPositive the negated
+    /// `(-3)^7 = -2187`; at target 8 under `TowardPositive` the negated
     /// value rounds toward +∞ (less negative) to -2176, not -2192.
     #[test]
     fn pow_odd_negative_base_mirrors_directed_mode() {
