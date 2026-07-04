@@ -168,3 +168,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0116: Ball kernel-status fidelity and validating serde deserialize](0116-ball-status-serde-fidelity.md) (accepted)
 - [ADR-0117: conversion & parse fidelity — mode-aware parse-cap saturation, tininess-before-rounding underflow, and the sticky-flag lane](0117-conversion-saturation-and-flag-fidelity.md) (accepted)
 - [ADR-0118: gamma/beta exact-dispatch precision — walk factorials at build precision, not at target](0118-gamma-beta-exact-dispatch-precision.md) (accepted)
+- [ADR-0120: render a past-cap finite as an approximate magnitude `±1e{D}`, not `inf`/`0`](0120-fmt-approximate-magnitude-for-huge-finites.md) (accepted)
