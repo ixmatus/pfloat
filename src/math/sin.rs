@@ -114,6 +114,32 @@ fn sin_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: sin(x) = x − x³/6 + … shrinks toward x in magnitude (the
+    // −x³/6 correction opposes x's sign), so round x with that
+    // magnitude-shrinking infinitesimal directly — the ADR-0059/0104
+    // tiny-x pattern (pf-7nnw, ADR-0121). Past the Ziv guard cap the
+    // reduced Taylor collapses to x and directed modes returned x itself
+    // (sin(2^-600, TowardZero) = x, 1 ulp wrong toward zero where
+    // sin(x) < x). The two-part depth clears the target ulp and the
+    // input grid (ADR-0104); |x| ≤ 2^-(target+2) is far below any π
+    // multiple, so reduction is not needed. Arm-failing inputs fall to
+    // the Ziv driver below.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("special classes dispatched above"),
+    };
+    if e <= -(i64::from(target_precision) + 2)
+        && e.saturating_mul(-2) >= i64::from(x.precision).saturating_add(6)
+    {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            true, // sin(x) = x − x³/6: magnitude shrinks
+            target_precision,
+            mode,
+        );
+    }
+
     // Range-cap check at the Ziv first-iteration working precision.
     // The reduction's range policy caps the supported `|x|` at
     // `2^4032` (`reduce`'s `e_x + 64 < 4096`; since ADR-0103 the cap

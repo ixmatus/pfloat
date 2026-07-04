@@ -109,6 +109,29 @@ fn tan_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { .. } => {}
     }
 
+    // Tiny x: tan(x) = x + x³/3 + … grows in magnitude (the +x³/3
+    // correction agrees with x's sign), so round x with that
+    // magnitude-growing infinitesimal directly — the ADR-0059/0104
+    // tiny-x pattern (pf-7nnw, ADR-0121). Past the Ziv guard cap the
+    // reduced Taylor collapses to x and directed modes returned x itself
+    // where tan(x) > x for x > 0. |x| ≤ 2^-(target+2) is far below π/2,
+    // so no reduction is needed; arm-failing inputs fall to the driver.
+    let e = match &x.class {
+        Class::Normal { exponent, .. } => *exponent,
+        _ => unreachable!("special classes dispatched above"),
+    };
+    if e <= -(i64::from(target_precision) + 2)
+        && e.saturating_mul(-2) >= i64::from(x.precision).saturating_add(6)
+    {
+        return crate::rounding::round_with_infinitesimal(
+            x,
+            x.sign(),
+            false, // tan(x) = x + x³/3: magnitude grows
+            target_precision,
+            mode,
+        );
+    }
+
     // Range-cap check at the Ziv first-iteration working precision
     // (pf-1axr; see `sin.rs` for the full rationale).
     let ziv_first_working = target_precision.saturating_add(ZIV_BASE_GUARD);

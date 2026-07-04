@@ -2456,6 +2456,64 @@ fn beta_one_reciprocal_is_exact_for_powers_of_two() {
     assert!(st2.is_ok());
 }
 
+/// pf-7nnw (deep-tiny directed modes, near-0 `x ± c·x³` family): past
+/// the Ziv guard cap the reduced Taylor collapses to x and directed
+/// modes returned x, 1 ulp wrong. `sin(x) = x − x³/6` shrinks (TZ/TN →
+/// pred(x)); `tan(x) = x + x³/3` and `asin(x) = x + x³/6` grow (TP →
+/// succ(x)). Same ADR-0059/0104 dispatch as Si (ADR-0121). x = 2^-1000
+/// at target 53 puts the cubic ~3000 bits down, past the 53+1024 cap.
+/// (`atan` already had the dispatch; the near-1 family cos/exp/cosh and
+/// the reciprocals sec/csc/cot are a filed follow-up — a distinct
+/// near-1 shape.)
+#[test]
+fn trig_tiny_x_directed_modes_shrink_and_grow() {
+    let (x, sx) = BigFloat::try_from_i64_exact(1, 53)
+        .unwrap()
+        .scale_by_pow2(-1000);
+    assert!(sx.is_ok());
+    let down = x.next_down().0;
+    let up = x.next_up().0;
+    // sin shrinks: TZ/TN → pred(x), NE/NA/TP → x.
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardPositive, &x),
+        (RoundingMode::TowardZero, &down),
+        (RoundingMode::TowardNegative, &down),
+    ] {
+        let (r, st) = x.sin_round(53, mode).unwrap();
+        assert_eq!(
+            r.total_cmp(want),
+            Ordering::Equal,
+            "sin(2^-1000) {mode:?}: {r}"
+        );
+        assert!(st.inexact());
+    }
+    // tan, asin grow: TP → succ(x), others → x.
+    for (mode, want) in [
+        (NE, &x),
+        (RoundingMode::NearestAway, &x),
+        (RoundingMode::TowardZero, &x),
+        (RoundingMode::TowardNegative, &x),
+        (RoundingMode::TowardPositive, &up),
+    ] {
+        let (rt, stt) = x.tan_round(53, mode).unwrap();
+        assert_eq!(
+            rt.total_cmp(want),
+            Ordering::Equal,
+            "tan(2^-1000) {mode:?}: {rt}"
+        );
+        assert!(stt.inexact());
+        let (ra, sta) = x.asin_round(53, mode).unwrap();
+        assert_eq!(
+            ra.total_cmp(want),
+            Ordering::Equal,
+            "asin(2^-1000) {mode:?}: {ra}"
+        );
+        assert!(sta.inexact());
+    }
+}
+
 // ===============================================================
 // Arc R3, slice R3.2 (pf-0r1l, ADR-0110): li / Ei / digamma at their
 // deep INTERIOR zeros certified wrong values (Ei and digamma with the
