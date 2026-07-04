@@ -445,6 +445,15 @@ pub use status::Status;
 /// write a generic `impl ... for FixedFloat<PREC>` outside this crate.
 pub use mantissa::limbs_for;
 
+/// Compile-time guard that a `FixedFloat<PREC>` precision is nonzero
+/// (ADR-0119: `FixedFloat<0>` is unrepresentable).
+///
+/// Exposed alongside [`limbs_for`] for the same reason: a downstream
+/// generic `impl ... for FixedFloat<PREC>` that reaches a method carrying
+/// the `where [(); require_nonzero_precision(PREC)]:` bound must be able to
+/// spell that bound, so the symbol has to be nameable outside this crate.
+pub use mantissa::require_nonzero_precision;
+
 #[cfg(feature = "std")]
 pub use status::flags;
 
