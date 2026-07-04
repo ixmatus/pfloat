@@ -237,6 +237,13 @@ name = "num_traits_integration"
 path = "tests/num_traits_integration.rs"
 required-features = ["num-traits"]
 
+# pf-sn3n / ADR-0119: FixedFloat<0> type-level exclusion. Uses the
+# const-generic type, so it only builds with the `fixed` feature.
+[[test]]
+name = "regression_pf8iji_fixed"
+path = "tests/regression_pf8iji_fixed.rs"
+required-features = ["fixed"]
+
 [[test]]
 name = "differential_add"
 path = "tests/differential_add.rs"

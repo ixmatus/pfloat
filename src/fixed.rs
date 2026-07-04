@@ -27,7 +27,7 @@ use core::cmp::Ordering;
 
 use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
-use crate::mantissa::limbs_for;
+use crate::mantissa::{limbs_for, require_nonzero_precision};
 use crate::rounding::RoundingMode;
 use crate::sign::Sign;
 use crate::status::Status;
@@ -73,6 +73,41 @@ where
 /// `FixedFloat<53>` corresponds to IEEE 754 binary64 with full
 /// rounding-mode control; `FixedFloat<113>` to binary128; arbitrary
 /// other precisions are equally supported.
+///
+/// # Precision must be at least one bit
+///
+/// `PREC` is required to be `>= 1`. `FixedFloat<0>` is an illegal
+/// state: a fixed-precision float with zero significand bits could
+/// hold no finite non-zero value, and its projection to
+/// [`BigFloat`](crate::big::BigFloat) would violate that type's own
+/// `precision >= 1` invariant. No value of `FixedFloat<0>` can be born
+/// in safe code (ADR-0119):
+///
+/// - The direct value-constructors that build storage without going
+///   through [`BigFloat`] — [`zero`](Self::zero),
+///   [`neg_zero`](Self::neg_zero), [`infinity`](Self::infinity),
+///   [`neg_infinity`](Self::neg_infinity), [`nan`](Self::nan),
+///   [`signaling_nan`](Self::signaling_nan) — plus the rounding
+///   constructors [`try_from_i64_round`](Self::try_from_i64_round) and
+///   [`try_from_big_round`](Self::try_from_big_round), carry a
+///   method-level const-generic bound (the internal
+///   `require_nonzero_precision` guard) that fails to evaluate for
+///   `PREC == 0`. Calling any of them at `PREC == 0` is a **compile
+///   error**. The `num-traits` construction traits (`Zero`, `One`,
+///   `Num`, `Signed`, `FromPrimitive`, `NumCast`, `Inv`) inherit the
+///   bound, so `FixedFloat<0>` implements none of them.
+/// - The [`BigFloat`]-routed constructors
+///   ([`try_from_i64_exact`](Self::try_from_i64_exact),
+///   [`try_from_big_exact`](Self::try_from_big_exact), `parse_str`,
+///   and `serde` deserialization) stay ungated so the kernels can
+///   delegate result conversion through them; they cannot produce a
+///   `FixedFloat<0>` either, because [`BigFloat`] rejects precision 0,
+///   so they return a **typed error** at `PREC == 0` — never a value,
+///   never a panic.
+///
+/// The type name itself stays inert: it may appear in a signature
+/// (`Option<FixedFloat<0>>` is a well-formed type) but is uninhabited
+/// through the public API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct FixedFloat<const PREC: u32>
 where
@@ -81,6 +116,15 @@ where
     pub(crate) class: ClassFixed<PREC>,
 }
 
+// ADR-0119 (pf-sn3n): each value-birthing constructor below carries a
+// method-level `where [(); require_nonzero_precision(PREC)]:` bound,
+// which fails const-evaluation for `PREC == 0`. Placing the bound on
+// the constructors (rather than on the struct) makes `FixedFloat<0>`
+// uninstantiable without a `generic_const_exprs` cascade: the ungated
+// operations (`to_big`, arithmetic, comparison) that the math/ops
+// kernels delegate through keep compiling for every `PREC`. Every
+// construction path in the crate — `num-traits`, `serde`, `parse` —
+// bottoms out in one of these constructors and inherits the bound.
 impl<const PREC: u32> FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
@@ -94,8 +138,14 @@ where
     // -------- Constructors --------
 
     /// Returns `+0` at this precision.
+    ///
+    /// Requires `PREC >= 1`; `FixedFloat::<0>::zero()` is a compile
+    /// error (ADR-0119).
     #[must_use]
-    pub const fn zero() -> Self {
+    pub const fn zero() -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Zero {
                 sign: Sign::Positive,
@@ -103,9 +153,12 @@ where
         }
     }
 
-    /// Returns `-0` at this precision.
+    /// Returns `-0` at this precision. Requires `PREC >= 1` (ADR-0119).
     #[must_use]
-    pub const fn neg_zero() -> Self {
+    pub const fn neg_zero() -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Zero {
                 sign: Sign::Negative,
@@ -113,9 +166,12 @@ where
         }
     }
 
-    /// Returns `+∞` at this precision.
+    /// Returns `+∞` at this precision. Requires `PREC >= 1` (ADR-0119).
     #[must_use]
-    pub const fn infinity() -> Self {
+    pub const fn infinity() -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Infinity {
                 sign: Sign::Positive,
@@ -123,9 +179,12 @@ where
         }
     }
 
-    /// Returns `-∞` at this precision.
+    /// Returns `-∞` at this precision. Requires `PREC >= 1` (ADR-0119).
     #[must_use]
-    pub const fn neg_infinity() -> Self {
+    pub const fn neg_infinity() -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Infinity {
                 sign: Sign::Negative,
@@ -134,9 +193,12 @@ where
     }
 
     /// Returns a quiet NaN at this precision with the given sign
-    /// and zero payload.
+    /// and zero payload. Requires `PREC >= 1` (ADR-0119).
     #[must_use]
-    pub const fn nan(sign: Sign) -> Self {
+    pub const fn nan(sign: Sign) -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Nan {
                 quiet: true,
@@ -147,9 +209,12 @@ where
     }
 
     /// Returns a signaling NaN at this precision with the given
-    /// sign and zero payload.
+    /// sign and zero payload. Requires `PREC >= 1` (ADR-0119).
     #[must_use]
-    pub const fn signaling_nan(sign: Sign) -> Self {
+    pub const fn signaling_nan(sign: Sign) -> Self
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         Self {
             class: ClassFixed::Nan {
                 quiet: false,
@@ -162,16 +227,23 @@ where
     /// Constructs `FixedFloat<PREC>` from an `i64` exactly.
     ///
     /// Returns [`BuildError::ValueExceedsPrecision`] when the
-    /// integer's significant-bit count exceeds `PREC`.
+    /// integer's significant-bit count exceeds `PREC`, and
+    /// [`BuildError::PrecisionZero`] when `PREC == 0` (ADR-0119): the
+    /// call routes through [`BigFloat`], which rejects precision 0, so
+    /// no `FixedFloat<0>` is ever produced.
     pub fn try_from_i64_exact(n: i64) -> Result<Self, BuildError> {
         BigFloat::try_from_i64_exact(n, PREC).and_then(Self::try_from_big_exact)
     }
 
     /// Constructs `FixedFloat<PREC>` from an `i64` with rounding
-    /// when the integer's significant bits exceed `PREC`.
-    pub fn try_from_i64_round(n: i64, mode: RoundingMode) -> (Self, Status) {
-        let (big, status) =
-            BigFloat::try_from_i64_round(n, PREC, mode).expect("PREC >= 1 by const-generic bound");
+    /// when the integer's significant bits exceed `PREC`. Requires
+    /// `PREC >= 1` (ADR-0119).
+    pub fn try_from_i64_round(n: i64, mode: RoundingMode) -> (Self, Status)
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
+        let (big, status) = BigFloat::try_from_i64_round(n, PREC, mode)
+            .expect("PREC >= 1 is enforced by the method-level bound (ADR-0119)");
         // Conversion to FixedFloat<PREC> at the same precision is
         // exact (the BigFloat was constructed at PREC), so status
         // here is OK.
@@ -489,6 +561,14 @@ where
     ///
     /// Use [`try_from_big_round`](Self::try_from_big_round) for
     /// rounding conversions from a different-precision input.
+    ///
+    /// For `PREC == 0` this always returns
+    /// [`BuildError::ValueExceedsPrecision`]: no [`BigFloat`] has
+    /// precision 0 (that type's own invariant is `precision >= 1`), so
+    /// the equality check never holds and no `FixedFloat<0>` is
+    /// produced (ADR-0119). This method stays ungated because the
+    /// arithmetic and transcendental kernels delegate their result
+    /// conversion through it.
     pub fn try_from_big_exact(big: BigFloat) -> Result<Self, BuildError> {
         if big.precision() == PREC {
             Ok(Self::from_big_at_same_precision(big))
@@ -501,11 +581,14 @@ where
     }
 
     /// Constructs `FixedFloat<PREC>` from a [`BigFloat`], rounding
-    /// to `PREC` under `mode`.
-    pub fn try_from_big_round(big: &BigFloat, mode: RoundingMode) -> (Self, Status) {
+    /// to `PREC` under `mode`. Requires `PREC >= 1` (ADR-0119).
+    pub fn try_from_big_round(big: &BigFloat, mode: RoundingMode) -> (Self, Status)
+    where
+        [(); require_nonzero_precision(PREC)]:,
+    {
         let (rounded, status) = big
             .round_to_precision(PREC, mode)
-            .expect("PREC >= 1 by const-generic bound");
+            .expect("PREC >= 1 is enforced by the method-level bound (ADR-0119)");
         (Self::from_big_at_same_precision(rounded), status)
     }
 

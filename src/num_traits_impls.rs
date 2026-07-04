@@ -27,7 +27,7 @@ use num_traits::{FromPrimitive, Inv, Num, NumCast, One, Signed, ToPrimitive, Zer
 
 use crate::big::BigFloat;
 use crate::fixed::FixedFloat;
-use crate::mantissa::limbs_for;
+use crate::mantissa::{limbs_for, require_nonzero_precision};
 use crate::parse::ParseError;
 use crate::rounding::RoundingMode;
 
@@ -58,13 +58,18 @@ impl core::fmt::Display for RadixParseError {
 #[cfg(feature = "std")]
 impl std::error::Error for RadixParseError {}
 
+// ADR-0119: the whole `num-traits` construction surface requires
+// `PREC >= 1`. Each impl below either constructs through a gated
+// constructor or has a supertrait (`Zero`/`One`) that does, so all
+// carry the bound and `FixedFloat<0>` implements none of them.
 impl<const PREC: u32> Zero for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     #[inline]
     fn zero() -> Self {
-        FixedFloat::try_from_i64_exact(0).expect("0 is exact at any precision")
+        FixedFloat::try_from_i64_exact(0).expect("0 is exact at any precision >= 1")
     }
 
     #[inline]
@@ -78,6 +83,7 @@ where
 impl<const PREC: u32> One for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     #[inline]
     fn one() -> Self {
@@ -91,6 +97,7 @@ where
 impl<const PREC: u32> Num for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     type FromStrRadixErr = RadixParseError;
 
@@ -104,9 +111,14 @@ where
     }
 }
 
+// ADR-0119: `Signed` and `FromPrimitive` construct values through the
+// `PREC >= 1`-gated constructors (`FixedFloat::zero`,
+// `try_from_i64_round`, `try_from_big_round`), so the impls inherit the
+// bound. `FixedFloat<0>` therefore implements neither.
 impl<const PREC: u32> Signed for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     #[inline]
     fn abs(&self) -> Self {
@@ -145,6 +157,7 @@ where
 impl<const PREC: u32> FromPrimitive for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     #[inline]
     fn from_i64(n: i64) -> Option<Self> {
@@ -218,6 +231,7 @@ where
 impl<const PREC: u32> NumCast for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     #[inline]
     fn from<T: ToPrimitive>(n: T) -> Option<Self> {
@@ -228,6 +242,7 @@ where
 impl<const PREC: u32> Inv for FixedFloat<PREC>
 where
     [(); limbs_for(PREC)]:,
+    [(); require_nonzero_precision(PREC)]:,
 {
     type Output = Self;
 
