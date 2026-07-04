@@ -267,7 +267,9 @@ fn airy_kernel(
         |w| {
             if use_asymptotic {
                 if asymptotic_neg {
-                    airy_asymptotic_neg(which, &x.abs(), w)
+                    super::ziv::cancellation_boosted(w, |ww| {
+                        airy_asymptotic_neg(which, &x.abs(), ww)
+                    })
                 } else {
                     airy_asymptotic_pos(which, x, w)
                 }
@@ -579,7 +581,7 @@ fn airy_asymptotic_pos(which: AiryFn, x: &BigFloat, target_precision: u32) -> Bi
 /// Ai′(−t) =  π^{−1/2} t^{ 1/4} ( sin φ · Pv − cos φ · Qv )
 /// Bi′(−t) =  π^{−1/2} t^{ 1/4} ( cos φ · Pv + sin φ · Qv )
 /// ```
-fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> BigFloat {
+fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     // ADR-0048: parallel to airy_asymptotic_pos; +64→+32 reduction.
     // The oscillatory negative-x asymptotic (DLMF 9.7.9-9.7.12) has
     // the same `≤ 8` bits round-off accumulation in the `Pu`/`Qu`/
@@ -629,28 +631,57 @@ fn airy_asymptotic_neg(which: AiryFn, t: &BigFloat, target_precision: u32) -> Bi
     let add = |a: &BigFloat, b: &BigFloat| a.add(b, RoundingMode::NearestEven).0;
     let sub = |a: &BigFloat, b: &BigFloat| a.sub(b, RoundingMode::NearestEven).0;
 
+    // The prefactor lifts the inner cancelling pair to the result's
+    // scale: Ai/Bi divide by t^{1/4}, Ai′/Bi′ multiply by it. op_scale
+    // is the larger cancelling-term exponent plus that shift, so
+    // cancellation_boosted charges exactly the realised near-zero depth
+    // (op_scale − result_exp = inner cancellation, ADR-0097).
+    let div_shift =
+        super::ziv::value_exponent(&inv_sqrt_pi).saturating_sub(super::ziv::value_exponent(&t_q));
+    let mul_shift =
+        super::ziv::value_exponent(&inv_sqrt_pi).saturating_add(super::ziv::value_exponent(&t_q));
+    let op_scale = |a: &BigFloat, b: &BigFloat, shift: i64| {
+        super::ziv::value_exponent(a)
+            .max(super::ziv::value_exponent(b))
+            .saturating_add(shift)
+    };
+
     match which {
         AiryFn::Ai => {
             // π^{−1/2} t^{−1/4} ( cos φ·Pu + sin φ·Qu )
-            let inner = add(&mul(&cos_phi, &pu), &mul(&sin_phi, &qu));
+            let ta = mul(&cos_phi, &pu);
+            let tb = mul(&sin_phi, &qu);
+            let inner = add(&ta, &tb);
             let (r, _) = mul(&inv_sqrt_pi, &inner).div(&t_q, RoundingMode::NearestEven);
-            r
+            (r, op_scale(&ta, &tb, div_shift))
         }
         AiryFn::Bi => {
             // π^{−1/2} t^{−1/4} ( −sin φ·Pu + cos φ·Qu )
-            let inner = sub(&mul(&cos_phi, &qu), &mul(&sin_phi, &pu));
+            let ta = mul(&cos_phi, &qu);
+            let tb = mul(&sin_phi, &pu);
+            let inner = sub(&ta, &tb);
             let (r, _) = mul(&inv_sqrt_pi, &inner).div(&t_q, RoundingMode::NearestEven);
-            r
+            (r, op_scale(&ta, &tb, div_shift))
         }
         AiryFn::AiPrime => {
             // DLMF 9.7.10: +π^{−1/2} t^{1/4} ( sin φ·Pv − cos φ·Qv )
-            let inner = sub(&mul(&sin_phi, &pv), &mul(&cos_phi, &qv));
-            mul(&mul(&inv_sqrt_pi, &t_q), &inner)
+            let ta = mul(&sin_phi, &pv);
+            let tb = mul(&cos_phi, &qv);
+            let inner = sub(&ta, &tb);
+            (
+                mul(&mul(&inv_sqrt_pi, &t_q), &inner),
+                op_scale(&ta, &tb, mul_shift),
+            )
         }
         AiryFn::BiPrime => {
             // π^{−1/2} t^{1/4} ( cos φ·Pv + sin φ·Qv )
-            let inner = add(&mul(&cos_phi, &pv), &mul(&sin_phi, &qv));
-            mul(&mul(&inv_sqrt_pi, &t_q), &inner)
+            let ta = mul(&cos_phi, &pv);
+            let tb = mul(&sin_phi, &qv);
+            let inner = add(&ta, &tb);
+            (
+                mul(&mul(&inv_sqrt_pi, &t_q), &inner),
+                op_scale(&ta, &tb, mul_shift),
+            )
         }
     }
 }
@@ -1186,7 +1217,7 @@ mod tests {
         ];
         let t = BigFloat::try_from_i64_exact(300, p).unwrap();
         for (which, refstr) in neg {
-            let got = airy_asymptotic_neg(which, &t, p);
+            let (got, _) = airy_asymptotic_neg(which, &t, p);
             let want = BigFloat::parse_str(refstr, p, RoundingMode::NearestEven)
                 .unwrap()
                 .0;

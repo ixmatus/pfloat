@@ -330,13 +330,17 @@ impl RealScalar for BigFloat {
 #[cfg(feature = "fixed")]
 mod fixed_impl {
     use super::{sealed, Mag, Ordering, RealScalar, RoundingMode, Status};
-    use pfloat::{limbs_for, FixedFloat};
+    use pfloat::{limbs_for, require_nonzero_precision, FixedFloat};
 
     impl<const PREC: u32> sealed::Sealed for FixedFloat<PREC> where [(); limbs_for(PREC)]: {}
 
     impl<const PREC: u32> RealScalar for FixedFloat<PREC>
     where
         [(); limbs_for(PREC)]:,
+        // ADR-0119: FixedFloat<0> is unrepresentable; the zero() /
+        // try_from_big_round constructors this impl calls carry the
+        // require_nonzero_precision bound, so the impl must spell it too.
+        [(); require_nonzero_precision(PREC)]:,
     {
         #[inline]
         fn precision(&self) -> u32 {

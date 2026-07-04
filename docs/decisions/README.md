@@ -174,3 +174,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0122: pow — mirror the mode under odd-parity negation, and dispatch the power-of-two exact set](0122-pow-mirror-mode-and-power-of-two-exact.md) (accepted)
 - [ADR-0123: IEEE convention trio — 754-2019 minimumNumber/maximumNumber, lossless from_f32/f64, log-pole ±0, and LSB-anchored payload order](0123-ieee-convention-trio-minmax-fromf-poles-totalcmp.md) (accepted)
 - [ADR-0124: a resource budget on Bessel integer order (the pf-ap01 DoS)](0124-bessel-order-resource-budget.md) (accepted)
+- [ADR-0125: near a zero, a divergent asymptotic hands off to a convergent series (the pf-1vzg floor)](0125-asymptotic-truncation-floor-near-zero-fallback.md) (accepted)
