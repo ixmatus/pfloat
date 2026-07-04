@@ -246,6 +246,18 @@ fn bessel_y_kernel(
                 return (nan, Status::INVALID);
             }
 
+            // Resource budget (pf-ap01, ADR-0124): the upward recurrence
+            // runs O(m) steps at ~4·m-bit working precision, so an
+            // attacker-controlled order is an unbounded DoS. Refuse an
+            // order past the feasible cap — representable but uncomputable
+            // within budget — with NaN + INVALID.
+            if m > super::bessel_j::MAX_BESSEL_ORDER {
+                let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+                    .expect("precision >= 1");
+                auto_raise(Status::INVALID);
+                return (nan, Status::INVALID);
+            }
+
             // Y₋ₙ(x) = (−1)ⁿ Yₙ(x) (DLMF 10.4.1): order parity is
             // binary and pinned outside the Ziv envelope.
             let negate = (m % 2 == 1) && (n < 0);
@@ -677,6 +689,30 @@ fn bessel_y_asymptotic(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat 
 mod tests {
     use super::*;
     use core::cmp::Ordering;
+
+    /// pf-ap01 (ADR-0124): an integer order past `MAX_BESSEL_ORDER` is a
+    /// resource blowup (O(|n|) steps at ~4·|n|-bit precision), so
+    /// `yn`/`jn`/`in` refuse it with NaN + INVALID (a budget), fast; an
+    /// in-cap order and
+    /// the exact `x = 0` cases still work.
+    #[test]
+    fn bessel_order_resource_budget_refuses_exotic_orders() {
+        let huge = (super::super::bessel_j::MAX_BESSEL_ORDER + 1) as i32;
+        let x = BigFloat::try_from_i64_exact(1, 53).unwrap();
+        let (ry, sy) = x.yn(huge, RoundingMode::NearestEven);
+        assert!(ry.is_nan() && sy.invalid(), "yn(huge) refused");
+        let (rj, sj) = x.jn(huge, RoundingMode::NearestEven);
+        assert!(rj.is_nan() && sj.invalid(), "jn(huge) refused");
+        let (ri, si) = x.in_(huge, RoundingMode::NearestEven);
+        assert!(ri.is_nan() && si.invalid(), "in(huge) refused");
+        // In-cap order still computes.
+        let (rc, _) = x.jn(10, RoundingMode::NearestEven);
+        assert!(!rc.is_nan(), "jn(10) still computes");
+        // x = 0 exact cases are not capped.
+        let z = BigFloat::try_new_zero(Sign::Positive, 53).unwrap();
+        let (rz, _) = z.jn(huge, RoundingMode::NearestEven);
+        assert!(rz.is_zero(), "J_n(0) = 0 exact, not capped");
+    }
 
     /// pf-k8ax (ADR-0123): `Y_n(±0)` is the pole for BOTH zero signs —
     /// −0 wrongly returned NaN + INVALID where −∞ + `DIV_BY_ZERO` is due

@@ -205,6 +205,17 @@ fn bessel_j_kernel(
     // Jₙ(−x) = (−1)ⁿ Jₙ(x); J₋ₙ(x) = (−1)ⁿ Jₙ(x). Each negative
     // contributes (−1)^m, so the result is negated exactly when m is
     // odd and exactly one of {n<0, x<0} holds.
+    // Resource budget (pf-ap01, ADR-0124): Miller backward descent runs
+    // O(m) steps, so an attacker-controlled order is an unbounded DoS.
+    // Refuse an order past the feasible cap with NaN + INVALID (the x = 0
+    // exact cases J_n(0) were dispatched above and are not capped).
+    if m > MAX_BESSEL_ORDER {
+        let nan = BigFloat::try_new_quiet_nan(Sign::Positive, target_precision, &[])
+            .expect("precision >= 1");
+        auto_raise(Status::INVALID);
+        return (nan, Status::INVALID);
+    }
+
     let negate = (m % 2 == 1) && ((n < 0) ^ x.is_sign_negative());
     let ax = x.abs();
 
@@ -544,6 +555,20 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
 ///
 /// Returns the smallest such `e_x` (the
 /// [`super::erf::asymptotic_threshold_exponent`] integer-loop idiom).
+/// Resource-budget cap on the integer order `|n|` for the `J`/`Y`/`I`
+/// recurrence kernels (pf-ap01, ADR-0124). The recurrences run O(|n|)
+/// steps at a working precision that grows ~`4·|n|` bits, so an
+/// attacker-controlled order up to `i32::MAX` is an unbounded resource
+/// exhaustion (a ~GB mantissa, hours of arithmetic). `2^14 = 16384` bounds
+/// worst case to ~2 s and ~32 KB while staying far above any order that
+/// arises in practice (physical/engineering Bessel orders are < ~10^3).
+/// A larger order is representable but not computable within budget (the
+/// parse/format cost-cap posture, ADR-0031/0051); the kernels refuse it
+/// with `NaN` + `INVALID` rather than saturate, since the value never
+/// overflows pfloat's `i64` exponent range for an `i32` order at `x ≥ 1`
+/// (`|n|·log₂|n| ≪ i64::MAX`).
+pub(super) const MAX_BESSEL_ORDER: u32 = 1 << 14;
+
 pub(super) fn bessel_j_threshold(target_precision: u32) -> i64 {
     let need: u64 = u64::from(target_precision) + 64;
     let mut e: i64 = 0;
