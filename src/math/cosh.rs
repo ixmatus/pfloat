@@ -115,6 +115,24 @@ fn cosh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         Class::Normal { exponent, .. } => *exponent,
         _ => unreachable!("specials handled above"),
     };
+    // Near-1 tiny x: cosh(x) = 1 + x²/2 + … grows from 1. For 2|e_x| ≥
+    // target+2 the deviation is below the target boundary near 1, so
+    // cosh(x) rounds to 1 (nearest) or succ(1) (directed-up); past the Ziv
+    // guard cap the composition collapses to exactly 1 and the directed-up
+    // modes returned 1 where succ(1) is due (pf-767j, ADR-0127; the near-1
+    // analogue of the sinh/tanh tiny-x family, ADR-0059). Round 1 with a
+    // magnitude-growing infinitesimal. The `e_x ≥ 62` rim below is the
+    // opposite extreme and disjoint.
+    if e_x.saturating_mul(-2) >= i64::from(target_precision) + 2 {
+        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
+        return crate::rounding::round_with_infinitesimal(
+            &one,
+            Sign::Positive,
+            false, // cosh(x) = 1 + x²/2: magnitude grows
+            target_precision,
+            mode,
+        );
+    }
     if e_x >= 62 {
         let prod_prec = x.precision().max(target_precision).saturating_add(128);
         let abs_w = x

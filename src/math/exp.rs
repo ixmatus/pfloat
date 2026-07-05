@@ -143,6 +143,25 @@ fn exp_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
         Class::Normal { exponent, .. } => *exponent,
         _ => unreachable!("specials handled above"),
     };
+    // Near-1 tiny x: exp(x) = 1 + x + … perturbs 1 by the LINEAR term x
+    // (grows for x > 0, shrinks for x < 0). For e_x ≤ -(target+2) the
+    // perturbation is below the target boundary near 1, so exp(x) rounds
+    // to 1 (nearest) or the neighbour (directed); past the Ziv guard cap
+    // the reduced series collapses to exactly 1 and the directed modes
+    // returned 1 where the neighbour is due (pf-767j, ADR-0127; the near-1
+    // analogue of the expm1 tiny-x family, ADR-0059). subtracts_magnitude
+    // tracks the sign of x (exp(x) < 1 iff x < 0). The `e_x ≥ 62` ceiling
+    // below is the opposite extreme and disjoint.
+    if e_x <= -(i64::from(target_precision) + 2) {
+        let one = BigFloat::try_from_i64_exact(1, target_precision).expect("precision >= 1");
+        return crate::rounding::round_with_infinitesimal(
+            &one,
+            Sign::Positive,
+            x.is_sign_negative(),
+            target_precision,
+            mode,
+        );
+    }
     if e_x >= 62 {
         return exp_extreme(x, target_precision, mode);
     }
