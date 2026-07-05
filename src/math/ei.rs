@@ -139,22 +139,22 @@ fn ei_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
         |w| {
             if use_asymptotic {
                 ei_asymptotic(x, w)
-            } else if in_zero_window(x) {
-                // Near Ei's real zero (x ≈ 0.3725) the series
-                // γ + ln|x| + Σ cancels to a tiny value, and proximity
-                // to the zero is input-encoded; round_to_precision
-                // inside ei_series collapses it for proximity deeper
-                // than the working precision, so the flat boost
-                // saturated and certified a wrong magnitude — and, for
-                // a deep input landing the wrong side of the zero, the
-                // WRONG SIGN (pf-0r1l, ADR-0110). The realised-
-                // cancellation boost preserves the proximity and keeps
-                // the Ziv half-width sound, exactly as li already wraps
-                // its Ei composition. Confined to the zero window so
-                // generic Ei pays nothing.
-                super::ziv::cancellation_boosted(w, |ww| ei_series(x, ww))
             } else {
-                ei_series(x, w).0
+                // The convergent series γ + ln|x| + Σ xᵏ/(k·k!). Two
+                // catastrophic-cancellation shapes share one boost: for
+                // x < 0 the terms alternate while Ei(x) → 0⁻ (a peak-term
+                // cancellation ≈ 2·|x|·log₂ e bits deep, ≈ target near the
+                // regime boundary — a FIXED cap undershoots once target
+                // exceeds it, pf-6naq/ADR-0126); and near Ei's real zero
+                // x ≈ 0.3725 the O(1) leading γ + ln|x| cancels against
+                // the tail to the tiny result (proximity input-encoded, a
+                // flat boost saturated and certified a wrong magnitude or
+                // WRONG SIGN, pf-0r1l/ADR-0110). cancellation_boosted
+                // charges both via ei_series's returned peak-term op_scale,
+                // so no fixed cap sits between the series and its correct
+                // rounding, and generic Ei (x > 0, no cancellation) pays
+                // only the geometric probe.
+                super::ziv::cancellation_boosted(w, |ww| ei_series(x, ww))
             }
         },
         target_precision,
@@ -200,54 +200,29 @@ pub(super) fn asymptotic_threshold_exponent(target_precision: u32) -> i64 {
     e
 }
 
-/// `x ∈ [11/32, 13/32]`: the window bracketing Ei's real zero
-/// `x₀ ≈ 0.37250741…`. Exact dyadic bounds compared on the original
-/// input, so the trigger is precision-independent (the lgamma/digamma
-/// root-window precedent, ADR-0097).
-fn in_zero_window(x: &BigFloat) -> bool {
-    let bound = |n: i64| {
-        BigFloat::try_from_i64_exact(n, 5)
-            .expect("5 bits hold 11 and 13")
-            .scale_by_pow2(-5)
-            .0
-    };
-    matches!(
-        x.partial_cmp(&bound(11)).0,
-        Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
-    ) && matches!(
-        x.partial_cmp(&bound(13)).0,
-        Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
-    )
-}
-
 /// Convergent series `Ei(x) = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!)`
 /// (DLMF 6.6.2). The peak term sits near `k ≈ |x|`; for `x < 0` the
-/// terms alternate while the result decays, so the working precision
-/// is boosted by roughly `2·|x|·log₂ e` to absorb the cancellation
-/// (the [`super::erf::erf_maclaurin`] guard idiom, doubled for the
-/// alternating case).
+/// terms alternate while the result decays to `0⁻`, so the peak term
+/// (`≈ 2^{|x|·log₂ e}`) cancels against the sum tail — a cancellation
+/// `≈ 2·|x|·log₂ e` bits deep.
 ///
-/// Returns `(value, operand_scale)` for [`super::ziv::cancellation_boosted`]:
-/// near Ei's zero the O(1) leading magnitude `γ + ln|x|` (and the
-/// first series term `x`) cancel against the tail to the tiny result,
-/// so the scale is their binary exponent. Callers outside the zero
-/// window discard the scale.
+/// Returns `(value, op_scale)` for [`super::ziv::cancellation_boosted`].
+/// `op_scale` is the largest partial term's exponent, tracked over the
+/// leading `γ + ln|x|`, the first term `x`, and every series term. Near
+/// Ei's zero those are O(1) and the tiny result carries the depth; for a
+/// large-`|x|` alternating argument the peak term does. The prior
+/// leading-magnitude-only scale (and a fixed `.min(4096)` working boost)
+/// undercharged the large-`|x|` regime once `target` exceeded the cap
+/// (pf-6naq, ADR-0126).
 fn ei_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).saturating_mul(2).min(4096) as u32
-    };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // Only a small fixed guard for the series arithmetic itself; the
+    // peak-term cancellation is charged by cancellation_boosted at the
+    // call site via the returned op_scale.
+    let working_prec = target_precision.saturating_add(64);
 
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
@@ -263,6 +238,10 @@ fn ei_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     // sum is Σ_{k≥1} T_k with no extra factor.
     let mut term = x_w.clone();
     let (mut acc, _) = g_plus_ln.add(&term, RoundingMode::NearestEven);
+    // Largest partial term seen: the operand scale for the alternating
+    // cancellation (charged by cancellation_boosted at the call site).
+    let mut max_term_exp =
+        super::ziv::value_exponent(&g_plus_ln).max(super::ziv::value_exponent(&x_w));
 
     let floor = -i64::from(working_prec) - 8;
     let max_iter: i64 = 1 << 22;
@@ -274,6 +253,7 @@ fn ei_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
         let (txm, _) = tx.mul(&km1, RoundingMode::NearestEven);
         let (t_next, _) = txm.div(&k_sq, RoundingMode::NearestEven);
         term = t_next;
+        max_term_exp = max_term_exp.max(super::ziv::value_exponent(&term));
         let (acc_next, _) = acc.add(&term, RoundingMode::NearestEven);
         acc = acc_next;
 
@@ -288,12 +268,7 @@ fn ei_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
             }
         }
     }
-    // The O(1) magnitude that cancels to form the near-zero result:
-    // the leading γ + ln|x| and the first series term x. Away from the
-    // zero the result is itself O(this), so the charged cancellation is
-    // ~0 (cancellation_boosted then adds nothing).
-    let scale = super::ziv::value_exponent(&g_plus_ln).max(super::ziv::value_exponent(&x_w));
-    (acc, scale)
+    (acc, max_term_exp)
 }
 
 /// Divergent asymptotic `Ei(x) ∼ (eˣ/x)·Σ_{k≥0} k!/xᵏ` (DLMF 6.12.2),

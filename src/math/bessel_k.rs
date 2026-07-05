@@ -442,25 +442,31 @@ fn ci(v: i64, p: u32) -> BigFloat {
 /// check (pinned by `k0_dlmf_10_31_2_crosscheck`).
 ///
 /// The head's `(−x²/4)^k` alternation and the log/head/tail
-/// composition cancel, so working precision is boosted `≈ x·log₂e`
-/// (the [`super::bessel_y`] `ci.rs`/`si.rs` capped guard). Returns
-/// the unrounded working-precision value.
+/// composition cancel, so working precision is raised by the realised
+/// cancellation via [`super::ziv::cancellation_boosted`] rather than a
+/// fixed cap (pf-6naq, ADR-0126). Returns the unrounded
+/// working-precision value.
 fn bessel_k_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
-    let e_x = match &x.class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // The DLMF 10.31.1 head + log·I_n + tail composition cancels
+    // catastrophically toward the asymptotic boundary: the log term
+    // (∝ I_n(x) ~ e^x) and the tail (~ e^x) cancel down to K_n(x) ~ e^{−x},
+    // a cancellation ~2·x·log₂e bits deep — ≈ target near the boundary, so
+    // the old fixed `.min(4096)` working cap undershot once target exceeded
+    // it and certified a wrong value (pf-6naq, ADR-0126). cancellation_boosted
+    // charges the realised depth via the returned peak op_scale.
+    super::ziv::cancellation_boosted(target_precision, |working| {
+        bessel_k_series_at(n, x, working)
+    })
+}
+
+/// One evaluation of the DLMF 10.31.1 log series at `working_arg` bits,
+/// returning `(value, op_scale)` for [`super::ziv::cancellation_boosted`].
+/// `op_scale` is the largest of the three cancelling summands' exponents.
+fn bessel_k_series_at(n: u32, x: &BigFloat, working_arg: u32) -> (BigFloat, i64) {
+    // Only a small fixed guard for the series arithmetic itself; the
+    // head + log + tail cancellation is charged by cancellation_boosted
+    // in the wrapper via the returned op_scale.
+    let working = working_arg.saturating_add(64);
 
     let nn = i64::from(n);
     let xw = x
@@ -564,7 +570,13 @@ fn bessel_k_series(n: u32, x: &BigFloat, target_precision: u32) -> BigFloat {
 
     let (s1, _) = head_term.add(&log_term, RoundingMode::NearestEven);
     let (k_val, _) = s1.add(&tail_term, RoundingMode::NearestEven);
-    k_val
+    // op_scale = the largest cancelling summand's exponent: the log·I_n and
+    // tail terms peak at ~2^{x·log₂e} toward the boundary; near x = 0 the
+    // head ~x^{−n} dominates. (n = 0's head is a zero → sorts out via MIN.)
+    let op_scale = super::ziv::value_exponent(&head_term)
+        .max(super::ziv::value_exponent(&log_term))
+        .max(super::ziv::value_exponent(&tail_term));
+    (k_val, op_scale)
 }
 
 /// `K₀(x)` (`which = 0`) or `K₁(x)` (`which = 1`) for `x > 0`, the
