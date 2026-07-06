@@ -188,9 +188,10 @@ fn ci_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
     (result, status)
 }
 
-/// Convergent alternating series for `Ci(x)`, `x > 0` (DLMF 6.6.6).
-/// Working precision boosted by `≈ x·log₂ e` for the alternating
-/// cancellation (the [`super::erf`] guard idiom).
+/// Convergent alternating series for `Ci(x)`, `x > 0` (DLMF 6.6.6). The
+/// alternating cancellation (`≈ x·log₂ e` bits) is charged by the caller's
+/// [`super::ziv::cancellation_boosted`] via the returned `op_scale`, not a
+/// fixed internal boost (pf-6naq, ADR-0126).
 ///
 /// Returns `(value, op_scale)` for [`super::ziv::cancellation_boosted`],
 /// where `op_scale` is the largest partial-term exponent. Near the
@@ -205,17 +206,12 @@ fn ci_series(x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // Only a small fixed guard for the series arithmetic itself; the
+    // alternating cancellation is charged by the caller's
+    // cancellation_boosted via the returned op_scale. The old fixed
+    // `.min(4096)` boost is dead (superseded by R5.1's op_scale return,
+    // pf-1vzg/ADR-0125; removed in pf-6naq/ADR-0126).
+    let working_prec = target_precision.saturating_add(64);
 
     let x_w = x
         .round_to_precision(working_prec, RoundingMode::NearestEven)

@@ -482,26 +482,25 @@ pub(super) fn miller_seed_m(ax: &BigFloat, target_precision: u32, e_x: i64, m_fl
 ///
 /// `M` is derived, not guessed: see [`miller_seed_m`] for the
 /// DLMF 10.19.1 derivation and the sub-slice 2b.3 binary-refine
-/// implementation. Working precision is boosted `≈ |x|·log₂e` bits
-/// for the recurrence and sum-rule cancellation (the [`super::si`]
-/// guard idiom). Returns the unrounded working-precision value.
-fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
+/// implementation. Returns `(value, op_scale)` for the caller's
+/// [`super::ziv::cancellation_boosted`]: `op_scale` is the peak
+/// recurrence value on the `J_m = f_m / S` result scale, so a deep
+/// near-zero J resolves to any depth (pf-6naq, ADR-0126).
+fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &ax.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    // Cancellation guard, the src/math/si.rs:163-178 idiom.
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // Only a small fixed guard for the recurrence arithmetic; the
+    // cancellation is charged by the caller's cancellation_boosted via the
+    // returned op_scale. A generic J in this regime barely cancels (the
+    // huge sum-rule normalisation c = 1/J_M divides out in `f_m / S`), but
+    // a deep near-zero J input (`f_m → 0`) cancels by its proximity depth,
+    // which the old fixed `.min(4096)` cap undershot past ~4096 bits
+    // (pf-6naq, ADR-0126; the pf-1vzg near-zero family, one regime in from
+    // the asymptotic). Miller has no truncation floor, so the boost (unlike
+    // the asymptotic's) always resolves.
+    let working = target_precision.saturating_add(64);
     let x = ax
         .round_to_precision(working, RoundingMode::NearestEven)
         .expect("precision >= 1")
@@ -523,7 +522,13 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
     let mut s = zero.clone();
     let mut result = zero;
     let mut idx = big_m;
+    // Largest recurrence value seen. Near a J_m zero the recessive `f_m`
+    // (the result numerator) collapses far below the descent's peak, so
+    // `f_max / S` (the op_scale on the `J_m = f_m / S` result scale) charges
+    // that cancellation to cancellation_boosted (pf-6naq, ADR-0126).
+    let mut max_f_exp = super::ziv::value_exponent(&f_cur);
     loop {
+        max_f_exp = max_f_exp.max(super::ziv::value_exponent(&f_cur));
         if idx == i64::from(m) {
             result = f_cur.clone();
         }
@@ -550,7 +555,12 @@ fn bessel_j_miller(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloat {
         idx -= 1;
     }
     let (j_m, _) = result.div(&s, RoundingMode::NearestEven);
-    j_m
+    // op_scale on the result scale: the peak recurrence value lifted by the
+    // `1/S` normalisation. For a generic J it tracks `result_exp` (no net
+    // cancellation — c divides out); near a zero it sits far above, driving
+    // the boost.
+    let op_scale = max_f_exp.saturating_sub(super::ziv::value_exponent(&s));
+    (j_m, op_scale)
 }
 
 /// Binary-exponent boundary at/above which the DLMF 10.17.3 Hankel
@@ -804,7 +814,9 @@ fn bessel_j_eval_normal(m: u32, ax: &BigFloat, target_precision: u32) -> BigFloa
             (v, op_scale)
         })
     } else {
-        bessel_j_miller(m, ax, target_precision)
+        // Middle regime: Miller recurrence, boosted so a deep near-zero J
+        // (f_m → 0) resolves past the old fixed cap (pf-6naq, ADR-0126).
+        super::ziv::cancellation_boosted(target_precision, |w| bessel_j_miller(m, ax, w))
     }
 }
 
@@ -1043,12 +1055,12 @@ mod tests {
         let p = 160;
         let x = at(1, 1, p);
         let (t0, _) = bessel_j_tiny(0, &x, p);
-        let m0 = bessel_j_miller(0, &x, p);
+        let (m0, _) = bessel_j_miller(0, &x, p);
         assert!(close_at(&t0, &m0, p - 12), "tiny vs Miller J_0(1)");
         assert!(close_at(&t0, &pj(J0_1, p), p - 12), "tiny J_0(1)");
         assert!(close_at(&m0, &pj(J0_1, p), p - 12), "Miller J_0(1)");
         let (t1, _) = bessel_j_tiny(1, &x, p);
-        let m1 = bessel_j_miller(1, &x, p);
+        let (m1, _) = bessel_j_miller(1, &x, p);
         assert!(close_at(&t1, &m1, p - 12), "tiny vs Miller J_1(1)");
         assert!(close_at(&m1, &pj(J1_1, p), p - 12), "Miller J_1(1)");
     }
@@ -1110,12 +1122,12 @@ mod tests {
         let p = 113;
         let x = at(256, 1, p);
         let (a0, _, _) = bessel_j_asymptotic(0, &x, p);
-        let mi0 = bessel_j_miller(0, &x, p);
+        let (mi0, _) = bessel_j_miller(0, &x, p);
         assert!(close_at(&a0, &mi0, p - 12), "asymp vs Miller J_0(256)");
         assert!(close_at(&a0, &pj(J0_256, p), p - 12), "asymp J_0(256)");
         assert!(close_at(&mi0, &pj(J0_256, p), p - 12), "Miller J_0(256)");
         let (a1, _, _) = bessel_j_asymptotic(1, &x, p);
-        let mi1 = bessel_j_miller(1, &x, p);
+        let (mi1, _) = bessel_j_miller(1, &x, p);
         assert!(close_at(&a1, &mi1, p - 12), "asymp vs Miller J_1(256)");
         assert!(close_at(&a1, &pj(J1_256, p), p - 12), "asymp J_1(256)");
     }

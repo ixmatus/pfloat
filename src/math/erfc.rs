@@ -162,9 +162,10 @@ fn erfc_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
     // Ziv-driven correct rounding under every IEEE mode. The eval
     // closure carries the regime dispatch on |x| and the negative-x
     // reflection (`2 − erfc(|x|)` loses at most one bit because
-    // erfc(|x|) ≤ 2). The +128-bit Maclaurin cancellation boost is
-    // preserved INSIDE eval(w) so the `1 − erf_maclaurin` subtraction
-    // retains target bits when erf(x) is close to 1.
+    // erfc(|x|) ≤ 2). The Maclaurin cancellation is charged INSIDE
+    // eval(w) by cancellation_boosted so the `1 − erf_maclaurin`
+    // subtraction retains target bits when erf(x) is close to 1
+    // (pf-6naq, ADR-0126).
     let (result, status) = ziv_round(
         |w| {
             let v = erfc_at_w(&abs_x, w, use_asymptotic);
@@ -191,9 +192,9 @@ fn erfc_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
 /// Evaluate `erfc(|x|)` at the supplied working precision under
 /// `NearestEven`. The regime decision is fixed by the caller from
 /// `target_precision` so it does not flip across Ziv retries. The
-/// Maclaurin branch applies an additional +128-bit cancellation
-/// boost so `1 − erf_maclaurin(x)` retains the target bits even
-/// when `erf(x)` approaches 1.
+/// Maclaurin branch drives the working precision by the realised
+/// cancellation via [`super::ziv::cancellation_boosted`] (pf-6naq,
+/// ADR-0126).
 fn erfc_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFloat {
     if use_asymptotic {
         // Asymptotic's smallest-term truncation gives target precision
@@ -201,16 +202,21 @@ fn erfc_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFl
         // asymptotic_threshold_exponent gate guarantees this.
         erfc_asymptotic(abs_x, working_prec)
     } else {
-        // Cancellation boost for `1 − erf(x)` when erf(x) is close to 1.
-        // erf_maclaurin already boosts internally for series convergence
-        // (peak term at n ≈ x²); the additional +128 here covers the
-        // subtraction cancellation after the series has converged.
-        let inner_w = working_prec
-            .saturating_add(128)
-            .min(working_prec.saturating_add(512));
-        let erf_val = erf_maclaurin(abs_x, inner_w);
-        let one = BigFloat::try_from_i64_exact(1, inner_w).expect("precision >= 1");
-        one.sub(&erf_val, RoundingMode::NearestEven).0
+        // `erfc(x) = 1 − erf(x)` in the small/moderate-|x| regime. Two
+        // cancellations stack: the erf Maclaurin peak term
+        // (`≈ 2^{x²·log₂ e}`, charged via `op_scale`) AND the `1 − erf`
+        // subtraction when erf(x) is close to 1 (`erfc(x) ≈ 2^{−x²·log₂ e}`
+        // at the regime boundary). Both are carried by
+        // cancellation_boosted: `op_scale` is the erf peak term and the
+        // result exponent is `≈ −x²·log₂ e`, so the raised working precision
+        // spans `op_scale − result_exp ≈ 2·x²·log₂ e` bits — no fixed cap
+        // sits in between, where the old `.min(w + 512)` inner cap
+        // undershot once `target` exceeded it (pf-6naq, ADR-0126).
+        super::ziv::cancellation_boosted(working_prec, |ww| {
+            let (erf_val, op_scale) = erf_maclaurin(abs_x, ww);
+            let one = BigFloat::try_from_i64_exact(1, ww).expect("precision >= 1");
+            (one.sub(&erf_val, RoundingMode::NearestEven).0, op_scale)
+        })
     }
 }
 

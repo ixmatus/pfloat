@@ -176,9 +176,9 @@ fn erf_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFl
 /// does not flip across Ziv retries. The caller (`erf_kernel`) also
 /// peels off special cases (NaN, ±0, ±∞) and applies the input's
 /// sign to the returned value. Returns the unrounded value at
-/// `working_prec` (asymptotic path) or `working_prec + 64 + extra`
-/// (Maclaurin path; the peak-term boost in `erf_maclaurin` adds
-/// safety on top of the Ziv envelope).
+/// `working_prec` (asymptotic path) or at a precision raised by the
+/// realised peak-term cancellation via `cancellation_boosted` (Maclaurin
+/// path; pf-6naq, ADR-0126).
 fn erf_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFloat {
     if use_asymptotic {
         let erfc_val = erfc_asymptotic(abs_x, working_prec);
@@ -186,7 +186,11 @@ fn erf_at_w(abs_x: &BigFloat, working_prec: u32, use_asymptotic: bool) -> BigFlo
         let (diff, _) = one.sub(&erfc_val, RoundingMode::NearestEven);
         diff
     } else {
-        erf_maclaurin(abs_x, working_prec)
+        // The Maclaurin peak term cancels `≈ x²·log₂ e` bits (up to `≈
+        // target` near the regime boundary); cancellation_boosted raises
+        // the working precision by that realised depth so no fixed cap
+        // undershoots (pf-6naq, ADR-0126).
+        super::ziv::cancellation_boosted(working_prec, |ww| erf_maclaurin(abs_x, ww))
     }
 }
 
@@ -216,35 +220,28 @@ pub(super) fn asymptotic_threshold_exponent(target_precision: u32) -> i64 {
 }
 
 /// Maclaurin series for `erf(|x|)`. Always returns a non-negative
-/// result. Callers apply the sign of the original `x`. The
-/// working precision is boosted by approximately `x² · log₂ e`
-/// bits so the peak term at `n ≈ x²` does not exhaust the budget.
-pub(super) fn erf_maclaurin(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
+/// result. Callers apply the sign of the original `x`.
+///
+/// Returns `(value, op_scale)` for [`super::ziv::cancellation_boosted`].
+/// The peak term sits near `n ≈ x²` at magnitude `≈ 2^{x²·log₂ e}`; the
+/// alternating signs cancel it back down to `erf(x) = O(1)`, a
+/// cancellation `≈ x²·log₂ e` bits deep — and near the asymptotic-regime
+/// boundary that is `≈ target` bits, so a FIXED boost cap undershoots
+/// once `target` exceeds it and the Ziv half-width certifies a wrong
+/// value (pf-6naq, ADR-0126). `op_scale` is the largest partial term's
+/// exponent; the caller's `cancellation_boosted` raises the working
+/// precision by the realised cancellation, so no fixed cap sits between
+/// the series and its correct rounding.
+pub(super) fn erf_maclaurin(abs_x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     if abs_x.is_zero() {
-        return BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1");
+        let z = BigFloat::try_new_zero(Sign::Positive, target_precision).expect("precision >= 1");
+        return (z, i64::MIN);
     }
 
-    let e_x = match &abs_x.class {
-        Class::Normal { exponent, .. } => *exponent,
-        _ => 0,
-    };
-
-    // Maclaurin's peak term sits near `n ≈ x²`. To absorb it we
-    // need extra bits proportional to `x² · log₂ e`. Estimate
-    // `x² ≤ 4 · 4^e_x` (the upper bound of `|x| ∈ [2^e, 2^(e+1))`)
-    // and use the rational approximation `log₂ e ≈ 23/16` to stay
-    // no_std-clean.
-    let extra = if e_x <= 0 {
-        0
-    } else {
-        let shift = (2 * (e_x + 1)).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // Only a small fixed guard for the series arithmetic itself; the
+    // peak-term cancellation is charged by `cancellation_boosted` at the
+    // call site via the returned `op_scale`.
+    let working_prec = target_precision.saturating_add(64);
 
     let x_w = abs_x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
@@ -256,6 +253,9 @@ pub(super) fn erf_maclaurin(abs_x: &BigFloat, target_precision: u32) -> BigFloat
     let mut factorial = BigFloat::try_from_i64_exact(1, working_prec).expect("precision >= 1");
     // First term (n=0): x / 1.
     let mut sum = x_w.clone();
+    // Largest partial term seen: the operand scale for the alternating
+    // cancellation (charged by cancellation_boosted at the call site).
+    let mut max_term_exp = super::ziv::value_exponent(&x_w);
 
     let max_iter = working_prec.saturating_mul(4).max(2048);
     let mut sign_negative_term = true;
@@ -274,6 +274,7 @@ pub(super) fn erf_maclaurin(abs_x: &BigFloat, target_precision: u32) -> BigFloat
             term = term.negated();
         }
         sign_negative_term = !sign_negative_term;
+        max_term_exp = max_term_exp.max(super::ziv::value_exponent(&term));
         let (next_sum, _) = sum.add(&term, RoundingMode::NearestEven);
         sum = next_sum;
 
@@ -288,7 +289,10 @@ pub(super) fn erf_maclaurin(abs_x: &BigFloat, target_precision: u32) -> BigFloat
 
     let coef = two_over_sqrt_pi_at(working_prec);
     let (result, _) = coef.mul(&sum, RoundingMode::NearestEven);
-    result
+    // op_scale at the result scale: the peak partial term lifted by the
+    // O(1) `2/√π` factor's exponent.
+    let op_scale = max_term_exp.saturating_add(super::ziv::value_exponent(&coef));
+    (result, op_scale)
 }
 
 #[cfg(test)]

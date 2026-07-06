@@ -175,3 +175,5 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0123: IEEE convention trio — 754-2019 minimumNumber/maximumNumber, lossless from_f32/f64, log-pole ±0, and LSB-anchored payload order](0123-ieee-convention-trio-minmax-fromf-poles-totalcmp.md) (accepted)
 - [ADR-0124: a resource budget on Bessel integer order (the pf-ap01 DoS)](0124-bessel-order-resource-budget.md) (accepted)
 - [ADR-0125: near a zero, a divergent asymptotic hands off to a convergent series (the pf-1vzg floor)](0125-asymptotic-truncation-floor-near-zero-fallback.md) (accepted)
+- [ADR-0126: the fixed-cap series boost gives way to cancellation_boosted (the pf-6naq crate sweep)](0126-fixed-cap-series-boost-cancellation-boosted.md) (accepted)
+- [ADR-0127: the near-1 tiny-x family (exp and cosh short-circuit; cos and the reciprocals were already handled)](0127-near-one-tiny-x-dispatch.md) (accepted)

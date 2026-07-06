@@ -418,7 +418,12 @@ fn bessel_y01(which: u32, x: &BigFloat, target_precision: u32, use_asymptotic: b
             (v, op_scale)
         })
     } else {
-        bessel_y_series(which, x, target_precision).0
+        // The DLMF 10.8.1 log series' head/log/tail composition cancels
+        // (Y_n small toward the boundary); charge the realised depth via
+        // bessel_y_series's exposed op_scale instead of the old fixed cap,
+        // which undershot once target exceeded it (pf-6naq, ADR-0126). The
+        // asymptotic branch already boosts for its near-zero case (pf-1vzg).
+        super::ziv::cancellation_boosted(target_precision, |w| bessel_y_series(which, x, w))
     }
 }
 
@@ -478,10 +483,19 @@ fn ci(v: i64, p: u32) -> BigFloat {
 /// 10.8.2 bracket term. The two DLMF forms agree, pinning the
 /// reduction.
 ///
-/// Working precision is boosted `≈ x·log₂e` for the alternating
-/// cancellation (the [`super::ci`] / [`super::bessel_j`] capped
-/// guard). Returns the unrounded working-precision value.
+/// Returns `(value, op_scale)`. A fixed head-start covers the moderate
+/// `≈ x·log₂ e` cancellation for direct callers; production callers wrap
+/// this in [`super::ziv::cancellation_boosted`], which raises the working
+/// precision past the cap for the deep cases the cap alone undershot (near
+/// a `Y` zero, or a large moderate `x` at high target — pf-6naq, ADR-0126).
 fn bessel_y_series(n: u32, x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
+    // A self-sufficiency head-start so DIRECT callers (the cross-check
+    // tests, which call this outside `cancellation_boosted`) resolve the
+    // moderate `≈ |x|·log₂ e` cancellation without a boost. Production
+    // callers wrap this in `cancellation_boosted` (via the returned
+    // op_scale), which grows the working precision past the cap for the
+    // deep cases the cap alone undershot (pf-6naq, ADR-0126) — so the cap
+    // bounds only the head-start, not the ceiling.
     let e_x = match &x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,

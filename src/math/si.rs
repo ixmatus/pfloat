@@ -162,7 +162,13 @@ fn si_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigFlo
             let result_abs = if use_asymptotic {
                 si_asymptotic(&abs_x, w)
             } else {
-                si_series(&abs_x, w)
+                // The convergent alternating series peaks at `≈ 2^{|x|·log₂ e}`
+                // and cancels back to `Si(x) = O(1)`; near the regime boundary
+                // that is `≈ target` bits, so a fixed cap undershoots once
+                // `target` exceeds it. cancellation_boosted charges the
+                // realised depth via si_series's returned peak-term op_scale
+                // (pf-6naq, ADR-0126).
+                super::ziv::cancellation_boosted(w, |ww| si_series(&abs_x, ww))
             };
             if matches!(sign, Sign::Negative) {
                 result_abs.negated()
@@ -205,25 +211,25 @@ pub(super) fn asymptotic_threshold_exponent(target_precision: u32) -> i64 {
     e
 }
 
-/// Convergent alternating series for `Si(|x|)` (DLMF 6.6.5). Working
-/// precision boosted by `≈ |x|·log₂ e` for the alternating
-/// cancellation (the [`super::erf::erf_maclaurin`] idiom).
-fn si_series(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
+/// Convergent alternating series for `Si(|x|)` (DLMF 6.6.5).
+///
+/// Returns `(value, op_scale)` for [`super::ziv::cancellation_boosted`].
+/// The peak term sits near `2k+1 ≈ |x|` at magnitude `≈ 2^{|x|·log₂ e}`;
+/// the alternating signs cancel it back to `Si(x) = O(1)` (`→ π/2`), a
+/// cancellation `≈ |x|·log₂ e` bits deep. `op_scale` is the largest
+/// partial term's exponent; the caller's `cancellation_boosted` raises the
+/// working precision by that realised depth, so no fixed `.min(4096)` cap
+/// undershoots once `target` exceeds it (pf-6naq, ADR-0126). Si has no
+/// real zero for `x > 0`, so there is no truncation floor to detect.
+fn si_series(abs_x: &BigFloat, target_precision: u32) -> (BigFloat, i64) {
     let e_x = match &abs_x.class {
         Class::Normal { exponent, .. } => *exponent,
         _ => 0,
     };
-    let extra = if e_x <= 0 {
-        64
-    } else {
-        let shift = (e_x + 1).min(20) as u32;
-        let mag: u64 = 1u64 << shift;
-        (mag.saturating_mul(23) / 16).min(4096) as u32
-    };
-    let working_prec = target_precision
-        .saturating_add(64)
-        .saturating_add(extra)
-        .min(target_precision.saturating_add(4096));
+    // Only a small fixed guard for the series arithmetic itself; the
+    // peak-term cancellation is charged by cancellation_boosted at the
+    // call site via the returned op_scale.
+    let working_prec = target_precision.saturating_add(64);
 
     let x_w = abs_x
         .round_to_precision(working_prec, RoundingMode::NearestEven)
@@ -238,6 +244,9 @@ fn si_series(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
     // /(2k+1).
     let mut term = x_w.clone();
     let mut acc = x_w.clone();
+    // Largest partial term seen: the operand scale for the alternating
+    // cancellation (charged by cancellation_boosted at the call site).
+    let mut max_term_exp = super::ziv::value_exponent(&x_w);
     let floor = -i64::from(working_prec) - 8;
     let max_iter: i64 = 1 << 22;
     for k in 1..=max_iter {
@@ -255,6 +264,7 @@ fn si_series(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
         let (t4, _) = t3.div(&d3, RoundingMode::NearestEven);
         let (t5, _) = t4.div(&d4, RoundingMode::NearestEven);
         term = t5.negated();
+        max_term_exp = max_term_exp.max(super::ziv::value_exponent(&term));
         let (acc_next, _) = acc.add(&term, RoundingMode::NearestEven);
         acc = acc_next;
 
@@ -269,7 +279,7 @@ fn si_series(abs_x: &BigFloat, target_precision: u32) -> BigFloat {
             }
         }
     }
-    acc
+    (acc, max_term_exp)
 }
 
 /// `Si(|x|) = π/2 − f·cos|x| − g·sin|x|` (DLMF 6.12.3) for large
