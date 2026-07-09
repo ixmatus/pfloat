@@ -270,10 +270,19 @@ fn lex(s: &str) -> Result<ParsedDecimal, ParseError> {
     }
 
     // Strip leading zeros from digits (purely cosmetic; the
-    // multi-precision integer construction handles them, but
-    // dropping them keeps the integer's bit length tight).
-    while digits.len() > 1 && digits[0] == 0 {
-        digits.remove(0);
+    // multi-precision integer construction handles them, but dropping them
+    // keeps the integer's bit length tight — and the pf-bpaq magnitude cap
+    // counts significant digits, ADR-0128). Count then drain in a single
+    // pass: repeated `Vec::remove(0)` is O(n²), and a multi-megabyte
+    // all-zeros input drove that past the ADR-0031 parse budget
+    // (boundary-io/type/2). Keep at least one digit (all-zeros is `0`).
+    let leading_zeros = digits
+        .iter()
+        .take_while(|&&d| d == 0)
+        .count()
+        .min(digits.len().saturating_sub(1));
+    if leading_zeros > 0 {
+        digits.drain(0..leading_zeros);
     }
 
     Ok(ParsedDecimal {
@@ -387,12 +396,14 @@ fn finite_to_bigfloat(
     precision: u32,
     mode: RoundingMode,
 ) -> (BigFloat, Status) {
-    // Short-circuit oversized exponents to overflow or underflow
+    // Short-circuit oversized magnitudes to overflow or underflow
     // before allocating the `pow5` intermediate. The threshold is
-    // [`MAX_DECIMAL_EXPONENT`], derived in-code from the explicit
-    // [`POW5_STORAGE_BUDGET_BITS`] (ADR-0031): the big `pow5(|e|)`
-    // is intrinsic to correctly rounded parse, so the cap is a
-    // resource budget rather than an algorithmic limit.
+    // [`MAX_DECIMAL_EXPONENT`], whose cost-side derivation its own doc
+    // records (ADR-0031, amended): the big `pow5(|e|)` is intrinsic to
+    // correctly rounded parse, so the cap is a resource budget rather than
+    // an algorithmic limit (the earlier storage-budget framing, and the
+    // `POW5_STORAGE_BUDGET_BITS` constant it named, were retired;
+    // boundary-io/type/6).
     // The cost cap is a resource budget, not pfloat's exponent rim:
     // `10^MAX_DECIMAL_EXPONENT` is `~2^3.3e6`, far inside the i64
     // exponent range, so the saturated value is a directional
