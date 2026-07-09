@@ -368,6 +368,15 @@ fn decimal_to_bigfloat(
 /// (ADR-0006); the cap is purely the cost budget.
 const MAX_DECIMAL_EXPONENT: i32 = 1_000_000;
 
+/// Number of significant decimal digits a `Display` render carries for a
+/// `precision`-bit value: `ceil(p · log10 2) + 1`. Mirrors
+/// `fmt::BigFloat::round_trip_digit_count` (kept in sync; parse must not
+/// depend on the `fmt` feature). Used to widen the pow5 cost budget so a
+/// value's own `Display` output always re-parses (pf-bpaq, ADR-0128).
+fn round_trip_digit_count(precision: u32) -> u32 {
+    (u64::from(precision) * 30103).div_ceil(100_000) as u32 + 1
+}
+
 /// Build the multi-precision integer `m` from digits, then convert
 /// `m × 10^exponent` to a [`BigFloat`] at `precision`, rounding
 /// under `mode`.
@@ -394,7 +403,32 @@ fn finite_to_bigfloat(
     // TowardZero (→ +∞, must stay finite) and `1e-2000000` under
     // TowardPositive (→ +0, must round up to a nonzero) — pf-mw6u.
     let neg = matches!(sign, Sign::Negative);
-    if exponent > MAX_DECIMAL_EXPONENT {
+
+    // The cap governs two distinct things that the pre-fix code conflated
+    // onto the point-baked `exponent` (pf-bpaq, ADR-0128):
+    //
+    // - REPRESENTABILITY is a property of the value's decimal MAGNITUDE
+    //   `L = exponent + (digits − 1)` (the leading significant digit's
+    //   place). A value renders (via `fmt`) exactly iff `|L| ≤ cap`, and
+    //   `parse`/`fmt` must agree so a value round-trips through its own
+    //   Display output. Capping on `exponent` alone saturated a finite
+    //   value's faithful `round_trip_digit_count`-digit render near the cap
+    //   (its baked re-parse exponent sits `digits − 1` below `L`).
+    // - The pow5 COST is `pow5(|exponent|)` (ADR-0031). Display emits at
+    //   most `round_trip_digit_count(precision)` significant digits, so a
+    //   value's own render re-parses with `|exponent| ≤ |L| + rt − 1`; a
+    //   budget of `cap + rt` therefore admits every renderable value while
+    //   still bounding the pow5 of a pathological many-fractional-digit
+    //   direct input (whose magnitude stays small but whose `|exponent|`
+    //   blows up).
+    let cap = i64::from(MAX_DECIMAL_EXPONENT);
+    let rt = i64::from(round_trip_digit_count(precision));
+    let magnitude = i64::from(exponent) + (digits.len() as i64) - 1;
+    let pow5_budget = cap.saturating_add(rt);
+    // Overflow needs only the magnitude test: a large positive `exponent`
+    // implies `L ≥ exponent`, so it is subsumed. Underflow adds the pow5
+    // guard for the small-magnitude, huge-fractional-digit-count input.
+    if magnitude > cap {
         // Overflow side: round to ∞ only toward ±∞ in the value's own
         // direction (and under nearest); otherwise saturate to the
         // largest finite so directed-toward-zero modes stay finite.
@@ -421,7 +455,7 @@ fn finite_to_bigfloat(
         auto_raise(status);
         return (value, status);
     }
-    if exponent < -MAX_DECIMAL_EXPONENT {
+    if magnitude < -cap || i64::from(exponent) < -pow5_budget {
         // Underflow side: round away from zero (to the smallest
         // nonzero) only toward the value's own sign; otherwise ±0.
         let up = match mode {
@@ -667,6 +701,24 @@ mod tests {
             Some(Ordering::Equal),
             "expected equal: {a:?} vs {b:?}"
         );
+    }
+
+    /// The local `round_trip_digit_count` (which sizes the pow5 cost guard
+    /// so a value's own Display output re-parses near the decimal cap) must
+    /// agree with `fmt::BigFloat::round_trip_digit_count` at every
+    /// precision. The two are deliberately duplicated so parse does not
+    /// depend on the `fmt` feature (ADR-0128); this pins the sync so a
+    /// future drift cannot silently break the round-trip.
+    #[cfg(feature = "fmt")]
+    #[test]
+    fn round_trip_digit_count_matches_fmt() {
+        for p in 1..=8192u32 {
+            assert_eq!(
+                round_trip_digit_count(p),
+                BigFloat::round_trip_digit_count(p),
+                "parse vs fmt round_trip_digit_count disagree at precision {p}"
+            );
+        }
     }
 
     #[test]

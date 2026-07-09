@@ -270,12 +270,22 @@ fn format_normal(
     // parse. For a normalized mantissa `top_set_bit == precision - 1`, so
     // `log2_value == exponent`; the rational log10 estimate is exact to
     // far better than one part in the cap at this magnitude.
+    //
+    // The check is widened by `round_trip_digit_count` (pf-bpaq, ADR-0128):
+    // `parse` admits values up to magnitude `MAX`, and their exact render
+    // re-parses within its pow5 budget of `MAX + rt`, so every value `parse`
+    // produces must render EXACTLY here. The `30103/100000` estimate is off
+    // by up to ~1 at the cap, and a bare `MAX` cutoff wrongly routed a
+    // magnitude-`MAX` value (e.g. `1e-1000000`) to the approximate token,
+    // which then re-parsed to a different value. The wider bound is
+    // cost-safe (the exact render's pow5 stays `O(pow5(MAX + rt + digits))`).
+    let render_cap =
+        MAX_FORMAT_DECIMAL_EXPONENT + i64::from(BigFloat::round_trip_digit_count(precision));
     let log2_value = top_set_bit(&m_int)
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
-    {
+    if !(-render_cap..=render_cap).contains(&decimal_exp_estimate) {
         return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 
@@ -460,13 +470,16 @@ fn format_shortest(mantissa: &[u64], precision: u32, exponent: i64, sign: Sign) 
 
     // Magnitude cap (ADR-0051), mirroring format_normal: the scale step
     // multiplies by 10^|k| with k near the decimal exponent, so an
-    // uncapped huge magnitude would build an unbounded bignum.
+    // uncapped huge magnitude would build an unbounded bignum. Widened by
+    // `round_trip_digit_count` so every value `parse` produces renders
+    // exactly and round-trips (pf-bpaq, ADR-0128).
+    let render_cap =
+        MAX_FORMAT_DECIMAL_EXPONENT + i64::from(BigFloat::round_trip_digit_count(precision));
     let log2_value = top_set_bit(&m_int)
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
-    {
+    if !(-render_cap..=render_cap).contains(&decimal_exp_estimate) {
         return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 
