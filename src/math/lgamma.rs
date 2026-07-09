@@ -375,7 +375,7 @@ const STIRLING_REACH_THRESHOLD: u32 = 600;
 /// Targets past `~600` bits exceed the table's reach; the gamma
 /// kernels still produce a value but with degraded accuracy.
 fn z_min_for_target(target_precision: u32) -> u32 {
-    let log_z_needed = (target_precision + 60).div_ceil(33);
+    let log_z_needed = target_precision.saturating_add(60).div_ceil(33);
     let shift = log_z_needed.min(28);
     let z_min = 1u32 << shift;
     z_min.max(25)
@@ -500,6 +500,18 @@ const _USE_ORDERING: Option<Ordering> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn z_min_for_target_saturates_at_extreme_precision() {
+        // pf-nt21 specials/type/11: the `+ 60` argument sizing must not
+        // overflow for a target within 60 of u32::MAX. `saturating_add`
+        // keeps it finite and the shift clamps to 28, so z_min pins to its
+        // ceiling instead of panicking (debug) or wrapping (release).
+        assert_eq!(z_min_for_target(u32::MAX), 1u32 << 28);
+        assert_eq!(z_min_for_target(u32::MAX - 60), 1u32 << 28);
+        // A mid-range target is unchanged by the saturation.
+        assert!(z_min_for_target(113) >= 25);
+    }
 
     fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
         let (diff, _) = v.sub(expected, RoundingMode::NearestEven);

@@ -103,7 +103,8 @@ fn approximate_magnitude_string(sign: Sign, decimal_exp: i64) -> String {
 
 impl BigFloat {
     /// Returns a decimal string with `digits` significant digits,
-    /// rounded under `mode`.
+    /// rounded under `mode`. `digits` is clamped to at least 1 (a nonzero
+    /// value cannot be rendered with zero significant digits).
     ///
     /// Special values render as `"nan"`, `"-nan"`, `"inf"`,
     /// `"-inf"`, `"0"`, `"-0"`. Finite normals use fixed-point
@@ -111,7 +112,12 @@ impl BigFloat {
     /// scientific notation otherwise.
     #[must_use]
     pub fn to_decimal_string(&self, digits: u32, mode: RoundingMode) -> String {
-        debug_assert!(digits >= 1, "digit count must be >= 1");
+        // At least one significant digit. `digits == 0` cannot represent a
+        // nonzero value: `extract_digits` never hits `observed == 0`, so its
+        // adjustment loop exhausted its cap and emitted an all-zeros string
+        // in release (guarded only by a debug assert; boundary-io/type/3).
+        // Clamp so every build is well-defined.
+        let digits = digits.max(1);
         match &self.class {
             Class::Nan { sign, .. } => {
                 let mut s = String::new();
@@ -148,7 +154,7 @@ impl BigFloat {
     /// Number of decimal digits required for a round-trip-safe
     /// representation at the given precision:
     /// `ceil(p × log10(2)) + 1`. For `p = 53` this is 17 (the f64
-    /// round-trip), for `p = 113` it is 35.
+    /// round-trip), for `p = 113` it is 36.
     #[inline]
     #[must_use]
     pub fn round_trip_digit_count(precision: u32) -> u32 {
@@ -270,12 +276,22 @@ fn format_normal(
     // parse. For a normalized mantissa `top_set_bit == precision - 1`, so
     // `log2_value == exponent`; the rational log10 estimate is exact to
     // far better than one part in the cap at this magnitude.
+    //
+    // The check is widened by `round_trip_digit_count` (pf-bpaq, ADR-0128):
+    // `parse` admits values up to magnitude `MAX`, and their exact render
+    // re-parses within its pow5 budget of `MAX + rt`, so every value `parse`
+    // produces must render EXACTLY here. The `30103/100000` estimate is off
+    // by up to ~1 at the cap, and a bare `MAX` cutoff wrongly routed a
+    // magnitude-`MAX` value (e.g. `1e-1000000`) to the approximate token,
+    // which then re-parsed to a different value. The wider bound is
+    // cost-safe (the exact render's pow5 stays `O(pow5(MAX + rt + digits))`).
+    let render_cap =
+        MAX_FORMAT_DECIMAL_EXPONENT + i64::from(BigFloat::round_trip_digit_count(precision));
     let log2_value = top_set_bit(&m_int)
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
-    {
+    if !(-render_cap..=render_cap).contains(&decimal_exp_estimate) {
         return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 
@@ -309,29 +325,22 @@ fn extract_digits(
     for _ in 0..10 {
         let shift = i64::from(digit_count) - 1 - decimal_exp;
         let scaled = compute_scaled(m_int, scale, shift, mode, sign);
-        let mut digits = int_to_decimal(&scaled);
+        let digits = int_to_decimal(&scaled);
         let observed = digits.len() as i64;
         let target = i64::from(digit_count);
         if observed == target {
             return (digits, decimal_exp);
-        } else if observed == target + 1 {
-            // One extra leading digit; bump decimal_exp by the
-            // overshoot and retry. (For example: estimate gave
-            // dec_exp = 5 but the true value is 6.)
-            decimal_exp += 1;
-        } else if observed + 1 == target {
-            decimal_exp -= 1;
-        } else if observed > target {
-            // Far off: jump directly.
-            decimal_exp += observed - target;
-        } else if observed < target {
-            // Pad: extend digits with zeros and adjust decimal_exp.
-            // This is the "value rounded down past a power of 10"
-            // case (e.g., 9.9999 → 10.000 with digit count 5).
-            let padding = (target - observed) as usize;
-            digits.extend(core::iter::repeat_n(0u8, padding));
-            return (digits, decimal_exp);
         }
+        // Correct the decimal exponent by the observed digit-count error and
+        // retry. The 30103/100000 log10 estimate is within 1 of the true
+        // exponent for any in-cap value, so `observed` lands in
+        // {target-1, target, target+1}; `+= observed - target` handles each
+        // (including the rare carry across a power of ten, `9.99…9 → 10.0…0`,
+        // which adds one leading digit). It is also correct for the
+        // unreachable `|observed - target| ≥ 2` case, superseding the old
+        // zero-pad branch that returned an unadjusted decimal_exp
+        // (boundary-io/corr/5, boundary-io/type/4).
+        decimal_exp += observed - target;
     }
     // Fallback: shouldn't be reached. Return what we have.
     let shift = i64::from(digit_count) - 1 - decimal_exp;
@@ -460,13 +469,16 @@ fn format_shortest(mantissa: &[u64], precision: u32, exponent: i64, sign: Sign) 
 
     // Magnitude cap (ADR-0051), mirroring format_normal: the scale step
     // multiplies by 10^|k| with k near the decimal exponent, so an
-    // uncapped huge magnitude would build an unbounded bignum.
+    // uncapped huge magnitude would build an unbounded bignum. Widened by
+    // `round_trip_digit_count` so every value `parse` produces renders
+    // exactly and round-trips (pf-bpaq, ADR-0128).
+    let render_cap =
+        MAX_FORMAT_DECIMAL_EXPONENT + i64::from(BigFloat::round_trip_digit_count(precision));
     let log2_value = top_set_bit(&m_int)
         .map_or(0, |t| t as i64)
         .saturating_add(scale);
     let decimal_exp_estimate = approximate_log10_floor(log2_value);
-    if !(-MAX_FORMAT_DECIMAL_EXPONENT..=MAX_FORMAT_DECIMAL_EXPONENT).contains(&decimal_exp_estimate)
-    {
+    if !(-render_cap..=render_cap).contains(&decimal_exp_estimate) {
         return approximate_magnitude_string(sign, decimal_exp_estimate);
     }
 

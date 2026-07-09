@@ -5,7 +5,10 @@
 //!
 //! Algorithm: differentiate the lgamma kernel.
 //!
-//! - For `x ≤ 0` integer: `−∞ + DIV_BY_ZERO` (pole).
+//! - For `x = ±0`: directional pole, `ψ(+0) = −∞` and
+//!   `ψ(−0) = +∞`, each `+ DIV_BY_ZERO`, following IEEE `1/(±0)`
+//!   (`ψ(x) ~ −1/x` near the origin).
+//! - For `x < 0` integer: `−∞ + DIV_BY_ZERO` (pole).
 //! - For `x < 0` non-integer: reflection
 //!   `ψ(1 − x) − ψ(x) = π · cot(πx)`, i.e.,
 //!   `ψ(x) = ψ(1 − x) − π · cot(πx)`.
@@ -92,12 +95,16 @@ fn digamma_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (B
                 .expect("precision >= 1");
             return (nan, Status::OK);
         }
-        Class::Zero { .. } => {
-            // ψ(0) is −∞ (simple pole).
-            let neg_inf = BigFloat::try_new_infinity(Sign::Negative, target_precision)
-                .expect("precision >= 1");
+        Class::Zero { sign } => {
+            // ψ(x) ~ −1/x at the simple pole, so the infinity is DIRECTIONAL
+            // and follows the input zero's sign with a flip (IEEE `1/(±0)`):
+            // ψ(+0) = −∞ (x → 0⁺), ψ(−0) = +∞ (x → 0⁻). The pre-fix code
+            // discarded the sign and always returned −∞, wrong for −0
+            // (specials/type/8; gamma already honours its own `1/x` sign).
+            let pole =
+                BigFloat::try_new_infinity(sign.flip(), target_precision).expect("precision >= 1");
             auto_raise(Status::DIV_BY_ZERO);
-            return (neg_inf, Status::DIV_BY_ZERO);
+            return (pole, Status::DIV_BY_ZERO);
         }
         Class::Infinity {
             sign: Sign::Positive,
@@ -318,7 +325,7 @@ fn z_min_for_target(target_precision: u32) -> u32 {
     // Match the lgamma sizing — the difference between a `z^(−33)`
     // and `z^(−34)` tail is one extra bit of headroom, well
     // inside our `+32` margin.
-    let log_z_needed = (target_precision + 60).div_ceil(33);
+    let log_z_needed = target_precision.saturating_add(60).div_ceil(33);
     let shift = log_z_needed.min(28);
     let z_min = 1u32 << shift;
     z_min.max(25)
@@ -328,6 +335,18 @@ fn z_min_for_target(target_precision: u32) -> u32 {
 mod tests {
     use super::*;
     use core::cmp::Ordering;
+
+    #[test]
+    fn z_min_for_target_saturates_at_extreme_precision() {
+        // pf-nt21 specials/type/11: the `+ 60` argument sizing must not
+        // overflow for a target within 60 of u32::MAX. `saturating_add`
+        // keeps it finite and the shift clamps to 28, so z_min pins to its
+        // ceiling instead of panicking (debug) or wrapping (release).
+        assert_eq!(z_min_for_target(u32::MAX), 1u32 << 28);
+        assert_eq!(z_min_for_target(u32::MAX - 60), 1u32 << 28);
+        // A mid-range target is unchanged by the saturation.
+        assert!(z_min_for_target(113) >= 25);
+    }
 
     fn close_at(v: &BigFloat, expected: &BigFloat, bits: u32) -> bool {
         let (diff, _) = v.sub(expected, RoundingMode::NearestEven);
