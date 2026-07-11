@@ -24,7 +24,6 @@ use pfloat::{RoundingMode, Status};
 
 use crate::arith::half_spread;
 use crate::ball::Ball;
-use crate::mag::Mag;
 use crate::scalar::RealScalar;
 
 const NE: RoundingMode = RoundingMode::NearestEven;
@@ -124,9 +123,11 @@ fn lipschitz1<T: RealScalar>(b: &Ball<T>, k: Kernel<T>) -> (Ball<T>, Status) {
     (Ball::from_parts(mid, rad), status)
 }
 
-/// `+1` and `-1` at the ball's precision, for domain clamping.
-fn one_and_neg_one<T: RealScalar>() -> (T, T) {
-    let one = T::radius_to_scalar(Mag::from_pow2(0));
+/// `+1` and `-1` at `precision`, for domain clamping. Built at the ball's
+/// precision (not the 64-bit `radius_to_scalar` width) so a clamped
+/// endpoint does not collapse the result's precision to 64 (pf-vxva).
+fn one_and_neg_one<T: RealScalar>(precision: u32) -> (T, T) {
+    let one = T::one(precision);
     let neg_one = one.negated();
     (one, neg_one)
 }
@@ -205,7 +206,7 @@ impl<T: RealScalar> Ball<T> {
         }
         let (alo, ahi) = input_endpoints(self);
         // Domain x > −1: alo + 1 ≤ 0 ⇔ alo ≤ −1.
-        let neg_one = one_and_neg_one::<T>().1;
+        let neg_one = one_and_neg_one::<T>(prec).1;
         if !lt(&neg_one, &alo) {
             return (Ball::entire(prec), Status::INVALID);
         }
@@ -265,7 +266,7 @@ impl<T: RealScalar> Ball<T> {
             return (Ball::entire(prec), Status::INVALID);
         }
         let (alo, ahi) = input_endpoints(self);
-        let one = one_and_neg_one::<T>().0;
+        let one = one_and_neg_one::<T>(prec).0;
         // Fully below the domain: ahi < 1.
         if lt(&ahi, &one) {
             return (Ball::entire(prec), Status::INVALID);
@@ -289,7 +290,7 @@ impl<T: RealScalar> Ball<T> {
             return (Ball::entire(prec), Status::INVALID);
         }
         let (alo, ahi) = input_endpoints(self);
-        let (one, neg_one) = one_and_neg_one::<T>();
+        let (one, neg_one) = one_and_neg_one::<T>(prec);
         // Domain (−1, 1): touching either bound makes the result unbounded.
         if !lt(&neg_one, &alo) || !lt(&ahi, &one) {
             return (Ball::entire(prec), Status::INVALID);
@@ -352,7 +353,7 @@ impl<T: RealScalar> Ball<T> {
             return (Ball::entire(prec), Status::INVALID);
         }
         let (alo, ahi) = input_endpoints(self);
-        let (lo, hi, status) = match clamp_unit(&alo, &ahi) {
+        let (lo, hi, status) = match clamp_unit(&alo, &ahi, prec) {
             Some(v) => v,
             None => return (Ball::entire(prec), Status::INVALID),
         };
@@ -369,7 +370,7 @@ impl<T: RealScalar> Ball<T> {
             return (Ball::entire(prec), Status::INVALID);
         }
         let (alo, ahi) = input_endpoints(self);
-        let (lo, hi, status) = match clamp_unit(&alo, &ahi) {
+        let (lo, hi, status) = match clamp_unit(&alo, &ahi, prec) {
             Some(v) => v,
             None => return (Ball::entire(prec), Status::INVALID),
         };
@@ -433,8 +434,8 @@ impl<T: RealScalar> Ball<T> {
 /// `(clamped_lo, clamped_hi, status)`, or `None` when the interval lies
 /// wholly outside `[−1, 1]`.
 #[cfg(feature = "trig")]
-fn clamp_unit<T: RealScalar>(alo: &T, ahi: &T) -> Option<(T, T, Status)> {
-    let (one, neg_one) = one_and_neg_one::<T>();
+fn clamp_unit<T: RealScalar>(alo: &T, ahi: &T, precision: u32) -> Option<(T, T, Status)> {
+    let (one, neg_one) = one_and_neg_one::<T>(precision);
     // Wholly outside: ahi < −1 or alo > 1.
     if lt(ahi, &neg_one) || lt(&one, alo) {
         return None;
@@ -458,6 +459,7 @@ fn clamp_unit<T: RealScalar>(alo: &T, ahi: &T) -> Option<(T, T, Status)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mag::Mag;
     use core::cmp::Ordering;
     use pfloat::BigFloat;
 
@@ -526,6 +528,9 @@ mod tests {
         // Wholly below 1: entire + INVALID.
         let (r2, st2) = ptb(0, 64).acosh();
         assert!(st2.invalid() && r2.is_entire());
+        // pf-vxva: the lower-end clamp to 1 must keep the ball's precision.
+        let (r3, _) = ball(1, Mag::from_pow2(0), 200).acosh(); // [0, 2] at p=200
+        assert_eq!(r3.precision(), 200, "acosh clamp collapsed precision");
     }
 
     #[cfg(feature = "exp-log")]
@@ -563,6 +568,32 @@ mod tests {
                                            // acos(1)=0, acos(-1)=π. acos over [-1,1] (radius 1 at mid 0).
         let (ac, _) = ball(0, Mag::from_pow2(0), 64).acos();
         assert!(contains(&ac, &refv(BigFloat::acos, 0))); // acos(0)=π/2
+    }
+
+    #[cfg(feature = "trig")]
+    #[test]
+    fn clamp_preserves_ball_precision() {
+        // pf-vxva: a ball wider than the domain clamps at its ends. The
+        // clamp constants (±1) must be built at the ball's precision, else a
+        // double-clamp collapses the result to precision 64 regardless of
+        // input. [-2, 2] at p = 200 clamps both ends for asin and acos.
+        let p = 200;
+        let (a, sa) = ball(0, Mag::from_pow2(1), p).asin();
+        assert!(sa.invalid());
+        assert_eq!(
+            a.precision(),
+            p,
+            "asin clamp collapsed precision to {}",
+            a.precision()
+        );
+        let (c, sc) = ball(0, Mag::from_pow2(1), p).acos();
+        assert!(sc.invalid());
+        assert_eq!(
+            c.precision(),
+            p,
+            "acos clamp collapsed precision to {}",
+            c.precision()
+        );
     }
 
     #[cfg(feature = "trig")]
