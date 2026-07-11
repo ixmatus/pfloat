@@ -1,8 +1,7 @@
-# 0129. `exp_round` returns `Result`, matching the `*_round` family
+# ADR-0129: exp_round returns Result, matching the *_round family
 
-## Status
-
-Accepted (2026-07-11).
+- **Status**: accepted
+- **Date**: 2026-07-11
 
 ## Context
 
