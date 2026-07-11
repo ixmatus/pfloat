@@ -202,7 +202,10 @@ where
         // bound rejects exactly the values that would overflow.
         if f.is_finite() && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f)
         {
-            Some(f.trunc() as i64)
+            // `as i64` truncates toward zero for a finite in-range value, so
+            // it is exactly the removed `.trunc()`; `f64::trunc` is a std-only
+            // inherent method and must not appear on this no_std-capable path.
+            Some(f as i64)
         } else {
             None
         }
@@ -211,7 +214,9 @@ where
     fn to_u64(&self) -> Option<u64> {
         let f = self.to_big().to_f64();
         if f.is_finite() && (0.0..18_446_744_073_709_551_616.0).contains(&f) {
-            Some(f.trunc() as u64)
+            // `as u64` truncates toward zero for a finite in-range value (see
+            // `to_i64`); the std-only `f64::trunc` must not appear here.
+            Some(f as u64)
         } else {
             None
         }
