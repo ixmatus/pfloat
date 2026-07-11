@@ -29,7 +29,7 @@
 /// under [`merge`](Self::merge): combine two statuses by union of
 /// their flags.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[repr(transparent)]
 pub struct Status(u8);
 
@@ -133,6 +133,39 @@ impl Status {
     #[must_use]
     pub const fn merge(self, rhs: Self) -> Self {
         Self(self.0 | rhs.0)
+    }
+
+    /// The union of every defined flag bit. Any bit outside this mask is
+    /// undefined; deserialization rejects such a byte rather than
+    /// constructing a `Status` outside the five-flag state space
+    /// (ADR-0068, pf-9fq3).
+    #[cfg(feature = "serde")]
+    const DEFINED_BITS: u8 = Self::INVALID.0
+        | Self::DIV_BY_ZERO.0
+        | Self::OVERFLOW.0
+        | Self::UNDERFLOW.0
+        | Self::INEXACT.0;
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Status {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Mirror the derived `Serialize` wire format (a `u8` newtype) but
+        // revalidate: deserialization is a trust boundary, so a byte with an
+        // undefined bit set (e.g. `0xE0`, bits 5-7) is malformed input and is
+        // REJECTED, not coerced. Without this, a derived impl would build a
+        // `Status` for which `is_ok()` is false yet every flag predicate is
+        // also false — a value outside the five-flag state space (ADR-0068,
+        // pf-9fq3).
+        #[derive(serde::Deserialize)]
+        struct StatusRepr(u8);
+        let StatusRepr(bits) = StatusRepr::deserialize(deserializer)?;
+        if bits & !Status::DEFINED_BITS != 0 {
+            return Err(serde::de::Error::custom(
+                "pfloat: Status has undefined flag bits set",
+            ));
+        }
+        Ok(Status(bits))
     }
 }
 
