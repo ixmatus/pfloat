@@ -330,7 +330,11 @@ mod tests {
 
     #[test]
     fn fast_path_matches_kernel_f32() {
-        check_f32(sat_exp::<f32>, &|xb, w, d| xb.exp_round(w, d), "exp");
+        check_f32(
+            sat_exp::<f32>,
+            &|xb, w, d| xb.exp_round(w, d).expect("w >= 1"),
+            "exp",
+        );
         check_f32(
             sat_exp2::<f32>,
             &|xb, w, d| xb.exp2_round(w, d).expect("w >= 1"),
@@ -365,7 +369,11 @@ mod tests {
 
     #[test]
     fn fast_path_matches_kernel_f64() {
-        check_f64(sat_exp::<f64>, &|xb, w, d| xb.exp_round(w, d), "exp");
+        check_f64(
+            sat_exp::<f64>,
+            &|xb, w, d| xb.exp_round(w, d).expect("w >= 1"),
+            "exp",
+        );
         check_f64(
             sat_exp2::<f64>,
             &|xb, w, d| xb.exp2_round(w, d).expect("w >= 1"),

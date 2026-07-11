@@ -142,7 +142,9 @@ fn cosh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
             .0;
         let ln_2 = super::ln_2_at(prod_prec);
         let (arg, _) = abs_w.sub(&ln_2, RoundingMode::NearestEven);
-        return arg.exp_round(target_precision, mode);
+        return arg
+            .exp_round(target_precision, mode)
+            .expect("target_precision >= 1 (validated by cosh_round)");
     }
 
     // Ziv-driven correct rounding under every IEEE mode. The eval

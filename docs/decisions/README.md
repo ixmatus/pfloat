@@ -178,3 +178,4 @@ preamble and this note live in its heredocs), not this file by hand.
 - [ADR-0126: the fixed-cap series boost gives way to cancellation_boosted (the pf-6naq crate sweep)](0126-fixed-cap-series-boost-cancellation-boosted.md) (accepted)
 - [ADR-0127: the near-1 tiny-x family (exp and cosh short-circuit; cos and the reciprocals were already handled)](0127-near-one-tiny-x-dispatch.md) (accepted)
 - [ADR-0128: the decimal cap governs value magnitude, not the point-baked exponent](0128-parse-cap-on-value-magnitude.md) (accepted)
+- [ADR-0129: `exp_round` returns `Result`, matching the `*_round` family](0129-exp-round-returns-result.md) (accepted)

@@ -172,7 +172,9 @@ fn expm1_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
     // expm1(x) and exp(x) round identically under every mode, flags
     // included. Forward verbatim; exp's triage owns the rim.
     if !x.is_sign_negative() && e >= 62 {
-        return x.exp_round(target_precision, mode);
+        return x
+            .exp_round(target_precision, mode)
+            .expect("target_precision >= 1 (validated by expm1_round)");
     }
 
     // Cancellation boost: e^x − 1 loses ~|exponent(x)| leading

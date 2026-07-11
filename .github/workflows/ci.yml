@@ -31,6 +31,7 @@ jobs:
           - "--no-default-features --features=fixed"
           - "--no-default-features --features=ops,big"
           - "--no-default-features --features=big,agm"
+          - "--no-default-features --features=num-traits"  # no_std num-traits (pf-ju5r): trunc must not need std
           - "--features=std,fmt,big,fixed,ops,exp-log,trig,specials,agm,integrals,airy,bessel,zeta,serde,num-traits"
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +57,7 @@ jobs:
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --verbose
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=alloc,big --verbose
       - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=fixed --verbose
+      - run: cargo build --target thumbv6m-none-eabi --no-default-features --features=num-traits --verbose  # pf-ju5r
 
   # ---------- Format / lint ----------
   format:

@@ -257,8 +257,18 @@ def special_case_at_zero(fn_id: str, sign: int) -> Optional[int]:
     # collapses +/-0 to a single 0, so the worker must supply the sign.
     if fn_id in ("cot", "csc"):
         return _F32_NEG_INF if sign == 1 else _F32_POS_INF
-    # Other functions at +/-0: sec(0) = 1, li(0) = 0, si(0) = 0, bi(0)
-    # a specific finite value, etc. The standard path computes them.
+    # si is odd (si(-x) = -si(x)) with si(0) = 0, so it preserves the input
+    # zero's sign: si(+0) = +0, si(-0) = -0. Arb has no signed zero and
+    # collapses +/-0 to a single 0, so the generic path returned +0 for the
+    # -0 input, recording a FALSE mismatch against pfloat's si kernel, which
+    # correctly returns -0 per its odd-function rule (pf-0ja5). Supply the
+    # sign-matching zero here. (Other zero-valued Arb-primary functions are
+    # not odd through the origin: li(0)=0 and the Airy/Bessel values at 0 do
+    # not flip sign with the input zero, so they stay on the standard path.)
+    if fn_id == "si":
+        return _F32_NEG_ZERO if sign == 1 else _F32_POS_ZERO
+    # Other functions at +/-0: sec(0) = 1, li(0) = 0, bi(0) a specific finite
+    # value, etc. The standard path computes them.
     return None
 
 

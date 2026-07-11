@@ -326,7 +326,7 @@ fn exp_deep_underflow_is_mode_aware_zero() {
     // region, so exactness is irrelevant here.
     let (x, _) = BigFloat::parse_str("-1e300", 53, NE).unwrap();
     for mode in ALL_MODES {
-        let (r, st) = x.exp_round(53, mode);
+        let (r, st) = x.exp_round(53, mode).unwrap();
         assert!(st.underflow(), "exp(-1e300) {mode:?}: UNDERFLOW missing");
         assert!(st.inexact(), "exp(-1e300) {mode:?}: INEXACT missing");
         if matches!(mode, RoundingMode::TowardPositive) {
@@ -355,7 +355,7 @@ fn exp_overflow_is_mode_aware_inf() {
     for s in ["1e300", "6393154322601327830"] {
         let (x, _) = BigFloat::parse_str(s, 64, NE).unwrap();
         for mode in ALL_MODES {
-            let (r, st) = x.exp_round(53, mode);
+            let (r, st) = x.exp_round(53, mode).unwrap();
             assert!(st.overflow(), "exp({s}) {mode:?}: OVERFLOW missing");
             assert!(st.inexact(), "exp({s}) {mode:?}: INEXACT missing");
             if matches!(
@@ -399,7 +399,7 @@ fn exp_top_window_returns_the_representable_finite() {
     for (xs, ms) in cases {
         let (x, _) = BigFloat::parse_str(xs, 80, NE).unwrap();
         for mode in [NE, RoundingMode::TowardZero] {
-            let (r, st) = x.exp_round(53, mode);
+            let (r, st) = x.exp_round(53, mode).unwrap();
             let expected = mantissa_at_pow2(ms, i64::MAX, mode);
             assert_eq!(
                 r.total_cmp(&expected),
@@ -421,7 +421,7 @@ fn exp_top_window_returns_the_representable_finite() {
 fn exp_bottom_window_returns_the_representable_finite() {
     let (x, sp) = BigFloat::parse_str("-6393154322601327829.5", 80, NE).unwrap();
     assert!(sp.is_ok());
-    let (r, st) = x.exp_round(53, NE);
+    let (r, st) = x.exp_round(53, NE).unwrap();
     let expected = mantissa_at_pow2("1.483368254913493617047065800911430569035", i64::MIN, NE);
     assert_eq!(
         r.total_cmp(&expected),
@@ -443,7 +443,7 @@ fn exp_bottom_window_returns_the_representable_finite() {
 fn exp_underflow_sliver_is_mode_aware() {
     let (x, _) = BigFloat::parse_str("-6393154322601327830.2", 80, NE).unwrap();
     for mode in ALL_MODES {
-        let (r, st) = x.exp_round(53, mode);
+        let (r, st) = x.exp_round(53, mode).unwrap();
         assert!(st.underflow(), "sliver {mode:?}: UNDERFLOW missing");
         assert!(st.inexact(), "sliver {mode:?}: INEXACT missing");
         if matches!(
@@ -467,10 +467,10 @@ fn exp_underflow_sliver_is_mode_aware() {
 fn exp_just_below_sliver_rounds_to_zero() {
     let (x, sp) = BigFloat::parse_str("-6393154322601327831", 64, NE).unwrap();
     assert!(sp.is_ok());
-    let (r_ne, st_ne) = x.exp_round(53, NE);
+    let (r_ne, st_ne) = x.exp_round(53, NE).unwrap();
     assert!(r_ne.is_zero(), "NE must be +0, got {r_ne}");
     assert!(st_ne.underflow() && st_ne.inexact());
-    let (r_tp, _) = x.exp_round(53, RoundingMode::TowardPositive);
+    let (r_tp, _) = x.exp_round(53, RoundingMode::TowardPositive).unwrap();
     assert_eq!(r_tp.total_cmp(&min_pos(53)), Ordering::Equal);
 }
 
@@ -491,7 +491,7 @@ fn exp_certified_floor_cap_scales_with_input_precision() {
     assert!(s.is_ok());
     let x = mag.negated();
 
-    let (r_ne, st_ne) = x.exp_round(53, NE);
+    let (r_ne, st_ne) = x.exp_round(53, NE).unwrap();
     assert_eq!(
         r_ne.total_cmp(&min_pos(53)),
         Ordering::Equal,
@@ -503,14 +503,14 @@ fn exp_certified_floor_cap_scales_with_input_precision() {
     );
     assert!(st_ne.inexact());
 
-    let (r_tz, _) = x.exp_round(53, RoundingMode::TowardZero);
+    let (r_tz, _) = x.exp_round(53, RoundingMode::TowardZero).unwrap();
     assert_eq!(
         r_tz.total_cmp(&min_pos(53)),
         Ordering::Equal,
         "TZ must be MinPos (truth strictly above it), got {r_tz}"
     );
 
-    let (r_tp, _) = x.exp_round(53, RoundingMode::TowardPositive);
+    let (r_tp, _) = x.exp_round(53, RoundingMode::TowardPositive).unwrap();
     let next_up_minpos = min_pos(53).next_up().0;
     assert_eq!(
         r_tp.total_cmp(&next_up_minpos),
@@ -536,7 +536,7 @@ fn exp_top_window_carry_overflows_mode_aware() {
     assert!(s.is_ok());
 
     for mode in [NE, RoundingMode::NearestAway, RoundingMode::TowardPositive] {
-        let (r, st) = x.exp_round(53, mode);
+        let (r, st) = x.exp_round(53, mode).unwrap();
         assert!(r.is_infinite(), "carry {mode:?} must be +inf, got {r}");
         assert!(st.overflow() && st.inexact(), "carry {mode:?}: {st:?}");
     }
@@ -546,7 +546,7 @@ fn exp_top_window_carry_overflows_mode_aware() {
     // exceed MaxFinite. INEXACT only — unlike the certain-overflow
     // dispatch (truth ≥ 2^(MAX+1)), where even TZ's unbounded
     // rounding exceeds MaxFinite and the flag is due.
-    let (r_tz, st_tz) = x.exp_round(53, RoundingMode::TowardZero);
+    let (r_tz, st_tz) = x.exp_round(53, RoundingMode::TowardZero).unwrap();
     assert_eq!(
         r_tz.total_cmp(&max_finite(53)),
         Ordering::Equal,
@@ -561,8 +561,8 @@ fn exp_top_window_carry_overflows_mode_aware() {
     // exceed this input's NE result class (the broken compose gave
     // 1.0·2^MAX here, BELOW the 1.348·2^MAX of the smaller input).
     let (x5, _) = BigFloat::parse_str("6393154322601327829.5", 80, NE).unwrap();
-    let (r5, _) = x5.exp_round(53, NE);
-    let (r_big, _) = x.exp_round(53, NE);
+    let (r5, _) = x5.exp_round(53, NE).unwrap();
+    let (r_big, _) = x.exp_round(53, NE).unwrap();
     assert!(
         matches!(r5.partial_cmp(&r_big).0, Some(Ordering::Less)),
         "monotonicity: exp(smaller) {r5} must be < exp(larger) {r_big}"

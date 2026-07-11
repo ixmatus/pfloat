@@ -152,7 +152,9 @@ fn exp10_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (Big
             .0;
         let ln_10 = ln_10_at(prod_prec);
         let (product, _) = x_w.mul(&ln_10, RoundingMode::NearestEven);
-        let (result, status) = product.exp_round(target_precision, mode);
+        let (result, status) = product
+            .exp_round(target_precision, mode)
+            .expect("target_precision >= 1 (validated by exp10_round)");
         // 10^x for non-exact-set x is irrational (the dispatch above
         // owns the exact set), and the rim dispatches already carry
         // INEXACT; auto_raise is exp's.

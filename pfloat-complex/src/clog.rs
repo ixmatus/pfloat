@@ -222,7 +222,7 @@ mod tests {
     fn clog_real_axis_matches_scalar_ln() {
         // clog(e + 0i) real part = ln(hypot(e, 0)) = ln(e) = 1, imaginary +0.
         let p = 200;
-        let e = bfp(1, p).exp_round(p, NE).0;
+        let e = bfp(1, p).exp_round(p, NE).unwrap().0;
         let (re, im, _) = clog_big(&e, &bfp(0, p), p, NE);
         assert!(near(&re, &bfp(1, p), p), "ln(e) ≈ 1, got {re}");
         assert!(im.is_zero() && im.is_sign_positive());

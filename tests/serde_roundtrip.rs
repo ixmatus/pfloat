@@ -156,3 +156,43 @@ fn fixedfloat_rejects_precision_mismatch() {
     let r: Result<FixedFloat<53>, _> = serde_json::from_str(&s);
     assert!(r.is_err(), "precision 64 must not load into FixedFloat<53>");
 }
+
+// ----- Status: round-trip and undefined-bit rejection (pf-9fq3) -----
+
+#[test]
+fn status_defined_values_round_trip() {
+    rt(&Status::OK);
+    rt(&Status::INVALID);
+    rt(&Status::DIV_BY_ZERO);
+    rt(&Status::OVERFLOW);
+    rt(&Status::UNDERFLOW);
+    rt(&Status::INEXACT);
+    // The union of all five flags (0x1F) is the maximal valid bitset.
+    rt(&(Status::INVALID
+        | Status::DIV_BY_ZERO
+        | Status::OVERFLOW
+        | Status::UNDERFLOW
+        | Status::INEXACT));
+}
+
+#[test]
+fn status_rejects_undefined_bits() {
+    // Status serializes as its raw `u8`. Any byte with a bit outside the
+    // five defined flags (bits 0-4) set is outside the state space and must
+    // be rejected, not coerced into a Status where `is_ok()` is false yet
+    // every flag predicate is also false (ADR-0068, pf-9fq3).
+    fn rejected_status(json: &str) {
+        let r: Result<Status, _> = serde_json::from_str(json);
+        assert!(r.is_err(), "expected rejection, got {r:?} for {json}");
+    }
+    rejected_status("32"); // 0x20: bit 5, the lowest undefined bit
+    rejected_status("224"); // 0xE0: bits 5-7 (the finding's witness)
+    rejected_status("255"); // 0xFF: all bits, including undefined
+}
+
+#[test]
+fn status_accepts_all_defined_bits() {
+    // 0x1F (= 31) is the all-flags-set valid Status; it must load.
+    let v: Status = serde_json::from_str("31").expect("0x1F is a valid Status");
+    assert!(v.invalid() && v.div_by_zero() && v.overflow() && v.underflow() && v.inexact());
+}

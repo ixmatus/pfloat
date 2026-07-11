@@ -179,7 +179,7 @@ fn exp_of_subnormal_tiny_is_inexact_every_mode() {
     // kernel never observes a rounding — yet the true value ≠ 1.0.
     let tiny = two_pow_neg(1074, 64);
     for m in MODES {
-        let (v, s) = tiny.exp_round(53, m);
+        let (v, s) = tiny.exp_round(53, m).unwrap();
         assert!(
             s.inexact(),
             "exp(2^-1074) ≠ 1 exactly; INEXACT must be set (mode {m:?})"
@@ -248,7 +248,7 @@ fn ordinary_transcendentals_are_inexact_every_mode() {
     };
     for m in MODES {
         assert!(
-            two.exp_round(53, m).1.inexact(),
+            two.exp_round(53, m).unwrap().1.inexact(),
             "exp(2) inexact (mode {m:?})"
         );
         assert!(
