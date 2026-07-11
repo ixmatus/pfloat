@@ -120,10 +120,14 @@ fn sinh_kernel(x: &BigFloat, target_precision: u32, mode: RoundingMode) -> (BigF
         let (arg, _) = abs_w.sub(&ln_2, RoundingMode::NearestEven);
         if negative {
             let inner = super::mirror_mode_for_negation(mode);
-            let (mag, status) = arg.exp_round(target_precision, inner);
+            let (mag, status) = arg
+                .exp_round(target_precision, inner)
+                .expect("target_precision >= 1 (validated by sinh_round)");
             return (mag.negated(), status);
         }
-        return arg.exp_round(target_precision, mode);
+        return arg
+            .exp_round(target_precision, mode)
+            .expect("target_precision >= 1 (validated by sinh_round)");
     }
 
     // Tiny x: sinh(x) = x + x³/6 + … grows away from x in magnitude

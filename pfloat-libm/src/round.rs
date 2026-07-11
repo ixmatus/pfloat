@@ -210,12 +210,14 @@ pub(crate) fn drive<S: Shell>(
 /// both the public mode-aware entry and the `BigFloat` kernel method
 /// (they share the spelling, e.g. `exp_round`); the `$round(...)` inside
 /// the convenience fn is the sibling free fn, while `xb.$round(...)` is
-/// the inherent method. The `result` / `direct` discriminator selects
-/// whether the kernel method returns a `Result` (every kernel but `exp`).
+/// the inherent method, which returns `Result<(Hw, Status), BuildError>`;
+/// the `BuildError` arises only at precision 0, unreachable here because
+/// `w = PREC + guard >= 1`, so the closure `.expect`s it. (Every kernel now
+/// returns `Result`; `exp` was the last tuple-returning exception, pf-291u.)
 ///
-/// The `*_sat` discriminators (`result_sat` / `direct_sat`) take an extra
-/// saturation function `$sat` (from [`crate::saturate`]) consulted before
-/// the kernel: for a finite argument beyond the function's saturation
+/// The `_sat` discriminator (`result_sat`) takes an extra saturation
+/// function `$sat` (from [`crate::saturate`]) consulted before the
+/// kernel: for a finite argument beyond the function's saturation
 /// threshold it returns the saturated result directly, skipping the kernel
 /// whose argument-reduction cost grows with the argument's exponent. The
 /// generic `$sat` resolves its width from the `x: $hw` argument by
@@ -238,19 +240,6 @@ macro_rules! unary {
             })
         }
     };
-    ($hw:ty, $shell:ident, $name:ident, $round:ident, direct, $disp:literal) => {
-        #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
-        #[must_use]
-        pub fn $name(x: $hw) -> $hw {
-            $round(x, $crate::RoundingMode::NearestEven).0
-        }
-
-        #[doc = concat!($disp, " correctly rounded under `mode`, with IEEE 754 status flags.")]
-        #[must_use]
-        pub fn $round(x: $hw, mode: $crate::RoundingMode) -> ($hw, $crate::Status) {
-            $crate::round::drive::<$crate::round::$shell>(x, mode, |xb, w, dir| xb.$round(w, dir))
-        }
-    };
     ($hw:ty, $shell:ident, $name:ident, $round:ident, result_sat, $sat:path, $disp:literal) => {
         #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
         #[must_use]
@@ -268,22 +257,6 @@ macro_rules! unary {
                 xb.$round(w, dir)
                     .expect("w = PREC + guard >= 1: BuildError only on precision 0")
             })
-        }
-    };
-    ($hw:ty, $shell:ident, $name:ident, $round:ident, direct_sat, $sat:path, $disp:literal) => {
-        #[doc = concat!($disp, " correctly rounded to the format under round-to-nearest-even.")]
-        #[must_use]
-        pub fn $name(x: $hw) -> $hw {
-            $round(x, $crate::RoundingMode::NearestEven).0
-        }
-
-        #[doc = concat!($disp, " correctly rounded under `mode`, with IEEE 754 status flags.")]
-        #[must_use]
-        pub fn $round(x: $hw, mode: $crate::RoundingMode) -> ($hw, $crate::Status) {
-            if let Some(r) = $sat(x, mode) {
-                return r;
-            }
-            $crate::round::drive::<$crate::round::$shell>(x, mode, |xb, w, dir| xb.$round(w, dir))
         }
     };
 }
@@ -439,12 +412,12 @@ mod tests {
     fn exp_matches_single_rounding() {
         check_f32(
             crate::f32::exp_round,
-            |xb, mode| xb.exp_round(ORACLE_PREC, mode).0,
+            |xb, mode| xb.exp_round(ORACLE_PREC, mode).expect("ORACLE_PREC >= 1").0,
             &[0.5, 1.0, 10.0, -10.0, 88.0, -88.0],
         );
         check_f64(
             crate::f64::exp_round,
-            |xb, mode| xb.exp_round(ORACLE_PREC, mode).0,
+            |xb, mode| xb.exp_round(ORACLE_PREC, mode).expect("ORACLE_PREC >= 1").0,
             &[1.0, 100.0, 700.0, -700.0],
         );
     }

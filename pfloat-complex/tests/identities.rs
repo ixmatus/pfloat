@@ -152,7 +152,7 @@ fn modulus_of_cexp_is_exp_real_part() {
     for z in grid() {
         let w = z.exp(NE).0;
         let modulus = w.re.hypot(&w.im, NE).0;
-        let ex = z.re.exp_round(P, NE).0;
+        let ex = z.re.exp_round(P, NE).unwrap().0;
         assert!(
             close(&modulus, &ex, P, SLACK),
             "|cexp({}, {})| = {} not within tol of e^x = {}",

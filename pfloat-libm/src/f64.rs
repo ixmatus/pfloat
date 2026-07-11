@@ -17,7 +17,7 @@ unary!(
     F64Shell,
     exp,
     exp_round,
-    direct_sat,
+    result_sat,
     crate::saturate::sat_exp,
     "`exp`"
 );

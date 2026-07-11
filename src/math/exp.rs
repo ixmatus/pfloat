@@ -33,7 +33,7 @@
 //! 8b's documented exp underflow defect: the corpus's underflow
 //! stress block now lands as the regression guard.
 
-use crate::big::BigFloat;
+use crate::big::{BigFloat, BuildError};
 use crate::class::Class;
 use crate::ops::limbs::extract_as_integer;
 use crate::rounding::RoundingMode;
@@ -58,15 +58,25 @@ impl BigFloat {
     /// ADR-0022). See [the module docs](self) for the algorithm.
     #[must_use]
     pub fn exp(&self, mode: RoundingMode) -> (Self, Status) {
-        let target = self.precision;
-        self.exp_round(target, mode)
+        self.exp_round(self.precision, mode)
+            .expect("self.precision >= 1 by invariant")
     }
 
     /// `exp(self)` with an explicit result precision.
-    #[must_use]
-    pub fn exp_round(&self, target_precision: u32, mode: RoundingMode) -> (Self, Status) {
-        debug_assert!(target_precision >= 1);
-        exp_kernel(self, target_precision, mode)
+    ///
+    /// # Errors
+    /// Returns [`BuildError::PrecisionZero`] if `target_precision == 0`,
+    /// matching every other `*_round` kernel in the elementary surface
+    /// (pf-291u; previously this one path panicked in release).
+    pub fn exp_round(
+        &self,
+        target_precision: u32,
+        mode: RoundingMode,
+    ) -> Result<(Self, Status), BuildError> {
+        if target_precision == 0 {
+            return Err(BuildError::PrecisionZero);
+        }
+        Ok(exp_kernel(self, target_precision, mode))
     }
 }
 
@@ -892,7 +902,7 @@ mod tests {
     #[test]
     fn exp_with_explicit_round() {
         let one = BigFloat::try_from_i64_exact(1, 113).unwrap();
-        let (r, _) = one.exp_round(53, RoundingMode::NearestEven);
+        let (r, _) = one.exp_round(53, RoundingMode::NearestEven).unwrap();
         assert_eq!(r.precision(), 53);
         let e = parse("2.718281828459045", 53);
         assert!(close_at(&r, &e, 53));

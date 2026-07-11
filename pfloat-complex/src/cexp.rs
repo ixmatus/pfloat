@@ -96,7 +96,9 @@ pub(crate) fn cexp_big(
         // E1-E4: (e^x, copysign(0, y)). e^0 = 1 is exact via the scalar exp;
         // the imaginary zero is stamped, not formed by e^x·0 (which would be
         // NaN when e^x overflowed).
-        let (re, s) = a.exp_round(p, mode);
+        let (re, s) = a
+            .exp_round(p, mode)
+            .expect("p >= 1 (cexp target precision)");
         return (re, signed_zero(b, p), s);
     }
 
@@ -104,8 +106,12 @@ pub(crate) fn cexp_big(
     let mut last: Option<(Resolved, Resolved, Status)> = None;
     for &guard in &GUARDS {
         let w = p.saturating_add(guard);
-        let (ex_lo, s_lo) = a.exp_round(w, RoundingMode::TowardNegative);
-        let (ex_hi, s_hi) = a.exp_round(w, RoundingMode::TowardPositive);
+        let (ex_lo, s_lo) = a
+            .exp_round(w, RoundingMode::TowardNegative)
+            .expect("w >= 1 (p + guard)");
+        let (ex_hi, s_hi) = a
+            .exp_round(w, RoundingMode::TowardPositive)
+            .expect("w >= 1 (p + guard)");
         // The exp directed pair carries INEXACT (always, e^x is transcendental
         // for x ≠ 0) and OVERFLOW if it saturated; the result is transcendental
         // so it is INEXACT regardless of how the bracket collapses.
@@ -265,7 +271,7 @@ mod tests {
     fn cexp_real_axis_matches_scalar_exp() {
         // cexp(x + 0i) = (e^x, +0); the real part is the scalar exp bit-for-bit.
         let (re, im, s) = cexp_big(&bf(3), &pz(), 113, NE);
-        let scalar = bfp(3, 113).exp_round(113, NE).0;
+        let scalar = bfp(3, 113).exp_round(113, NE).unwrap().0;
         assert_eq!(re.partial_cmp(&scalar).0, Some(Ordering::Equal));
         assert!(im.is_zero() && im.is_sign_positive());
         assert!(s.inexact(), "e^3 is irrational");
@@ -283,7 +289,7 @@ mod tests {
         // |cexp(1 + 2i)| = e^1. Check hypot(re, im) ≈ e.
         let (re, im, _) = cexp_big(&bf(1), &bf(2), 200, NE);
         let modulus = re.hypot(&im, NE).0;
-        let e = bfp(1, 200).exp_round(200, NE).0;
+        let e = bfp(1, 200).exp_round(200, NE).unwrap().0;
         let d = modulus.sub(&e, NE).0.abs();
         assert!(
             matches!(

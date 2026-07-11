@@ -439,7 +439,10 @@ mod tests {
         let z = Complex::new(bfp(2, 200), bfp(1, 200));
         let (w, _) = z.exp(RoundingMode::NearestEven);
         let modulus = w.re.hypot(&w.im, RoundingMode::NearestEven).0;
-        let e2 = bfp(2, 200).exp_round(200, RoundingMode::NearestEven).0;
+        let e2 = bfp(2, 200)
+            .exp_round(200, RoundingMode::NearestEven)
+            .unwrap()
+            .0;
         let d = modulus.sub(&e2, RoundingMode::NearestEven).0.abs();
         assert!(matches!(
             d.partial_cmp(&bfp(1, 200).scale_by_pow2(-170).0).0,
